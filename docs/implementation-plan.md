@@ -1,37 +1,33 @@
-# 实现计划
+# 实现记录与当前边界
 
-正确性与可综合性是每个里程碑的硬性门槛。
+本文件记录保留的 RV32IM 乱序核设计。其所有源码已整理到 `verilog/rtl/`，并由
+`verilog/filelist.f` 统一列出。旧的回归脚本、旧测试镜像和旧 testbench 已移除；
+课程框架提供的 `testcases/` 子模块是当前唯一保留的测试输入。
 
-1. 公共类型、RV32IM 解码、执行单元
-2. PRF/空闲位图、RAT（`arch` 基线 + ROB 窗口重放）、ROB、有界保留站
-3. 加载/存储队列（字节精确转发）、ready/valid 存储器接口
-4. 前端队列与 Tournament + BTB/RAS/SARAS 预测器
-5. 单宽度重命名、多 FU 发射、四条完成通道、顺序提交、分支恢复
-6. ISA 边界与资源压力定向汇编测试
-7. 提交跟踪差分测试（ISA 参考与所附 C++ 模拟器）
-8. 缓存集成、预测器保真度、Yosys 综合、时序/面积优化
+## 已实现的微架构
 
-## 当前状态
+1. 公共类型、RV32IM 解码和整数执行单元
+2. PRF 空闲位图、RAT（`arch` 基线加 ROB 窗口重放）、ROB 和有界保留站
+3. 加载/存储队列、字节精确转发和 ready/valid 存储器接口
+4. 前端队列及 Tournament、BTB、RAS、SARAS 预测器
+5. 单宽度重命名、多功能单元发射、四条完成通道、顺序提交和分支恢复
+6. I$/D$，包括脏行写回和 HALT 排空
 
-- 里程碑 1-6 已完成，并有全核正确性与 IPC 回归覆盖
-- 缓存已集成，含脏行写回与 HALT 排空
-- 数据通路使用手写 CLA 加法器系列；预测器为 Tournament
-  （localPHT/globalPHT/selector 各 256x2b + 推测 GHR8、BTB64、RAS8、
-  SARAS16、condSeen512），具备 32 项 fetch checkpoint、16 项 RAS journal、
-  三源 BTB 仲裁（line 与 target 两组）与 squash 恢复
-- BTB 已落到 **56 bit 物理条目**（`{tag[23:0], target[29:0], state[1:0]}`，
-  索引 `PC[7:2]`），具备三源写口仲裁
-- `make area`、`make area-modules` 与 `make area-bpu` 提供标准单元面积报告
-- 三层回归已建立：`make basic`、`make advanced`（18/18）和 `make ipc`；所有
-  x10 比较均为完整 32 bit
-- IPC testbench 已提供动态 mix、互斥 no-issue 分类、DIV/load-store 事件和
-  `+CF_TRACE=1` 的 fetch/execute/commit 控制流 trace
-- memory-RS 拆分经 profile 否决：共享 RS/LQ 分别为 0 个 no-issue cycle，SQ 为
-  74，而 frontend 为 421398；保留现有结构
-- 待办：提交跟踪差分自动化、时序/面积优化
+数据通路使用手写 CLA 加法器。预测器包含 localPHT、globalPHT、selector（各
+256x2 bit）、推测 GHR8、BTB64、RAS8、SARAS16、condSeen512、32 项 fetch
+checkpoint、16 项 RAS journal 和三源 BTB 仲裁。BTB 的物理条目为 56 bit：
+`{tag[23:0], target[29:0], state[1:0]}`，索引为 `PC[7:2]`。
 
-## 已知限制
+## 当前接口状态
 
-- ASAP7 flow 目前只能给出标准单元面积。NLDM timing tables 与可信 SDC/OpenSTA
-  约束尚未接入，因此不报告频率或 `IPC x frequency`。
-- I$ 仍是单 outstanding 的串行 miss 路径；本轮没有改动 I$ 或前端 RTL。
+现有顶层是 `cpu_top`（无缓存的指令/数据 ready-valid 接口）和
+`cpu_cached_top`（128-bit 缓存行接口）。它们使用低有效复位和带外 HALT 指令，
+尚未提供课程框架要求的 `student_top`、AXI4-Lite、MMIO 退出存储或
+`sram_fakeram` 实例。因此，在完成适配前，官方的 `make build`、`make test`、
+`make perf` 和 `make synth` 不能用于本实现。
+
+## 后续工作
+
+1. 添加 AXI4-Lite `student_top` 适配层并转换复位与退出协议。
+2. 将片上缓存存储替换为框架支持的 `sram_fakeram` 接口。
+3. 在官方框架下恢复正确性、IPC、面积和时序验证。

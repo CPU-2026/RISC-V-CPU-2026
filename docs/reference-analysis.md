@@ -1,5 +1,9 @@
 # 参考模拟器分析
 
+> 文档状态：本文记录 `verilog/rtl/` 中原生接口设计与外部参考模拟器的对照。
+> 该设计的 HALT 协议不同于课程框架所需的 AXI4-Lite MMIO 退出协议；接口适配
+> 完成前，请勿将本文视为官方测试流程的说明。
+
 ## 范围
 
 只读参考为 `../RV32IM_Simulator/RISC-V-Simulator-Template`。项目流程不

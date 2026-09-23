@@ -1,11 +1,16 @@
 # 模块级对比：C++ 参考模拟器 ↔ SystemVerilog RTL
 
+> 文档状态：本文描述 `verilog/rtl/` 中保留的原生接口实现及其历史验证环境。
+> 旧 testbench、旧测试镜像和旧运行脚本已移除；当前官方框架的接口约束以
+> `README-EN.md`、`docs/axi4-lite.md` 和 `docs/sram.md` 为准。未添加
+> `student_top` 适配层前，本文不构成官方 `make` 流程的运行说明。
+
 ## 范围与阅读方式
 
 | 代号 | 目录 | 性质 |
 | --- | --- | --- |
 | **REF** | `../RV32IM_Simulator/RISC-V-Simulator-Template` | C++20 周期级 Tomasulo 模型（`Register`/`Wire`/`work()+sync()`） |
-| **RTL** | `CPU-2026/rtl` | 可综合 SystemVerilog RV32IM 乱序核 |
+| **RTL** | `verilog/rtl` | 可综合 SystemVerilog RV32IM 乱序核 |
 
 两侧同源：RTL 的架构参考 REF，`docs/reference-analysis.md` 是 REF→RTL 的转换说明，本文是它的**逐模块展开版**：每个模块给出「职责 / 执行流程 / 调用关系 / 差异点」，最后按设计层、运行逻辑层、实现方式层分类收敛。REF 侧缺陷与 RTL 有意偏离见 §6。
 
@@ -207,7 +212,7 @@ RTL:  predictor ──►frontend(FQ4+IQ4, 取指控制一体)──►decoder �
 
 **REF**（`IMEM.cpp`）：核内模块。16 项请求队列，每项 `{Data[4]（4×32-bit 行）, lineAddr, remainCycle(6b), valid}`；`work()`：squash → 清全表 `valid` 并把 `remainCycle` 归零 + `head=0`；`lineConsumed` → 出队（清 valid 即占用递减，不存计数器）；`fetchValid` → claim（`remainCycle = MEM_LATENCY = 20`）；固定长度扫描递减，到 0 时 `read_word` 取 4 个字。`retValid/retLineAddr/retWord` 是**组合视图**（`remainCycle==0`），经 `LineReturn` 四字总线给 ICache（**不额外加流水级**）。
 
-**RTL**：**没有 IMEM 模块**。`cpu_top` 直接导出 `imem_req_valid/ready/addr` + `imem_rsp_valid/data`（**32-bit 单字**）；`cpu_cached_top` 导出 128-bit 行接口。延迟由 `tb/core/tb_core_ipc.sv` 提供（固定 20 拍，且"每次读延迟都必须是 20 拍否则判失败"）。
+**RTL**：**没有 IMEM 模块**。`cpu_top` 直接导出 `imem_req_valid/ready/addr` + `imem_rsp_valid/data`（**32-bit 单字**）；`cpu_cached_top` 导出 128-bit 行接口。历史 testbench 曾提供固定 20 拍延迟，现已移除。
 
 **差异**：REF 把"主存 + 20 拍延迟 + 多 outstanding 队列"建模在核内（可独立多笔；ICache 缺失时仍能继续排队）；RTL 把它完全移出核，核只暴露握手端口，且 `rv32_frontend` 单 outstanding。**这一条是两侧"取指缺失吞吐"差距的主因之一**，也是 RTL 可综合/可换 SRAM 宏的设计前提。
 
