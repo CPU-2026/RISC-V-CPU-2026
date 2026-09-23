@@ -1,54 +1,49 @@
 module rv32_alu (
-  input  logic [5:0]           op_i,
-  input  logic [31:0]          lhs_i,
-  input  logic [31:0]          rhs_i,
-  input  logic [31:0]          imm_i,
-  input  logic [31:0]          pc_i,
-  input  logic                 use_imm_i,
-  output logic [31:0]          result_o
+  input  rv32_pkg::alu_operation_input_t aluInput,
+  output rv32_pkg::alu_operation_output_t aluOutput
 );
   import rv32_pkg::*;
 
-  logic [31:0] operand_b;
-  logic [31:0] sum_add;
-  logic [31:0] sum_sub;
-  logic [31:0] sum_auipc;
-  logic unused_cout_add, unused_cout_auipc, unused_borrow;
+  logic [31:0] operandBInner;
+  logic [31:0] sumAddInner;
+  logic [31:0] sumSubInner;
+  logic [31:0] sumAuipcInner;
+  logic unusedCoutAddInner, unusedCoutAuipcInner, unusedBorrowInner;
 
-  assign operand_b = use_imm_i ? imm_i : rhs_i;
+  assign operandBInner = aluInput.useImmediate ? aluInput.immediate : aluInput.rightOperand;
 
   rv32_add #(.WIDTH(32)) u_add (
-    .a_i(lhs_i), .b_i(operand_b), .cin_i(1'b0),
-    .sum_o(sum_add), .cout_o(unused_cout_add)
+    .aInput(aluInput.leftOperand), .bInput(operandBInner), .cinInput(1'b0),
+    .sumOutput(sumAddInner), .coutOutput(unusedCoutAddInner)
   );
 
   rv32_sub #(.WIDTH(32)) u_sub (
-    .a_i(lhs_i), .b_i(operand_b),
-    .diff_o(sum_sub), .borrow_o(unused_borrow)
+    .aInput(aluInput.leftOperand), .bInput(operandBInner),
+    .diffOutput(sumSubInner), .borrowOutput(unusedBorrowInner)
   );
 
   rv32_add #(.WIDTH(32)) u_auipc (
-    .a_i(pc_i), .b_i(imm_i), .cin_i(1'b0),
-    .sum_o(sum_auipc), .cout_o(unused_cout_auipc)
+    .aInput(aluInput.programCounter), .bInput(aluInput.immediate), .cinInput(1'b0),
+    .sumOutput(sumAuipcInner), .coutOutput(unusedCoutAuipcInner)
   );
 
   always_comb begin
-    unique case (op_i)
-      OP_ADD:   result_o = sum_add;
-      OP_SUB:   result_o = sum_sub;
-      OP_SLL:   result_o = lhs_i << operand_b[4:0];
-      OP_SLT:   result_o = {31'b0, $signed(lhs_i) < $signed(operand_b)};
-      OP_SLTU:  result_o = {31'b0, lhs_i < operand_b};
-      OP_XOR:   result_o = lhs_i ^ operand_b;
-      OP_SRL:   result_o = lhs_i >> operand_b[4:0];
-      OP_SRA:   result_o = $unsigned($signed(lhs_i) >>> operand_b[4:0]);
-      OP_OR:    result_o = lhs_i | operand_b;
-      OP_AND:   result_o = lhs_i & operand_b;
-      OP_LUI:   result_o = imm_i;
-      OP_AUIPC: result_o = sum_auipc;
-      OP_JAL:   result_o = sum_auipc;
-      OP_JALR:  result_o = sum_add & 32'hffff_fffe;
-      default:  result_o = 32'b0;
+    unique case (aluInput.operation)
+      OP_ADD:   aluOutput.value = sumAddInner;
+      OP_SUB:   aluOutput.value = sumSubInner;
+      OP_SLL:   aluOutput.value = aluInput.leftOperand << operandBInner[4:0];
+      OP_SLT:   aluOutput.value = {31'b0, $signed(aluInput.leftOperand) < $signed(operandBInner)};
+      OP_SLTU:  aluOutput.value = {31'b0, aluInput.leftOperand < operandBInner};
+      OP_XOR:   aluOutput.value = aluInput.leftOperand ^ operandBInner;
+      OP_SRL:   aluOutput.value = aluInput.leftOperand >> operandBInner[4:0];
+      OP_SRA:   aluOutput.value = $unsigned($signed(aluInput.leftOperand) >>> operandBInner[4:0]);
+      OP_OR:    aluOutput.value = aluInput.leftOperand | operandBInner;
+      OP_AND:   aluOutput.value = aluInput.leftOperand & operandBInner;
+      OP_LUI:   aluOutput.value = aluInput.immediate;
+      OP_AUIPC: aluOutput.value = sumAuipcInner;
+      OP_JAL:   aluOutput.value = sumAuipcInner;
+      OP_JALR:  aluOutput.value = sumAddInner & 32'hffff_fffe;
+      default:  aluOutput.value = 32'b0;
     endcase
   end
 endmodule

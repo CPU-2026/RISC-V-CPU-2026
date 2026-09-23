@@ -3,39 +3,25 @@ module rv32_frontend #(
   parameter int unsigned IQ_DEPTH = 4,
   parameter logic [31:0] RESET_PC = 32'b0
 ) (
-  input  logic                   clk_i,
-  input  logic                   rst_ni,
+  input  logic                   clkInput,
+  input  logic                   rstNInput,
 
-  output logic [31:0]            predictor_pc_o,
-  input  logic [31:0]            predicted_next_pc_i,
-  input  rv32_pkg::bpu_ckpt_id_t predicted_ckpt_id_i,
-  output logic                   predictor_accept_o,
+  output rv32_pkg::fetch_query_output_t predictorQueryOutput,
+  input  rv32_pkg::prediction_output_t predictionInput,
 
-  output logic                   imem_req_valid_o,
-  input  logic                   imem_req_ready_i,
-  output logic [31:0]            imem_req_addr_o,
-  input  logic                   imem_rsp_valid_i,
-  input  logic [31:0]            imem_rsp_data_i,
+  output rv32_pkg::instruction_memory_request_output_t imemRequestOutput,
+  input  logic                   imemReqReadyInput,
+  input  rv32_pkg::instruction_memory_response_input_t imemResponseInput,
 
-  input  logic                   redirect_valid_i,
-  input  logic [31:0]            redirect_pc_i,
+  input  rv32_pkg::redirect_input_t redirectInput,
 
-  output logic                   iq_valid_o,
-  input  logic                   iq_ready_i,
-  output logic [31:0]            iq_pc_o,
-  output logic [31:0]            iq_instr_o,
-  output logic [31:0]            iq_predicted_pc_o,
-  output rv32_pkg::bpu_ckpt_id_t iq_ckpt_id_o,
+  output rv32_pkg::fetch_queue_output_t instructionOutput,
+  input  logic                   iqReadyInput,
 
-  output logic                   fetch_info_valid_o,
-  output logic                   fetch_info_call_o,
-  output logic                   fetch_info_return_o,
-  output logic                   fetch_info_jal_target_valid_o,
-  output logic [31:0]            fetch_info_pc_o,
-  output logic [31:0]            fetch_info_jal_target_o,
+  output rv32_pkg::predictor_fetch_info_t fetchInfoOutput,
 
-  output logic [$clog2(FQ_DEPTH+1)-1:0] fq_count_o,
-  output logic [$clog2(IQ_DEPTH+1)-1:0] iq_count_o
+  output logic [$clog2(FQ_DEPTH+1)-1:0] fqCountOutput,
+  output logic [$clog2(IQ_DEPTH+1)-1:0] iqCountOutput
 );
   import rv32_pkg::*;
 
@@ -44,245 +30,245 @@ module rv32_frontend #(
   localparam int unsigned FQ_COUNT_W = $clog2(FQ_DEPTH+1);
   localparam int unsigned IQ_COUNT_W = $clog2(IQ_DEPTH+1);
 
-  logic [31:0] pc_q;
-  logic request_pending_q;
-  logic request_drop_q;
-  logic [31:0] request_pc_q;
-  logic [31:0] request_predicted_pc_q;
-  bpu_ckpt_id_t request_ckpt_id_q;
-  logic stop_fetch_q;
+  logic [31:0] pcInner;
+  logic requestPendingInner;
+  logic requestDropInner;
+  logic [31:0] requestPcInner;
+  logic [31:0] requestPredictedPcInner;
+  bpu_ckpt_id_t requestCkptIdInner;
+  logic stopFetchInner;
 
-  logic [31:0] fq_pc_q [0:FQ_DEPTH-1];
-  logic [31:0] fq_instr_q [0:FQ_DEPTH-1];
-  logic [31:0] fq_predicted_pc_q [0:FQ_DEPTH-1];
-  bpu_ckpt_id_t fq_ckpt_id_q [0:FQ_DEPTH-1];
-  logic [FQ_PTR_W-1:0] fq_head_q, fq_tail_q;
-  logic [$clog2(FQ_DEPTH+1)-1:0] fq_count_q;
+  logic [31:0] fqPcInner [FQ_DEPTH];
+  logic [31:0] fqInstrInner [FQ_DEPTH];
+  logic [31:0] fqPredictedPcInner [FQ_DEPTH];
+  bpu_ckpt_id_t fqCkptIdInner [FQ_DEPTH];
+  logic [FQ_PTR_W-1:0] fqHeadInner, fqTailInner;
+  logic [$clog2(FQ_DEPTH+1)-1:0] fqCountInner;
 
-  logic [31:0] iq_pc_q [0:IQ_DEPTH-1];
-  logic [31:0] iq_instr_q [0:IQ_DEPTH-1];
-  logic [31:0] iq_predicted_pc_q [0:IQ_DEPTH-1];
-  bpu_ckpt_id_t iq_ckpt_id_q [0:IQ_DEPTH-1];
-  logic [IQ_PTR_W-1:0] iq_head_q, iq_tail_q;
-  logic [$clog2(IQ_DEPTH+1)-1:0] iq_count_q;
+  logic [31:0] iqPcInner [IQ_DEPTH];
+  logic [31:0] iqInstrInner [IQ_DEPTH];
+  logic [31:0] iqPredictedPcInner [IQ_DEPTH];
+  bpu_ckpt_id_t iqCkptIdInner [IQ_DEPTH];
+  logic [IQ_PTR_W-1:0] iqHeadInner, iqTailInner;
+  logic [$clog2(IQ_DEPTH+1)-1:0] iqCountInner;
 
-  logic request_fire;
-  logic response_accept;
-  logic halt_response;
-  logic fire_space_ok;
-  logic fq_push;
-  logic fq_pop;
-  logic iq_push;
-  logic iq_pop;
-  integer i;
+  logic requestFireInner;
+  logic responseAcceptInner;
+  logic haltResponseInner;
+  logic fireSpaceOkInner;
+  logic fqPushInner;
+  logic fqPopInner;
+  logic iqPushInner;
+  logic iqPopInner;
+  integer iInner;
 
-  logic [FQ_PTR_W-1:0] fq_tail_next, fq_head_next;
-  logic [IQ_PTR_W-1:0] iq_tail_next, iq_head_next;
-  logic [FQ_COUNT_W-1:0] fq_count_up, fq_count_down;
-  logic [IQ_COUNT_W-1:0] iq_count_up, iq_count_down;
-  logic unused_cout_fq_tail, unused_cout_fq_head;
-  logic unused_cout_iq_tail, unused_cout_iq_head;
-  logic unused_cout_fq_up, unused_borrow_fq_down;
-  logic unused_cout_iq_up, unused_borrow_iq_down;
+  logic [FQ_PTR_W-1:0] fqTailNext, fqHeadNext;
+  logic [IQ_PTR_W-1:0] iqTailNext, iqHeadNext;
+  logic [FQ_COUNT_W-1:0] fqCountUpInner, fqCountDownInner;
+  logic [IQ_COUNT_W-1:0] iqCountUpInner, iqCountDownInner;
+  logic unusedCoutFqTailInner, unusedCoutFqHeadInner;
+  logic unusedCoutIqTailInner, unusedCoutIqHeadInner;
+  logic unusedCoutFqUpInner, unusedBorrowFqDownInner;
+  logic unusedCoutIqUpInner, unusedBorrowIqDownInner;
 
-  logic last_fq_push_q;
-  logic [31:0] last_fq_instr_q, last_fq_pc_q;
-  logic [6:0] fetch_opcode;
-  logic [2:0] fetch_funct3;
-  logic [4:0] fetch_rd, fetch_rs1;
-  logic fetch_rd_link, fetch_rs1_link;
+  logic lastFqPushInner;
+  logic [31:0] lastFqInstrInner, lastFqPcInner;
+  logic [6:0] fetchOpcodeInner;
+  logic [2:0] fetchFunct3Inner;
+  logic [4:0] fetchRdInner, fetchRs1Inner;
+  logic fetchRdLinkInner, fetchRs1LinkInner;
 
   rv32_add #(.WIDTH(FQ_PTR_W)) u_fq_tail_next (
-    .a_i(fq_tail_q), .b_i(FQ_PTR_W'(1)), .cin_i(1'b0),
-    .sum_o(fq_tail_next), .cout_o(unused_cout_fq_tail)
+    .aInput(fqTailInner), .bInput(FQ_PTR_W'(1)), .cinInput(1'b0),
+    .sumOutput(fqTailNext), .coutOutput(unusedCoutFqTailInner)
   );
 
   rv32_add #(.WIDTH(FQ_PTR_W)) u_fq_head_next (
-    .a_i(fq_head_q), .b_i(FQ_PTR_W'(1)), .cin_i(1'b0),
-    .sum_o(fq_head_next), .cout_o(unused_cout_fq_head)
+    .aInput(fqHeadInner), .bInput(FQ_PTR_W'(1)), .cinInput(1'b0),
+    .sumOutput(fqHeadNext), .coutOutput(unusedCoutFqHeadInner)
   );
 
   rv32_add #(.WIDTH(IQ_PTR_W)) u_iq_tail_next (
-    .a_i(iq_tail_q), .b_i(IQ_PTR_W'(1)), .cin_i(1'b0),
-    .sum_o(iq_tail_next), .cout_o(unused_cout_iq_tail)
+    .aInput(iqTailInner), .bInput(IQ_PTR_W'(1)), .cinInput(1'b0),
+    .sumOutput(iqTailNext), .coutOutput(unusedCoutIqTailInner)
   );
 
   rv32_add #(.WIDTH(IQ_PTR_W)) u_iq_head_next (
-    .a_i(iq_head_q), .b_i(IQ_PTR_W'(1)), .cin_i(1'b0),
-    .sum_o(iq_head_next), .cout_o(unused_cout_iq_head)
+    .aInput(iqHeadInner), .bInput(IQ_PTR_W'(1)), .cinInput(1'b0),
+    .sumOutput(iqHeadNext), .coutOutput(unusedCoutIqHeadInner)
   );
 
   rv32_add #(.WIDTH(FQ_COUNT_W)) u_fq_count_up (
-    .a_i(fq_count_q), .b_i(FQ_COUNT_W'(1)), .cin_i(1'b0),
-    .sum_o(fq_count_up), .cout_o(unused_cout_fq_up)
+    .aInput(fqCountInner), .bInput(FQ_COUNT_W'(1)), .cinInput(1'b0),
+    .sumOutput(fqCountUpInner), .coutOutput(unusedCoutFqUpInner)
   );
 
   rv32_sub #(.WIDTH(FQ_COUNT_W)) u_fq_count_down (
-    .a_i(fq_count_q), .b_i(FQ_COUNT_W'(1)),
-    .diff_o(fq_count_down), .borrow_o(unused_borrow_fq_down)
+    .aInput(fqCountInner), .bInput(FQ_COUNT_W'(1)),
+    .diffOutput(fqCountDownInner), .borrowOutput(unusedBorrowFqDownInner)
   );
 
   rv32_add #(.WIDTH(IQ_COUNT_W)) u_iq_count_up (
-    .a_i(iq_count_q), .b_i(IQ_COUNT_W'(1)), .cin_i(1'b0),
-    .sum_o(iq_count_up), .cout_o(unused_cout_iq_up)
+    .aInput(iqCountInner), .bInput(IQ_COUNT_W'(1)), .cinInput(1'b0),
+    .sumOutput(iqCountUpInner), .coutOutput(unusedCoutIqUpInner)
   );
 
   rv32_sub #(.WIDTH(IQ_COUNT_W)) u_iq_count_down (
-    .a_i(iq_count_q), .b_i(IQ_COUNT_W'(1)),
-    .diff_o(iq_count_down), .borrow_o(unused_borrow_iq_down)
+    .aInput(iqCountInner), .bInput(IQ_COUNT_W'(1)),
+    .diffOutput(iqCountDownInner), .borrowOutput(unusedBorrowIqDownInner)
   );
 
   always_comb begin
-    predictor_pc_o = pc_q;
-    response_accept = imem_rsp_valid_i && request_pending_q;
-    halt_response = response_accept && (imem_rsp_data_i == HALT_INSN);
-    fire_space_ok = response_accept
-                    ? (fq_count_q <= $clog2(FQ_DEPTH+1)'(FQ_DEPTH - 2))
-                    : (fq_count_q != $clog2(FQ_DEPTH+1)'(FQ_DEPTH));
-    imem_req_valid_o = (response_accept || !request_pending_q) &&
-                       !halt_response && fire_space_ok &&
-                       !stop_fetch_q && !redirect_valid_i;
-    imem_req_addr_o = pc_q;
-    request_fire = imem_req_valid_o && imem_req_ready_i;
-    predictor_accept_o = request_fire;
-    fq_push = response_accept && !request_drop_q && !redirect_valid_i;
-    fq_pop = (fq_count_q != '0) &&
-             (iq_count_q != $clog2(IQ_DEPTH+1)'(IQ_DEPTH)) &&
-             !redirect_valid_i;
-    iq_push = fq_pop;
-    fq_count_o = fq_count_q;
-    iq_count_o = iq_count_q;
+    predictorQueryOutput.programCounter = pcInner;
+    responseAcceptInner = imemResponseInput.valid && requestPendingInner;
+    haltResponseInner = responseAcceptInner && (imemResponseInput.instruction == HALT_INSN);
+    fireSpaceOkInner = responseAcceptInner
+                    ? (fqCountInner <= $clog2(FQ_DEPTH+1)'(FQ_DEPTH - 2))
+                    : (fqCountInner != $clog2(FQ_DEPTH+1)'(FQ_DEPTH));
+    imemRequestOutput.valid = (responseAcceptInner || !requestPendingInner) &&
+                       !haltResponseInner && fireSpaceOkInner &&
+                       !stopFetchInner && !redirectInput.valid;
+    imemRequestOutput.address = pcInner;
+    requestFireInner = imemRequestOutput.valid && imemReqReadyInput;
+    predictorQueryOutput.accepted = requestFireInner;
+    fqPushInner = responseAcceptInner && !requestDropInner && !redirectInput.valid;
+    fqPopInner = (fqCountInner != '0) &&
+             (iqCountInner != $clog2(IQ_DEPTH+1)'(IQ_DEPTH)) &&
+             !redirectInput.valid;
+    iqPushInner = fqPopInner;
+    fqCountOutput = fqCountInner;
+    iqCountOutput = iqCountInner;
   end
 
-  assign iq_valid_o = (iq_count_q != '0) && !redirect_valid_i;
-  assign iq_pop = iq_valid_o && iq_ready_i;
-  assign iq_pc_o = iq_pc_q[iq_head_q];
-  assign iq_instr_o = iq_instr_q[iq_head_q];
-  assign iq_predicted_pc_o = iq_predicted_pc_q[iq_head_q];
-  assign iq_ckpt_id_o = iq_ckpt_id_q[iq_head_q];
+  assign instructionOutput.valid = (iqCountInner != '0) && !redirectInput.valid;
+  assign iqPopInner = instructionOutput.valid && iqReadyInput;
+  assign instructionOutput.payload.programCounter = iqPcInner[iqHeadInner];
+  assign instructionOutput.payload.instruction = iqInstrInner[iqHeadInner];
+  assign instructionOutput.payload.predictedNextProgramCounter = iqPredictedPcInner[iqHeadInner];
+  assign instructionOutput.payload.predictorCheckpointId = iqCkptIdInner[iqHeadInner];
 
   always_comb begin
-    fetch_opcode = last_fq_instr_q[6:0];
-    fetch_funct3 = last_fq_instr_q[14:12];
-    fetch_rd = last_fq_instr_q[11:7];
-    fetch_rs1 = last_fq_instr_q[19:15];
-    fetch_rd_link = (fetch_rd == 5'd1) || (fetch_rd == 5'd5);
-    fetch_rs1_link = (fetch_rs1 == 5'd1) || (fetch_rs1 == 5'd5);
+    fetchOpcodeInner = lastFqInstrInner[6:0];
+    fetchFunct3Inner = lastFqInstrInner[14:12];
+    fetchRdInner = lastFqInstrInner[11:7];
+    fetchRs1Inner = lastFqInstrInner[19:15];
+    fetchRdLinkInner = (fetchRdInner == 5'd1) || (fetchRdInner == 5'd5);
+    fetchRs1LinkInner = (fetchRs1Inner == 5'd1) || (fetchRs1Inner == 5'd5);
 
-    fetch_info_valid_o = last_fq_push_q &&
-                         ((fetch_opcode == OPCODE_JAL) ||
-                          ((fetch_opcode == OPCODE_JALR) &&
-                           (fetch_funct3 == 3'b000)));
-    fetch_info_call_o = fetch_info_valid_o && fetch_rd_link;
-    fetch_info_return_o = fetch_info_valid_o &&
-                           (fetch_opcode == OPCODE_JALR) &&
-                           fetch_rs1_link && !fetch_rd_link;
-    fetch_info_jal_target_valid_o = fetch_info_valid_o &&
-                                    (fetch_opcode == OPCODE_JAL);
-    fetch_info_pc_o = last_fq_pc_q;
-    fetch_info_jal_target_o = last_fq_pc_q +
-                              {{11{last_fq_instr_q[31]}}, last_fq_instr_q[31],
-                               last_fq_instr_q[19:12], last_fq_instr_q[20],
-                               last_fq_instr_q[30:21], 1'b0};
+    fetchInfoOutput.valid = lastFqPushInner &&
+                         ((fetchOpcodeInner == OPCODE_JAL) ||
+                          ((fetchOpcodeInner == OPCODE_JALR) &&
+                           (fetchFunct3Inner == 3'b000)));
+    fetchInfoOutput.isCall = fetchInfoOutput.valid && fetchRdLinkInner;
+    fetchInfoOutput.isReturn = fetchInfoOutput.valid &&
+                           (fetchOpcodeInner == OPCODE_JALR) &&
+                           fetchRs1LinkInner && !fetchRdLinkInner;
+    fetchInfoOutput.jalTargetValid = fetchInfoOutput.valid &&
+                                    (fetchOpcodeInner == OPCODE_JAL);
+    fetchInfoOutput.programCounter = lastFqPcInner;
+    fetchInfoOutput.jalTarget = lastFqPcInner +
+                              {{11{lastFqInstrInner[31]}}, lastFqInstrInner[31],
+                               lastFqInstrInner[19:12], lastFqInstrInner[20],
+                               lastFqInstrInner[30:21], 1'b0};
   end
 
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      pc_q <= RESET_PC;
-      request_pending_q <= 1'b0;
-      request_drop_q <= 1'b0;
-      request_pc_q <= '0;
-      request_predicted_pc_q <= '0;
-      request_ckpt_id_q <= '0;
-      stop_fetch_q <= 1'b0;
-      last_fq_push_q <= 1'b0;
-      last_fq_instr_q <= '0;
-      last_fq_pc_q <= '0;
-      fq_head_q <= '0;
-      fq_tail_q <= '0;
-      fq_count_q <= '0;
-      iq_head_q <= '0;
-      iq_tail_q <= '0;
-      iq_count_q <= '0;
-      for (i = 0; i < FQ_DEPTH; i = i + 1) begin
-        fq_pc_q[i] <= '0;
-        fq_instr_q[i] <= '0;
-        fq_predicted_pc_q[i] <= '0;
-        fq_ckpt_id_q[i] <= '0;
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) begin
+      pcInner <= RESET_PC;
+      requestPendingInner <= 1'b0;
+      requestDropInner <= 1'b0;
+      requestPcInner <= '0;
+      requestPredictedPcInner <= '0;
+      requestCkptIdInner <= '0;
+      stopFetchInner <= 1'b0;
+      lastFqPushInner <= 1'b0;
+      lastFqInstrInner <= '0;
+      lastFqPcInner <= '0;
+      fqHeadInner <= '0;
+      fqTailInner <= '0;
+      fqCountInner <= '0;
+      iqHeadInner <= '0;
+      iqTailInner <= '0;
+      iqCountInner <= '0;
+      for (iInner = 0; iInner < FQ_DEPTH; iInner = iInner + 1) begin
+        fqPcInner[iInner] <= '0;
+        fqInstrInner[iInner] <= '0;
+        fqPredictedPcInner[iInner] <= '0;
+        fqCkptIdInner[iInner] <= '0;
       end
-      for (i = 0; i < IQ_DEPTH; i = i + 1) begin
-        iq_pc_q[i] <= '0;
-        iq_instr_q[i] <= '0;
-        iq_predicted_pc_q[i] <= '0;
-        iq_ckpt_id_q[i] <= '0;
+      for (iInner = 0; iInner < IQ_DEPTH; iInner = iInner + 1) begin
+        iqPcInner[iInner] <= '0;
+        iqInstrInner[iInner] <= '0;
+        iqPredictedPcInner[iInner] <= '0;
+        iqCkptIdInner[iInner] <= '0;
       end
-    end else if (redirect_valid_i) begin
-      pc_q <= redirect_pc_i;
-      fq_head_q <= '0;
-      fq_tail_q <= '0;
-      fq_count_q <= '0;
-      iq_head_q <= '0;
-      iq_tail_q <= '0;
-      iq_count_q <= '0;
-      stop_fetch_q <= 1'b0;
-      last_fq_push_q <= 1'b0;
-      if (response_accept) begin
-        request_pending_q <= 1'b0;
-        request_drop_q <= 1'b0;
-      end else if (request_pending_q) begin
-        request_drop_q <= 1'b1;
+    end else if (redirectInput.valid) begin
+      pcInner <= redirectInput.programCounter;
+      fqHeadInner <= '0;
+      fqTailInner <= '0;
+      fqCountInner <= '0;
+      iqHeadInner <= '0;
+      iqTailInner <= '0;
+      iqCountInner <= '0;
+      stopFetchInner <= 1'b0;
+      lastFqPushInner <= 1'b0;
+      if (responseAcceptInner) begin
+        requestPendingInner <= 1'b0;
+        requestDropInner <= 1'b0;
+      end else if (requestPendingInner) begin
+        requestDropInner <= 1'b1;
       end
     end else begin
-      if (request_fire) begin
-        request_pending_q <= 1'b1;
-        request_drop_q <= 1'b0;
-        request_pc_q <= pc_q;
-        request_predicted_pc_q <= predicted_next_pc_i;
-        request_ckpt_id_q <= predicted_ckpt_id_i;
-        pc_q <= predicted_next_pc_i;
+      if (requestFireInner) begin
+        requestPendingInner <= 1'b1;
+        requestDropInner <= 1'b0;
+        requestPcInner <= pcInner;
+        requestPredictedPcInner <= predictionInput.nextProgramCounter;
+        requestCkptIdInner <= predictionInput.checkpointId;
+        pcInner <= predictionInput.nextProgramCounter;
       end
 
-      if (response_accept) begin
-        if (!request_fire)
-          request_pending_q <= 1'b0;
-        request_drop_q <= 1'b0;
-        if (!request_drop_q) begin
-          fq_pc_q[fq_tail_q] <= request_pc_q;
-          fq_instr_q[fq_tail_q] <= imem_rsp_data_i;
-          fq_predicted_pc_q[fq_tail_q] <= request_predicted_pc_q;
-          fq_ckpt_id_q[fq_tail_q] <= request_ckpt_id_q;
-          fq_tail_q <= fq_tail_next;
-          if (imem_rsp_data_i == HALT_INSN)
-            stop_fetch_q <= 1'b1;
+      if (responseAcceptInner) begin
+        if (!requestFireInner)
+          requestPendingInner <= 1'b0;
+        requestDropInner <= 1'b0;
+        if (!requestDropInner) begin
+          fqPcInner[fqTailInner] <= requestPcInner;
+          fqInstrInner[fqTailInner] <= imemResponseInput.instruction;
+          fqPredictedPcInner[fqTailInner] <= requestPredictedPcInner;
+          fqCkptIdInner[fqTailInner] <= requestCkptIdInner;
+          fqTailInner <= fqTailNext;
+          if (imemResponseInput.instruction == HALT_INSN)
+            stopFetchInner <= 1'b1;
         end
       end
 
-      if (fq_pop) begin
-        iq_pc_q[iq_tail_q] <= fq_pc_q[fq_head_q];
-        iq_instr_q[iq_tail_q] <= fq_instr_q[fq_head_q];
-        iq_predicted_pc_q[iq_tail_q] <= fq_predicted_pc_q[fq_head_q];
-        iq_ckpt_id_q[iq_tail_q] <= fq_ckpt_id_q[fq_head_q];
-        fq_head_q <= fq_head_next;
-        iq_tail_q <= iq_tail_next;
+      if (fqPopInner) begin
+        iqPcInner[iqTailInner] <= fqPcInner[fqHeadInner];
+        iqInstrInner[iqTailInner] <= fqInstrInner[fqHeadInner];
+        iqPredictedPcInner[iqTailInner] <= fqPredictedPcInner[fqHeadInner];
+        iqCkptIdInner[iqTailInner] <= fqCkptIdInner[fqHeadInner];
+        fqHeadInner <= fqHeadNext;
+        iqTailInner <= iqTailNext;
       end
-      if (iq_pop)
-        iq_head_q <= iq_head_next;
+      if (iqPopInner)
+        iqHeadInner <= iqHeadNext;
 
-      last_fq_push_q <= fq_push;
-      if (fq_push) begin
-        last_fq_instr_q <= imem_rsp_data_i;
-        last_fq_pc_q <= request_pc_q;
+      lastFqPushInner <= fqPushInner;
+      if (fqPushInner) begin
+        lastFqInstrInner <= imemResponseInput.instruction;
+        lastFqPcInner <= requestPcInner;
       end
 
-      unique case ({fq_push, fq_pop})
-        2'b10: fq_count_q <= fq_count_up;
-        2'b01: fq_count_q <= fq_count_down;
-        default: fq_count_q <= fq_count_q;
+      unique case ({fqPushInner, fqPopInner})
+        2'b10: fqCountInner <= fqCountUpInner;
+        2'b01: fqCountInner <= fqCountDownInner;
+        default: fqCountInner <= fqCountInner;
       endcase
-      unique case ({iq_push, iq_pop})
-        2'b10: iq_count_q <= iq_count_up;
-        2'b01: iq_count_q <= iq_count_down;
-        default: iq_count_q <= iq_count_q;
+      unique case ({iqPushInner, iqPopInner})
+        2'b10: iqCountInner <= iqCountUpInner;
+        2'b01: iqCountInner <= iqCountDownInner;
+        default: iqCountInner <= iqCountInner;
       endcase
     end
   end

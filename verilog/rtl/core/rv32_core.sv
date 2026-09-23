@@ -2,546 +2,791 @@ module rv32_core #(
   parameter logic [31:0] RESET_PC = 32'b0,
   parameter bit DIV_USE_SRT4 = 1'b0
 ) (
-  input  logic             clk_i,
-  input  logic             rst_ni,
+  input  logic             clkInput,
+  input  logic             rstNInput,
 
-  output logic             imem_req_valid_o,
-  input  logic             imem_req_ready_i,
-  output logic [31:0]      imem_req_addr_o,
-  input  logic             imem_rsp_valid_i,
-  input  logic [31:0]      imem_rsp_data_i,
+  output logic             imemReqValidOutput,
+  input  logic             imemReqReadyInput,
+  output logic [31:0]      imemReqAddrOutput,
+  input  logic             imemRspValidInput,
+  input  logic [31:0]      imemRspDataInput,
 
-  output logic             dmem_req_valid_o,
-  input  logic             dmem_req_ready_i,
-  output logic             dmem_req_write_o,
-  output logic [31:0]      dmem_req_addr_o,
-  output logic [31:0]      dmem_req_wdata_o,
-  output logic [3:0]       dmem_req_wstrb_o,
-  output logic [1:0]       dmem_req_size_o,
-  input  logic             dmem_rsp_valid_i,
-  input  logic [31:0]      dmem_rsp_rdata_i,
+  output logic             dmemReqValidOutput,
+  input  logic             dmemReqReadyInput,
+  output logic             dmemReqWriteOutput,
+  output logic [31:0]      dmemReqAddrOutput,
+  output logic [31:0]      dmemReqWdataOutput,
+  output logic [3:0]       dmemReqWstrbOutput,
+  output logic [1:0]       dmemReqSizeOutput,
+  input  logic             dmemRspValidInput,
+  input  logic [31:0]      dmemRspRdataInput,
 
-  output logic             commit_valid_o,
-  output logic [31:0]      commit_pc_o,
-  output logic [31:0]      commit_instr_o,
-  output logic             commit_rd_valid_o,
-  output logic [4:0]       commit_rd_o,
-  output logic [31:0]      commit_rd_value_o,
-  output logic             commit_mem_valid_o,
-  output logic [31:0]      commit_mem_addr_o,
-  output logic [31:0]      commit_mem_data_o,
-  output logic [3:0]       commit_mem_wstrb_o,
+  output logic             commitValidOutput,
+  output logic [31:0]      commitPcOutput,
+  output logic [31:0]      commitInstrOutput,
+  output logic             commitRdValidOutput,
+  output logic [4:0]       commitRdOutput,
+  output logic [31:0]      commitRdValueOutput,
+  output logic             commitMemValidOutput,
+  output logic [31:0]      commitMemAddrOutput,
+  output logic [31:0]      commitMemDataOutput,
+  output logic [3:0]       commitMemWstrbOutput,
 
-  output logic             halted_o,
-  output logic             trap_o
+  output logic             haltedOutput,
+  output logic             trapOutput
 );
   import rv32_pkg::*;
 
-  logic [31:0] predictor_pc, predicted_next_pc;
-  logic predicted_taken;
-  bpu_ckpt_id_t predicted_ckpt_id, iq_predictor_ckpt_id;
-  logic predictor_fetch_accept;
-  logic fetch_info_valid, fetch_info_call, fetch_info_return;
-  logic fetch_info_jal_target_valid;
-  logic [31:0] fetch_info_pc, fetch_info_jal_target;
-  logic frontend_iq_valid, frontend_iq_ready;
-  logic [31:0] iq_pc, iq_instr, iq_predicted_pc;
-  logic [2:0] fq_count, iq_count;
-  decoded_uop_t decoded;
+  logic [31:0] predictorPcInner;
+  bpu_ckpt_id_t iqPredictorCkptIdInner;
+  logic predictorFetchAcceptInner;
+  rv32_pkg::fetch_query_output_t predictorQueryOutputInner;
+  rv32_pkg::instruction_memory_request_output_t frontendImemRequestOutputInner;
+  rv32_pkg::instruction_memory_response_input_t frontendImemResponseInputInner;
+  rv32_pkg::redirect_input_t frontendRedirectInputInner;
+  rv32_pkg::fetch_queue_output_t frontendInstructionOutputInner;
+  rv32_pkg::predictor_fetch_info_t fetchInfoOutputInner;
+  logic frontendIqValidInner, frontendIqReadyInner;
+  logic [31:0] iqPcInner, iqInstrInner, iqPredictedPcInner;
+  logic [2:0] fqCountInner, iqCountInner;
+  decode_context_t decodeContextInner;
+  predictor_fetch_info_t predictorFetchInfoInner;
+  branch_result_input_t predictorBranchInputInner;
+  jump_result_input_t predictorJumpInputInner;
+  rv32_pkg::flush_candidate_input_t branchFlushInputInner;
+  rv32_pkg::flush_candidate_input_t jumpFlushInputInner;
+  squash_input_t predictorSquashInputInner;
+  rob_predictor_input_t predictorRobInputInner;
+  prediction_output_t predictorOutputInner;
+  decoded_uop_t decodedInner;
 
-  phy_tag_t rat_rs1_phy, rat_rs2_phy, rat_old_phy, rat_debug_phy;
-  phy_tag_t prf_alloc_phy;
-  logic prf_alloc_ready;
-  logic prf_src1_ready, prf_src2_ready, prf_commit_ready;
-  logic [31:0] prf_src1_value, prf_src2_value, prf_commit_value;
-  logic [PRF_ENTRIES-1:0] prf_ready_vector;
-  logic [5:0] prf_free_count;
+  phy_tag_t ratRs1PhyInner, ratRs2PhyInner, ratOldPhyInner, ratDebugPhyInner;
+  rv32_pkg::rat_read_input_t ratReadInputInner;
+  rv32_pkg::rat_read_output_t ratReadOutputInner;
+  rv32_pkg::rat_rename_input_t ratRenameInputInner;
+  rv32_pkg::rat_rename_output_t ratRenameOutputInner;
+  rv32_pkg::rat_restore_input_t ratRestoreInputInner;
+  rv32_pkg::rat_commit_input_t ratCommitInputInner;
+  phy_tag_t prfAllocPhyInner;
+  logic prfAllocReadyInner;
+  logic prfSrc1ReadyInner, prfSrc2ReadyInner, prfCommitReadyInner;
+  logic [31:0] prfSrc1ValueInner, prfSrc2ValueInner, prfCommitValueInner;
+  logic [PRF_ENTRIES-1:0] prfReadyVectorInner;
+  logic [5:0] prfFreeCountInner;
+  rv32_pkg::cdb_result_t [3:0] writebackInputInner;
+  rv32_pkg::prf_read_input_t [2:0] prfReadInputInner;
+  rv32_pkg::prf_read_output_t [2:0] prfReadOutputInner;
 
-  rob_tag_t rob_alloc_tag, rob_head_tag;
-  wire rob_tag_t rob_replay_tag [0:ROB_ENTRIES-1];
-  wire [4:0] rob_replay_arch_rd [0:ROB_ENTRIES-1];
-  wire phy_tag_t rob_replay_new_phy [0:ROB_ENTRIES-1];
-  logic rob_alloc_ready;
-  logic rob_commit_valid, rob_commit_ready, rob_commit_fire;
-  rob_tag_t rob_commit_tag;
-  logic [31:0] rob_commit_pc, rob_commit_instr;
-  logic rob_commit_writes;
-  logic [4:0] rob_commit_rd;
-  phy_tag_t rob_commit_new_phy, rob_commit_old_phy;
-  logic rob_commit_store;
-  logic [2:0] rob_commit_sq_index;
-  logic rob_commit_halt, rob_commit_exception;
-  logic rob_empty, rob_full;
-  logic [4:0] rob_count;
+  rob_tag_t robAllocTagInner, robHeadTagInner;
+  wire rv32_pkg::rob_replay_entry_t [ROB_ENTRIES-1:0] robReplayOutputInner;
+  rv32_pkg::rob_allocation_input_t robAllocInputInner;
+  rv32_pkg::rob_completion_t [5:0] robCompletionInputInner;
+  rv32_pkg::rob_lookup_input_t [4:0] robLookupInputInner;
+  rv32_pkg::rob_lookup_output_t [4:0] robLookupOutputInner;
+  rv32_pkg::rob_commit_output_t robCommitOutputInner;
+  rv32_pkg::rob_status_output_t robStatusOutputInner;
+  logic robAllocReadyInner;
+  logic robCommitValidInner, robCommitReadyInner, robCommitFireInner;
+  logic robCommitFireOutputInner;
+  rob_tag_t robCommitTagInner;
+  logic [31:0] robCommitPcInner, robCommitInstrInner;
+  logic robCommitWritesInner;
+  logic [4:0] robCommitRdInner;
+  phy_tag_t robCommitNewPhyInner, robCommitOldPhyInner;
+  logic robCommitStoreInner;
+  logic robCommitIsCallInner, robCommitIsRetInner;
+  logic [2:0] robCommitSqIndexInner;
+  logic robCommitHaltInner, robCommitExceptionInner;
+  logic robEmptyInner, robFullInner;
+  logic [4:0] robCountInner;
 
-  logic issue_fire, issue_resources_ready;
-  logic target_rs_ready;
-  logic issue_is_jump, issue_is_call, issue_is_return;
-  logic issue_src1_ready, issue_src2_ready;
-  logic [31:0] issue_src1_value, issue_src2_value;
-  phy_tag_t issue_dest_phy;
+  logic issueFireInner, issueResourcesReadyInner;
+  logic targetRsReadyInner;
+  logic issueIsJumpInner, issueIsCallInner, issueIsReturnInner;
+  logic issueSrc1ReadyInner, issueSrc2ReadyInner;
+  logic [31:0] issueSrc1ValueInner, issueSrc2ValueInner;
+  phy_tag_t issueDestPhyInner;
 
-  logic global_flush;
-  rob_tag_t global_flush_tag;
-  logic [31:0] global_redirect_pc;
-  bpu_ckpt_id_t global_flush_ckpt_id;
-  logic branch_flush_candidate, jump_flush_candidate;
-  logic [31:0] branch_flush_pc, jump_flush_pc;
-  logic predictor_update_valid, predictor_mispredict;
+  logic globalFlushInner;
+  rob_tag_t globalFlushTagInner;
+  logic [31:0] globalRedirectPcInner;
+  bpu_ckpt_id_t globalFlushCkptIdInner;
+  rv32_pkg::squash_input_t flushOutputInner;
+  logic branchFlushCandidateInner, jumpFlushCandidateInner;
+  logic [31:0] branchFlushPcInner, jumpFlushPcInner;
+  logic predictorUpdateValidInner, predictorMispredictInner;
 
-  logic wb_alu_valid, wb_load_valid, wb_mul_valid, wb_div_valid;
-  logic load_cdb_valid, mul_cdb_valid, div_cdb_valid;
-  logic alu_rob_live, load_rob_live, mul_rob_live, div_rob_live;
-  logic alu_result_live, branch_result_live;
-  rob_tag_t wb_alu_tag, wb_load_tag, wb_mul_tag, wb_div_tag;
-  phy_tag_t wb_alu_phy, wb_load_phy, wb_mul_phy, wb_div_phy;
-  logic [31:0] wb_alu_value, wb_load_value, wb_mul_value, wb_div_value;
-  logic alu_cdb_valid, alu_cdb_is_control, alu_cdb_misaligned;
+  logic wbAluValidInner, wbLoadValidInner, wbMulValidInner, wbDivValidInner;
+  rv32_pkg::alu_execute_output_t aluExecuteOutputInner;
+  rv32_pkg::execute_value_output_t mulExecuteOutputInner;
+  rv32_pkg::bru_execute_output_t bruExecuteOutputInner;
+  rv32_pkg::execute_value_output_t divExecuteOutputInner;
+  logic loadCdbValidInner, mulCdbValidInner, divCdbValidInner;
+  logic aluRobLiveInner, loadRobLiveInner, mulRobLiveInner, divRobLiveInner;
+  logic aluResultLiveInner, branchResultLiveInner;
+  rob_tag_t wbAluTagInner, wbLoadTagInner, wbMulTagInner, wbDivTagInner;
+  phy_tag_t wbAluPhyInner, wbLoadPhyInner, wbMulPhyInner, wbDivPhyInner;
+  logic [31:0] wbAluValueInner, wbLoadValueInner, wbMulValueInner, wbDivValueInner;
+  logic aluCdbValidInner, aluCdbIsControlInner, aluCdbMisalignedInner;
 
-  logic int_alloc_ready, int_issue_valid, int_issue_ready;
-  operation_e int_issue_op;
-  rob_tag_t int_issue_tag;
-  phy_tag_t int_issue_phy;
-  logic [31:0] int_issue_s1, int_issue_s2, int_issue_imm;
-  logic [31:0] int_issue_pc, int_issue_pred;
-  logic int_issue_use_imm;
-  logic [0:0] int_issue_aux;
-  logic [2:0] int_occupancy;
+  logic intAllocReadyInner, intIssueValidInner, intIssueReadyInner;
+  operation_e intIssueOpInner;
+  rob_tag_t intIssueTagInner;
+  phy_tag_t intIssuePhyInner;
+  logic [31:0] intIssueS1Inner, intIssueS2Inner, intIssueImmInner;
+  logic [31:0] intIssuePcInner, intIssuePredInner;
+  logic intIssueUseImmInner;
+  logic [0:0] intIssueAuxInner;
+  logic [2:0] intOccupancyInner;
+  rs_allocation_input_t rsAllocBaseInner;
+  rs_allocation_input_t intRsAllocInputInner, mulRsAllocInputInner;
+  rs_allocation_input_t divRsAllocInputInner, branchRsAllocInputInner;
+  rs_allocation_input_t memRsAllocInputInner;
+  rs_issue_output_t intRsIssueOutputInner, mulRsIssueOutputInner;
+  rs_issue_output_t divRsIssueOutputInner, branchRsIssueOutputInner;
+  rs_issue_output_t memRsIssueOutputInner;
 
-  logic mul_alloc_ready, mul_issue_valid, mul_issue_ready;
-  operation_e mul_issue_op;
-  rob_tag_t mul_issue_tag;
-  phy_tag_t mul_issue_phy;
-  logic [31:0] mul_issue_s1, mul_issue_s2, mul_issue_imm;
-  logic [31:0] mul_issue_pc, mul_issue_pred;
-  logic mul_issue_use_imm;
-  logic [0:0] mul_issue_aux;
-  logic [1:0] mul_occupancy;
+  logic mulAllocReadyInner, mulIssueValidInner, mulIssueReadyInner;
+  operation_e mulIssueOpInner;
+  rob_tag_t mulIssueTagInner;
+  phy_tag_t mulIssuePhyInner;
+  logic [31:0] mulIssueS1Inner, mulIssueS2Inner, mulIssueImmInner;
+  logic [31:0] mulIssuePcInner, mulIssuePredInner;
+  logic mulIssueUseImmInner;
+  logic [0:0] mulIssueAuxInner;
+  logic [1:0] mulOccupancyInner;
 
-  logic div_alloc_ready, div_issue_valid, div_issue_ready;
-  operation_e div_issue_op;
-  rob_tag_t div_issue_tag;
-  phy_tag_t div_issue_phy;
-  logic [31:0] div_issue_s1, div_issue_s2, div_issue_imm;
-  logic [31:0] div_issue_pc, div_issue_pred;
-  logic div_issue_use_imm;
-  logic [0:0] div_issue_aux;
-  logic [0:0] div_occupancy;
+  logic divAllocReadyInner, divIssueValidInner, divIssueReadyInner;
+  operation_e divIssueOpInner;
+  rob_tag_t divIssueTagInner;
+  phy_tag_t divIssuePhyInner;
+  logic [31:0] divIssueS1Inner, divIssueS2Inner, divIssueImmInner;
+  logic [31:0] divIssuePcInner, divIssuePredInner;
+  logic divIssueUseImmInner;
+  logic [0:0] divIssueAuxInner;
+  logic [0:0] divOccupancyInner;
 
-  logic branch_alloc_ready, branch_issue_valid, branch_issue_ready;
-  operation_e branch_issue_op;
-  rob_tag_t branch_issue_tag;
-  phy_tag_t branch_issue_phy;
-  logic [31:0] branch_issue_s1, branch_issue_s2, branch_issue_imm;
-  logic [31:0] branch_issue_pc, branch_issue_pred;
-  logic branch_issue_use_imm;
-  logic [2:0] branch_issue_aux;
-  logic [2:0] branch_occupancy;
+  logic branchAllocReadyInner, branchIssueValidInner, branchIssueReadyInner;
+  operation_e branchIssueOpInner;
+  rob_tag_t branchIssueTagInner;
+  phy_tag_t branchIssuePhyInner;
+  logic [31:0] branchIssueS1Inner, branchIssueS2Inner, branchIssueImmInner;
+  logic [31:0] branchIssuePcInner, branchIssuePredInner;
+  logic branchIssueUseImmInner;
+  logic [2:0] branchIssueAuxInner;
+  logic [2:0] branchOccupancyInner;
 
-  logic mem_alloc_ready, mem_issue_valid, mem_issue_ready;
-  operation_e mem_issue_op;
-  rob_tag_t mem_issue_tag;
-  phy_tag_t mem_issue_phy;
-  logic [31:0] mem_issue_s1, mem_issue_s2, mem_issue_imm;
-  logic [31:0] mem_issue_pc, mem_issue_pred;
-  logic mem_issue_use_imm;
-  logic [3:0] mem_issue_aux;
-  logic [2:0] mem_occupancy;
-  logic [31:0] mem_address;
+  logic memAllocReadyInner, memIssueValidInner, memIssueReadyInner;
+  logic [31:0] memIssueS1Inner, memIssueImmInner;
+  logic [3:0] memIssueAuxInner;
+  logic [2:0] memOccupancyInner;
+  logic [31:0] memAddressInner;
+  rv32_pkg::address_generation_output_t aguOutputInner;
 
-  logic bru_valid, bru_taken, bru_conditional, bru_mispredict;
-  logic bru_misaligned, bru_call, bru_return;
-  rob_tag_t bru_tag;
-  logic [31:0] bru_pc, bru_target, bru_next_pc, bru_return_address;
+  logic bruValidInner, bruTakenInner, bruConditionalInner, bruMispredictInner;
+  logic bruMisalignedInner;
+  rob_tag_t bruTagInner;
+  logic [31:0] bruPcInner, bruNextPcInner;
 
-  logic bru_rob_live, jump_rob_live;
-  logic [31:0] bru_rob_pc, bru_rob_predicted_pc;
-  logic [31:0] jump_rob_pc, jump_rob_predicted_pc;
-  bpu_ckpt_id_t bru_rob_ckpt_id, jump_rob_ckpt_id;
-  logic bru_rob_is_ret, jump_rob_is_ret;
+  logic bruRobLiveInner, jumpRobLiveInner;
+  logic [31:0] bruRobPcInner, bruRobPredictedPcInner;
+  logic [31:0] jumpRobPcInner, jumpRobPredictedPcInner;
+  bpu_ckpt_id_t bruRobCkptIdInner, jumpRobCkptIdInner;
+  logic bruRobIsRetInner, jumpRobIsRetInner;
 
-  logic lq_alloc_ready, sq_alloc_ready;
-  logic [2:0] lq_alloc_index, sq_alloc_index;
-  logic store_complete_valid;
-  rob_tag_t store_complete_tag;
-  logic lsu_store_commit_ready;
-  mem_size_e lsu_dmem_size;
-  logic [3:0] lq_count, sq_count;
+  logic lqAllocReadyInner, sqAllocReadyInner;
+  logic [2:0] lqAllocIndexInner, sqAllocIndexInner;
+  logic storeCompleteValidInner;
+  rob_tag_t storeCompleteTagInner;
+  logic lsuStoreCommitReadyInner;
+  rv32_pkg::load_allocation_input_t lsuLoadAllocationInputInner;
+  rv32_pkg::store_allocation_input_t lsuStoreAllocationInputInner;
+  rv32_pkg::lsu_address_input_t lsuAddressInputInner;
+  rv32_pkg::store_commit_input_t lsuStoreCommitInputInner;
+  rv32_pkg::load_result_output_t lsuLoadResultOutputInner;
+  rv32_pkg::store_completion_output_t lsuStoreCompleteOutputInner;
+  rv32_pkg::data_memory_request_output_t lsuDmemRequestOutputInner;
+  rv32_pkg::data_memory_response_input_t lsuDmemResponseInputInner;
+  logic [3:0] lqCountInner, sqCountInner;
 
-  logic halted_q, trap_q;
-  logic [31:0] issue_link_value;
-  logic unused_cout_link;
+  logic haltedInner, trapInner;
+  logic [31:0] issueLinkValueInner;
+  logic unusedCoutLinkInner;
+  integer robInputIndexInner;
 
-  assign alu_rob_live = jump_rob_live;
-  assign alu_result_live = alu_cdb_valid && alu_rob_live &&
-                           (!global_flush ||
-                            rob_is_older(wb_alu_tag, global_flush_tag));
-  assign wb_alu_valid = alu_result_live && !alu_cdb_is_control;
-  assign wb_load_valid = load_cdb_valid && load_rob_live &&
-                         (!global_flush ||
-                          rob_is_older(wb_load_tag, global_flush_tag));
-  assign wb_mul_valid = mul_cdb_valid && mul_rob_live &&
-                        (!global_flush ||
-                         rob_is_older(wb_mul_tag, global_flush_tag));
-  assign wb_div_valid = div_cdb_valid && div_rob_live &&
-                        (!global_flush ||
-                         rob_is_older(wb_div_tag, global_flush_tag));
-  assign branch_result_live = bru_valid && bru_conditional && bru_rob_live &&
-                              (!global_flush ||
-                               rob_is_older(bru_tag, global_flush_tag));
-  assign branch_flush_candidate = branch_result_live &&
-                                  (bru_mispredict || bru_misaligned);
-  assign branch_flush_pc = bru_misaligned ? (bru_next_pc & 32'hffff_fffc) :
-                           bru_next_pc;
-  assign jump_flush_candidate = alu_result_live && alu_cdb_is_control &&
-                                 ((wb_alu_value != jump_rob_predicted_pc) ||
-                                  alu_cdb_misaligned);
-  assign jump_flush_pc = alu_cdb_misaligned ? (wb_alu_value & 32'hffff_fffc) :
-                          wb_alu_value;
-  assign predictor_update_valid = branch_result_live ||
-                                  (alu_result_live && alu_cdb_is_control);
-  assign predictor_mispredict = branch_flush_candidate || jump_flush_candidate;
+  assign aluRobLiveInner = jumpRobLiveInner;
+  assign aluResultLiveInner = aluCdbValidInner && aluRobLiveInner &&
+                           (!globalFlushInner ||
+                            rob_is_older(wbAluTagInner, globalFlushTagInner));
+  assign wbAluValidInner = aluResultLiveInner && !aluCdbIsControlInner;
+  assign wbLoadValidInner = loadCdbValidInner && loadRobLiveInner &&
+                         (!globalFlushInner ||
+                          rob_is_older(wbLoadTagInner, globalFlushTagInner));
+  assign wbMulValidInner = mulCdbValidInner && mulRobLiveInner &&
+                        (!globalFlushInner ||
+                         rob_is_older(wbMulTagInner, globalFlushTagInner));
+  assign wbDivValidInner = divCdbValidInner && divRobLiveInner &&
+                        (!globalFlushInner ||
+                         rob_is_older(wbDivTagInner, globalFlushTagInner));
+  assign branchResultLiveInner = bruValidInner && bruConditionalInner && bruRobLiveInner &&
+                              (!globalFlushInner ||
+                               rob_is_older(bruTagInner, globalFlushTagInner));
+  assign branchFlushCandidateInner = branchResultLiveInner &&
+                                  (bruMispredictInner || bruMisalignedInner);
+  assign branchFlushPcInner = bruMisalignedInner ? (bruNextPcInner & 32'hffff_fffc) :
+                           bruNextPcInner;
+  assign jumpFlushCandidateInner = aluResultLiveInner && aluCdbIsControlInner &&
+                                 ((wbAluValueInner != jumpRobPredictedPcInner) ||
+                                  aluCdbMisalignedInner);
+  assign jumpFlushPcInner = aluCdbMisalignedInner ? (wbAluValueInner & 32'hffff_fffc) :
+                          wbAluValueInner;
+  assign predictorUpdateValidInner = branchResultLiveInner ||
+                                  (aluResultLiveInner && aluCdbIsControlInner);
+  assign predictorMispredictInner = branchFlushCandidateInner || jumpFlushCandidateInner;
+  assign globalFlushInner = flushOutputInner.valid;
+  assign globalFlushTagInner = flushOutputInner.robTag;
+  assign globalRedirectPcInner = flushOutputInner.programCounter;
+  assign globalFlushCkptIdInner = flushOutputInner.checkpointId;
+  assign robCommitIsCallInner =
+    ((robCommitInstrInner[6:0] == OPCODE_JAL) ||
+     ((robCommitInstrInner[6:0] == OPCODE_JALR) &&
+      (robCommitInstrInner[14:12] == 3'b000))) &&
+    ((robCommitInstrInner[11:7] == 5'd1) ||
+     (robCommitInstrInner[11:7] == 5'd5));
+  assign robCommitIsRetInner =
+    (robCommitInstrInner[6:0] == OPCODE_JALR) &&
+    (robCommitInstrInner[14:12] == 3'b000) &&
+    ((robCommitInstrInner[19:15] == 5'd1) ||
+     (robCommitInstrInner[19:15] == 5'd5)) &&
+    (robCommitInstrInner[11:7] != 5'd1) &&
+    (robCommitInstrInner[11:7] != 5'd5);
+  always_comb begin
+    predictorRobInputInner = '0;
+    predictorRobInputInner.willCommit = robCommitFireInner;
+    predictorRobInputInner.headTag = robHeadTagInner;
+    predictorRobInputInner.isHeadCall = robCommitIsCallInner;
+    predictorRobInputInner.isHeadReturn = robCommitIsRetInner;
+    predictorRobInputInner.headProgramCounter = robCommitPcInner;
+    for (robInputIndexInner = 0; robInputIndexInner < ROB_ENTRIES;
+         robInputIndexInner = robInputIndexInner + 1)
+      predictorRobInputInner.replayEntries[robInputIndexInner] =
+        robReplayOutputInner[robInputIndexInner];
+  end
+  assign predictorFetchInfoInner = fetchInfoOutputInner;
+  assign predictorBranchInputInner = '{
+    valid: branchResultLiveInner,
+    robTag: bruTagInner,
+    robEntryLive: bruRobLiveInner,
+    programCounter: bruPcInner,
+    nextProgramCounter: bruNextPcInner,
+    taken: bruTakenInner,
+    checkpointId: bruRobCkptIdInner
+  };
+  assign predictorJumpInputInner = '{
+    valid: aluResultLiveInner && aluCdbIsControlInner,
+    robTag: wbAluTagInner,
+    robEntryLive: jumpRobLiveInner,
+    programCounter: jumpRobPcInner,
+    target: wbAluValueInner,
+    isReturn: jumpRobIsRetInner
+  };
+  assign branchFlushInputInner = '{valid: branchFlushCandidateInner,
+                                   robTag: bruTagInner,
+                                   programCounter: branchFlushPcInner,
+                                   checkpointId: bruRobCkptIdInner};
+  assign jumpFlushInputInner = '{valid: jumpFlushCandidateInner,
+                                 robTag: wbAluTagInner,
+                                 programCounter: jumpFlushPcInner,
+                                 checkpointId: jumpRobCkptIdInner};
+  assign predictorSquashInputInner = '{
+    valid: globalFlushInner,
+    robTag: globalFlushTagInner,
+    programCounter: globalRedirectPcInner,
+    checkpointId: globalFlushCkptIdInner
+  };
+  assign writebackInputInner[0] = '{valid: wbAluValidInner,
+                                     phyTag: wbAluPhyInner,
+                                     value: wbAluValueInner};
+  assign writebackInputInner[1] = '{valid: wbLoadValidInner,
+                                     phyTag: wbLoadPhyInner,
+                                     value: wbLoadValueInner};
+  assign writebackInputInner[2] = '{valid: wbMulValidInner,
+                                     phyTag: wbMulPhyInner,
+                                     value: wbMulValueInner};
+  assign writebackInputInner[3] = '{valid: wbDivValidInner,
+                                     phyTag: wbDivPhyInner,
+                                     value: wbDivValueInner};
+  assign aluCdbValidInner = aluExecuteOutputInner.valid;
+  assign wbAluValueInner = aluExecuteOutputInner.value;
+  assign wbAluTagInner = aluExecuteOutputInner.robTag;
+  assign wbAluPhyInner = aluExecuteOutputInner.destinationPhy;
+  assign aluCdbIsControlInner = aluExecuteOutputInner.isControl;
+  assign aluCdbMisalignedInner = aluExecuteOutputInner.controlMisaligned;
+  assign mulCdbValidInner = mulExecuteOutputInner.valid;
+  assign wbMulValueInner = mulExecuteOutputInner.value;
+  assign wbMulTagInner = mulExecuteOutputInner.robTag;
+  assign wbMulPhyInner = mulExecuteOutputInner.destinationPhy;
+  assign divCdbValidInner = divExecuteOutputInner.valid;
+  assign wbDivValueInner = divExecuteOutputInner.value;
+  assign wbDivTagInner = divExecuteOutputInner.robTag;
+  assign wbDivPhyInner = divExecuteOutputInner.destinationPhy;
+  assign bruValidInner = bruExecuteOutputInner.valid;
+  assign bruTagInner = bruExecuteOutputInner.robTag;
+  assign bruPcInner = bruExecuteOutputInner.programCounter;
+  assign bruNextPcInner = bruExecuteOutputInner.nextProgramCounter;
+  assign bruTakenInner = bruExecuteOutputInner.taken;
+  assign bruConditionalInner = bruExecuteOutputInner.conditional;
+  assign bruMispredictInner = bruExecuteOutputInner.mispredict;
+  assign bruMisalignedInner = bruExecuteOutputInner.misaligned;
+  assign prfReadInputInner[0] = '{physicalRegister: ratRs1PhyInner};
+  assign prfReadInputInner[1] = '{physicalRegister: ratRs2PhyInner};
+  assign prfReadInputInner[2] = '{physicalRegister: robCommitNewPhyInner};
+  assign prfSrc1ReadyInner = prfReadOutputInner[0].ready;
+  assign prfSrc1ValueInner = prfReadOutputInner[0].value;
+  assign prfSrc2ReadyInner = prfReadOutputInner[1].ready;
+  assign prfSrc2ValueInner = prfReadOutputInner[1].value;
+  assign prfCommitReadyInner = prfReadOutputInner[2].ready;
+  assign prfCommitValueInner = prfReadOutputInner[2].value;
+  assign ratReadInputInner = '{source1Arch: decodedInner.rs1,
+                               source2Arch: decodedInner.rs2,
+                               debugArch: 5'd0};
+  assign ratRenameInputInner = '{valid: issueFireInner && decodedInner.writesRd,
+                                 architecturalRegister: decodedInner.rd,
+                                 physicalRegister: prfAllocPhyInner};
+  assign ratRestoreInputInner = '{valid: globalFlushInner,
+                                  squashTag: globalFlushTagInner,
+                                  headTag: robHeadTagInner};
+  assign ratCommitInputInner = '{valid: robCommitFireInner && robCommitWritesInner,
+                                architecturalRegister: robCommitRdInner,
+                                physicalRegister: robCommitNewPhyInner};
+  assign ratRs1PhyInner = ratReadOutputInner.source1Phy;
+  assign ratRs2PhyInner = ratReadOutputInner.source2Phy;
+  assign ratDebugPhyInner = ratReadOutputInner.debugPhy;
+  assign ratOldPhyInner = ratRenameOutputInner.previousPhysicalRegister;
+  assign lsuLoadAllocationInputInner = '{
+    valid: issueFireInner && (decodedInner.uopClass == rv32_pkg::UOP_LOAD),
+    robTag: robAllocTagInner,
+    destinationPhy: issueDestPhyInner,
+    size: decodedInner.memorySize,
+    isUnsigned: decodedInner.memoryUnsigned
+  };
+  assign lsuStoreAllocationInputInner = '{
+    valid: issueFireInner && (decodedInner.uopClass == rv32_pkg::UOP_STORE),
+    robTag: robAllocTagInner,
+    size: decodedInner.memorySize,
+    dataReady: issueSrc2ReadyInner,
+    dataTag: ratRs2PhyInner,
+    dataValue: issueSrc2ValueInner
+  };
+  assign lsuAddressInputInner = '{
+    valid: memIssueValidInner && memIssueReadyInner,
+    isStore: memIssueAuxInner[3],
+    address: memAddressInner
+  };
+  assign lsuStoreCommitInputInner = '{
+    valid: robCommitValidInner && robCommitStoreInner,
+    robTag: robCommitTagInner
+  };
+  assign lsuDmemResponseInputInner = '{valid: dmemRspValidInput, readData: dmemRspRdataInput};
+  assign loadCdbValidInner = lsuLoadResultOutputInner.valid;
+  assign wbLoadTagInner = lsuLoadResultOutputInner.robTag;
+  assign wbLoadPhyInner = lsuLoadResultOutputInner.destinationPhy;
+  assign wbLoadValueInner = lsuLoadResultOutputInner.value;
+  assign storeCompleteValidInner = lsuStoreCompleteOutputInner.valid;
+  assign storeCompleteTagInner = lsuStoreCompleteOutputInner.robTag;
+  assign dmemReqValidOutput = lsuDmemRequestOutputInner.valid;
+  assign dmemReqWriteOutput = lsuDmemRequestOutputInner.write;
+  assign dmemReqAddrOutput = lsuDmemRequestOutputInner.address;
+  assign dmemReqWdataOutput = lsuDmemRequestOutputInner.writeData;
+  assign dmemReqWstrbOutput = lsuDmemRequestOutputInner.writeStrobe;
+  assign dmemReqSizeOutput = lsuDmemRequestOutputInner.size;
+  assign robAllocInputInner = '{
+    valid: issueFireInner,
+    programCounter: decodedInner.programCounter,
+    instruction: decodedInner.instruction,
+    writesArchitecturalRegister: decodedInner.writesRd,
+    architecturalRegister: decodedInner.rd,
+    newPhysicalRegister: issueDestPhyInner,
+    oldPhysicalRegister: ratOldPhyInner,
+    ready: decodedInner.halt || decodedInner.illegal,
+    isStore: decodedInner.uopClass == rv32_pkg::UOP_STORE,
+    storeQueueIndex: sqAllocIndexInner,
+    isHalt: decodedInner.halt,
+    hasException: decodedInner.illegal,
+    predictedProgramCounter: decodedInner.predictedNextProgramCounter,
+    predictorCheckpointId: decodedInner.predictorCheckpointId,
+    isReturn: issueIsReturnInner
+  };
+  assign robCompletionInputInner[0] = '{valid: aluResultLiveInner,
+                                        robTag: wbAluTagInner,
+                                        exception: aluCdbMisalignedInner};
+  assign robCompletionInputInner[1] = '{valid: wbLoadValidInner,
+                                        robTag: wbLoadTagInner,
+                                        exception: 1'b0};
+  assign robCompletionInputInner[2] = '{valid: wbMulValidInner,
+                                        robTag: wbMulTagInner,
+                                        exception: 1'b0};
+  assign robCompletionInputInner[3] = '{valid: wbDivValidInner,
+                                        robTag: wbDivTagInner,
+                                        exception: 1'b0};
+  assign robCompletionInputInner[4] = '{valid: branchResultLiveInner,
+                                        robTag: bruTagInner,
+                                        exception: bruMisalignedInner};
+  assign robCompletionInputInner[5] = '{valid: storeCompleteValidInner,
+                                        robTag: storeCompleteTagInner,
+                                        exception: 1'b0};
+  assign robLookupInputInner[0] = '{robTag: bruTagInner};
+  assign robLookupInputInner[1] = '{robTag: wbAluTagInner};
+  assign robLookupInputInner[2] = '{robTag: wbLoadTagInner};
+  assign robLookupInputInner[3] = '{robTag: wbMulTagInner};
+  assign robLookupInputInner[4] = '{robTag: wbDivTagInner};
+  assign robCommitValidInner = robCommitOutputInner.valid;
+  assign robCommitFireInner = robCommitFireOutputInner;
+  assign robCommitTagInner = robCommitOutputInner.robTag;
+  assign robCommitPcInner = robCommitOutputInner.programCounter;
+  assign robCommitInstrInner = robCommitOutputInner.instruction;
+  assign robCommitWritesInner = robCommitOutputInner.writesArchitecturalRegister;
+  assign robCommitRdInner = robCommitOutputInner.architecturalRegister;
+  assign robCommitNewPhyInner = robCommitOutputInner.newPhysicalRegister;
+  assign robCommitOldPhyInner = robCommitOutputInner.oldPhysicalRegister;
+  assign robCommitSqIndexInner = robCommitOutputInner.storeQueueIndex;
+  assign robCommitHaltInner = robCommitOutputInner.isHalt;
+  assign robCommitExceptionInner = robCommitOutputInner.hasException;
+  assign robEmptyInner = robStatusOutputInner.empty;
+  assign robFullInner = robStatusOutputInner.full;
+  assign robHeadTagInner = robStatusOutputInner.headTag;
+  assign bruRobLiveInner = robLookupOutputInner[0].valid;
+  assign bruRobPcInner = robLookupOutputInner[0].programCounter;
+  assign bruRobPredictedPcInner = robLookupOutputInner[0].predictedProgramCounter;
+  assign bruRobCkptIdInner = robLookupOutputInner[0].predictorCheckpointId;
+  assign bruRobIsRetInner = robLookupOutputInner[0].isReturn;
+  assign jumpRobLiveInner = robLookupOutputInner[1].valid;
+  assign jumpRobPcInner = robLookupOutputInner[1].programCounter;
+  assign jumpRobPredictedPcInner = robLookupOutputInner[1].predictedProgramCounter;
+  assign jumpRobCkptIdInner = robLookupOutputInner[1].predictorCheckpointId;
+  assign jumpRobIsRetInner = robLookupOutputInner[1].isReturn;
+  assign loadRobLiveInner = robLookupOutputInner[2].valid;
+  assign mulRobLiveInner = robLookupOutputInner[3].valid;
+  assign divRobLiveInner = robLookupOutputInner[4].valid;
+  assign predictorPcInner = predictorQueryOutputInner.programCounter;
+  assign predictorFetchAcceptInner = predictorQueryOutputInner.accepted;
+  assign imemReqValidOutput = frontendImemRequestOutputInner.valid;
+  assign imemReqAddrOutput = frontendImemRequestOutputInner.address;
+  assign frontendImemResponseInputInner = '{valid: imemRspValidInput,
+                                            instruction: imemRspDataInput};
+  assign frontendRedirectInputInner = '{valid: globalFlushInner,
+                                        programCounter: globalRedirectPcInner};
+  assign frontendIqValidInner = frontendInstructionOutputInner.valid;
+  assign iqPcInner = frontendInstructionOutputInner.payload.programCounter;
+  assign iqInstrInner = frontendInstructionOutputInner.payload.instruction;
+  assign iqPredictedPcInner = frontendInstructionOutputInner.payload.predictedNextProgramCounter;
+  assign iqPredictorCkptIdInner = frontendInstructionOutputInner.payload.predictorCheckpointId;
+  assign decodeContextInner = '{
+    instruction: iqInstrInner,
+    programCounter: iqPcInner,
+    predictedNextProgramCounter: iqPredictedPcInner,
+    predictorCheckpointId: iqPredictorCkptIdInner
+  };
 
   rv32_flush_arbiter u_flush_arbiter (
-    .clk_i(clk_i), .rst_ni(rst_ni),
-    .branch_valid_i(branch_flush_candidate), .branch_tag_i(bru_tag),
-    .branch_pc_i(branch_flush_pc), .branch_ckpt_id_i(bru_rob_ckpt_id),
-    .jump_valid_i(jump_flush_candidate), .jump_tag_i(wb_alu_tag),
-    .jump_pc_i(jump_flush_pc), .jump_ckpt_id_i(jump_rob_ckpt_id),
-    .squash_valid_o(global_flush), .squash_tag_o(global_flush_tag),
-    .squash_pc_o(global_redirect_pc), .squash_ckpt_id_o(global_flush_ckpt_id)
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .branchInput(branchFlushInputInner),
+    .jumpInput(jumpFlushInputInner),
+    .squashOutput(flushOutputInner)
   );
 
   rv32_frontend #(.RESET_PC(RESET_PC)) u_frontend (
-    .clk_i(clk_i), .rst_ni(rst_ni),
-    .predictor_pc_o(predictor_pc),
-    .predicted_next_pc_i(predicted_next_pc),
-    .predicted_ckpt_id_i(predicted_ckpt_id),
-    .predictor_accept_o(predictor_fetch_accept),
-    .imem_req_valid_o(imem_req_valid_o),
-    .imem_req_ready_i(imem_req_ready_i),
-    .imem_req_addr_o(imem_req_addr_o),
-    .imem_rsp_valid_i(imem_rsp_valid_i),
-    .imem_rsp_data_i(imem_rsp_data_i),
-    .redirect_valid_i(global_flush), .redirect_pc_i(global_redirect_pc),
-    .iq_valid_o(frontend_iq_valid), .iq_ready_i(frontend_iq_ready),
-    .iq_pc_o(iq_pc), .iq_instr_o(iq_instr),
-    .iq_predicted_pc_o(iq_predicted_pc),
-    .iq_ckpt_id_o(iq_predictor_ckpt_id),
-    .fetch_info_valid_o(fetch_info_valid),
-    .fetch_info_call_o(fetch_info_call),
-    .fetch_info_return_o(fetch_info_return),
-    .fetch_info_jal_target_valid_o(fetch_info_jal_target_valid),
-    .fetch_info_pc_o(fetch_info_pc),
-    .fetch_info_jal_target_o(fetch_info_jal_target),
-    .fq_count_o(fq_count), .iq_count_o(iq_count)
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .predictorQueryOutput(predictorQueryOutputInner),
+    .predictionInput(predictorOutputInner),
+    .imemRequestOutput(frontendImemRequestOutputInner),
+    .imemReqReadyInput(imemReqReadyInput),
+    .imemResponseInput(frontendImemResponseInputInner),
+    .redirectInput(frontendRedirectInputInner),
+    .instructionOutput(frontendInstructionOutputInner),
+    .iqReadyInput(frontendIqReadyInner),
+    .fetchInfoOutput(fetchInfoOutputInner),
+    .fqCountOutput(fqCountInner), .iqCountOutput(iqCountInner)
   );
 
   rv32_predictor u_predictor (
-    .clk_i(clk_i), .rst_ni(rst_ni), .query_pc_i(predictor_pc),
-    .predicted_next_pc_o(predicted_next_pc),
-    .predicted_taken_o(predicted_taken),
-    .predicted_ckpt_id_o(predicted_ckpt_id),
-    .fetch_accept_i(predictor_fetch_accept),
-    .fetch_info_valid_i(fetch_info_valid),
-    .fetch_info_call_i(fetch_info_call), .fetch_info_return_i(fetch_info_return),
-    .fetch_info_jal_target_valid_i(fetch_info_jal_target_valid),
-    .fetch_info_pc_i(fetch_info_pc), .fetch_info_jal_target_i(fetch_info_jal_target),
-    .branch_valid_i(branch_result_live), .branch_rob_tag_i(bru_tag),
-    .branch_rob_live_i(bru_rob_live), .branch_pc_i(bru_pc),
-    .branch_next_pc_i(bru_next_pc), .branch_taken_i(bru_taken),
-    .branch_ckpt_id_i(bru_rob_ckpt_id),
-    .jump_valid_i(alu_result_live && alu_cdb_is_control),
-    .jump_rob_tag_i(wb_alu_tag), .jump_rob_live_i(jump_rob_live),
-    .jump_pc_i(jump_rob_pc), .jump_target_i(wb_alu_value),
-    .jump_is_return_i(jump_rob_is_ret),
-    .squash_valid_i(global_flush), .squash_tag_i(global_flush_tag),
-    .squash_ckpt_id_i(global_flush_ckpt_id)
+    .clkInput(clkInput), .rstNInput(rstNInput), .queryPcInput(predictorPcInner),
+    .fetchAcceptInput(predictorFetchAcceptInner),
+    .fetchInfoInput(predictorFetchInfoInner),
+    .branchInput(predictorBranchInputInner),
+    .jumpInput(predictorJumpInputInner),
+    .squashInput(predictorSquashInputInner),
+    .robInput(predictorRobInputInner),
+    .predictionOutput(predictorOutputInner)
   );
 
   rv32_decoder u_decoder (
-    .instr_i(iq_instr), .pc_i(iq_pc),
-    .predicted_next_pc_i(iq_predicted_pc),
-    .predictor_ckpt_id_i(iq_predictor_ckpt_id), .uop_o(decoded)
+    .decodeContextInput(decodeContextInner), .uopOutput(decodedInner)
   );
 
   rv32_add #(.WIDTH(32)) u_link_add (
-    .a_i(decoded.pc), .b_i(32'd4), .cin_i(1'b0),
-    .sum_o(issue_link_value), .cout_o(unused_cout_link)
+    .aInput(decodedInner.programCounter), .bInput(32'd4), .cinInput(1'b0),
+    .sumOutput(issueLinkValueInner), .coutOutput(unusedCoutLinkInner)
   );
 
   rv32_rat u_rat (
-    .clk_i(clk_i), .rst_ni(rst_ni),
-    .rs1_arch_i(decoded.rs1), .rs2_arch_i(decoded.rs2),
-    .rs1_phy_o(rat_rs1_phy), .rs2_phy_o(rat_rs2_phy),
-    .rename_valid_i(issue_fire && decoded.writes_rd),
-    .rename_arch_i(decoded.rd), .rename_phy_i(prf_alloc_phy),
-    .rename_old_phy_o(rat_old_phy),
-    .restore_valid_i(global_flush),
-    .restore_tag_i(global_flush_tag), .restore_head_tag_i(rob_head_tag),
-    .replay_tag_i(rob_replay_tag),
-    .replay_arch_rd_i(rob_replay_arch_rd),
-    .replay_new_phy_i(rob_replay_new_phy),
-    .commit_valid_i(rob_commit_fire && rob_commit_writes),
-    .commit_arch_i(rob_commit_rd), .commit_phy_i(rob_commit_new_phy),
-    .debug_arch_i(5'd0), .debug_phy_o(rat_debug_phy)
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .readInput(ratReadInputInner), .readOutput(ratReadOutputInner),
+    .renameInput(ratRenameInputInner), .renameOutput(ratRenameOutputInner),
+    .restoreInput(ratRestoreInputInner),
+    .replayInput(robReplayOutputInner),
+    .commitInput(ratCommitInputInner)
   );
 
   rv32_prf u_prf (
-    .clk_i(clk_i), .rst_ni(rst_ni),
-    .alloc_valid_i(issue_fire && decoded.writes_rd),
-    .alloc_ready_o(prf_alloc_ready), .alloc_phy_o(prf_alloc_phy),
-    .alloc_value_valid_i(issue_fire && decoded.writes_rd && issue_is_jump),
-    .alloc_value_i(issue_link_value),
-    .free_valid_i(rob_commit_fire && rob_commit_writes),
-    .free_phy_i(rob_commit_old_phy),
-    .restore_valid_i(global_flush),
-    .restore_tag_i(global_flush_tag),
-    .restore_count_i(rob_count),
-    .replay_tag_i(rob_replay_tag),
-    .replay_new_phy_i(rob_replay_new_phy),
-    .read1_phy_i(rat_rs1_phy), .read1_ready_o(prf_src1_ready),
-    .read1_value_o(prf_src1_value),
-    .read2_phy_i(rat_rs2_phy), .read2_ready_o(prf_src2_ready),
-    .read2_value_o(prf_src2_value),
-    .read3_phy_i(rob_commit_new_phy), .read3_ready_o(prf_commit_ready),
-    .read3_value_o(prf_commit_value),
-    .wb0_valid_i(wb_alu_valid), .wb0_phy_i(wb_alu_phy),
-    .wb0_value_i(wb_alu_value),
-    .wb1_valid_i(wb_load_valid), .wb1_phy_i(wb_load_phy),
-    .wb1_value_i(wb_load_value),
-    .wb2_valid_i(wb_mul_valid), .wb2_phy_i(wb_mul_phy),
-    .wb2_value_i(wb_mul_value),
-    .wb3_valid_i(wb_div_valid), .wb3_phy_i(wb_div_phy),
-    .wb3_value_i(wb_div_value),
-    .ready_vector_o(prf_ready_vector), .free_count_o(prf_free_count)
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .allocationInput('{valid: issueFireInner && decodedInner.writesRd,
+                      valueValid: issueFireInner && decodedInner.writesRd && issueIsJumpInner,
+                      value: issueLinkValueInner}),
+    .allocReadyOutput(prfAllocReadyInner), .allocPhyOutput(prfAllocPhyInner),
+    .freeInput('{valid: robCommitFireInner && robCommitWritesInner,
+                physicalRegister: robCommitOldPhyInner}),
+    .restoreInput('{valid: globalFlushInner, squashTag: globalFlushTagInner}),
+    .restoreCountInput(robCountInner),
+    .replayInput(robReplayOutputInner),
+    .readInput(prfReadInputInner), .readOutput(prfReadOutputInner),
+    .writebackInput(writebackInputInner),
+    .readyVectorOutput(prfReadyVectorInner), .freeCountOutput(prfFreeCountInner)
   );
 
   rv32_rob u_rob (
-    .clk_i(clk_i), .rst_ni(rst_ni),
-    .alloc_valid_i(issue_fire), .alloc_ready_o(rob_alloc_ready),
-    .alloc_tag_o(rob_alloc_tag), .alloc_pc_i(decoded.pc),
-    .alloc_instr_i(decoded.instr),
-    .alloc_writes_rd_i(decoded.writes_rd),
-    .alloc_arch_rd_i(decoded.rd), .alloc_new_phy_i(issue_dest_phy),
-    .alloc_old_phy_i(rat_old_phy),
-    .alloc_ready_i(decoded.halt || decoded.illegal),
-    .alloc_store_i(decoded.uop_class == rv32_pkg::UOP_STORE),
-    .alloc_sq_index_i(sq_alloc_index), .alloc_halt_i(decoded.halt),
-    .alloc_exception_i(decoded.illegal),
-    .alloc_predicted_pc_i(decoded.predicted_next_pc),
-    .alloc_predictor_ckpt_id_i(decoded.predictor_ckpt_id),
-    .alloc_is_ret_i(issue_is_return),
-    .complete0_valid_i(alu_result_live), .complete0_tag_i(wb_alu_tag),
-    .complete0_exception_i(alu_cdb_misaligned),
-    .complete1_valid_i(wb_load_valid), .complete1_tag_i(wb_load_tag),
-    .complete2_valid_i(wb_mul_valid), .complete2_tag_i(wb_mul_tag),
-    .complete3_valid_i(wb_div_valid), .complete3_tag_i(wb_div_tag),
-    .complete4_valid_i(branch_result_live), .complete4_tag_i(bru_tag),
-    .complete4_exception_i(bru_misaligned),
-    .complete5_valid_i(store_complete_valid),
-    .complete5_tag_i(store_complete_tag),
-    .flush_i(global_flush), .flush_tag_i(global_flush_tag),
-    .lookup0_tag_i(bru_tag), .lookup0_valid_o(bru_rob_live),
-    .lookup0_pc_o(bru_rob_pc), .lookup0_predicted_pc_o(bru_rob_predicted_pc),
-    .lookup0_predictor_ckpt_id_o(bru_rob_ckpt_id),
-    .lookup0_is_ret_o(bru_rob_is_ret),
-    .lookup1_tag_i(wb_alu_tag), .lookup1_valid_o(jump_rob_live),
-    .lookup1_pc_o(jump_rob_pc), .lookup1_predicted_pc_o(jump_rob_predicted_pc),
-    .lookup1_predictor_ckpt_id_o(jump_rob_ckpt_id),
-    .lookup1_is_ret_o(jump_rob_is_ret),
-    .lookup2_tag_i(wb_load_tag), .lookup2_valid_o(load_rob_live),
-    .lookup3_tag_i(wb_mul_tag), .lookup3_valid_o(mul_rob_live),
-    .lookup4_tag_i(wb_div_tag), .lookup4_valid_o(div_rob_live),
-    .commit_valid_o(rob_commit_valid), .commit_ready_i(rob_commit_ready),
-    .commit_fire_o(rob_commit_fire), .commit_tag_o(rob_commit_tag),
-    .commit_pc_o(rob_commit_pc), .commit_instr_o(rob_commit_instr),
-    .commit_writes_rd_o(rob_commit_writes),
-    .commit_arch_rd_o(rob_commit_rd),
-    .commit_new_phy_o(rob_commit_new_phy),
-    .commit_old_phy_o(rob_commit_old_phy),
-    .commit_store_o(rob_commit_store),
-    .commit_sq_index_o(rob_commit_sq_index),
-    .commit_halt_o(rob_commit_halt),
-    .commit_exception_o(rob_commit_exception),
-    .empty_o(rob_empty), .full_o(rob_full), .count_o(rob_count),
-    .head_tag_o(rob_head_tag),
-    .replay_tag_o(rob_replay_tag),
-    .replay_arch_rd_o(rob_replay_arch_rd),
-    .replay_new_phy_o(rob_replay_new_phy)
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .allocInput(robAllocInputInner), .allocReadyOutput(robAllocReadyInner),
+    .allocTagOutput(robAllocTagInner),
+    .completionInput(robCompletionInputInner),
+    .flushInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
+    .lookupInput(robLookupInputInner), .lookupOutput(robLookupOutputInner),
+    .commitOutput(robCommitOutputInner), .commitStoreOutput(robCommitStoreInner),
+    .commitReadyInput(robCommitReadyInner), .commitFireOutput(robCommitFireOutputInner),
+    .statusOutput(robStatusOutputInner), .countOutput(robCountInner),
+    .replayOutput(robReplayOutputInner)
   );
 
   always_comb begin
-    issue_is_jump = (decoded.op == OP_JAL) || (decoded.op == OP_JALR);
-    issue_is_call = issue_is_jump &&
-                     ((decoded.rd == 5'd1) || (decoded.rd == 5'd5));
-    issue_is_return = (decoded.op == OP_JALR) &&
-                       ((decoded.rs1 == 5'd1) || (decoded.rs1 == 5'd5)) &&
-                       (decoded.rd != 5'd1) && (decoded.rd != 5'd5);
-    issue_dest_phy = decoded.writes_rd ? prf_alloc_phy : '0;
-    issue_src1_ready = !decoded.uses_rs1 || prf_src1_ready;
-    issue_src1_value = decoded.uses_rs1 ? prf_src1_value : 32'b0;
-    issue_src2_ready = !decoded.uses_rs2 || prf_src2_ready;
-    issue_src2_value = decoded.uses_rs2 ? prf_src2_value : 32'b0;
+    issueIsJumpInner = (decodedInner.operation == OP_JAL) || (decodedInner.operation == OP_JALR);
+    issueIsCallInner = issueIsJumpInner &&
+                     ((decodedInner.rd == 5'd1) || (decodedInner.rd == 5'd5));
+    issueIsReturnInner = (decodedInner.operation == OP_JALR) &&
+                       ((decodedInner.rs1 == 5'd1) || (decodedInner.rs1 == 5'd5)) &&
+                       (decodedInner.rd != 5'd1) && (decodedInner.rd != 5'd5);
+    issueDestPhyInner = decodedInner.writesRd ? prfAllocPhyInner : '0;
+    issueSrc1ReadyInner = !decodedInner.usesRs1 || prfSrc1ReadyInner;
+    issueSrc1ValueInner = decodedInner.usesRs1 ? prfSrc1ValueInner : 32'b0;
+    issueSrc2ReadyInner = !decodedInner.usesRs2 || prfSrc2ReadyInner;
+    issueSrc2ValueInner = decodedInner.usesRs2 ? prfSrc2ValueInner : 32'b0;
 
-    target_rs_ready = 1'b1;
-    unique case (decoded.uop_class)
-      rv32_pkg::UOP_ALU:    target_rs_ready = int_alloc_ready;
-      rv32_pkg::UOP_MUL:    target_rs_ready = mul_alloc_ready;
-      rv32_pkg::UOP_DIV:    target_rs_ready = div_alloc_ready;
-      rv32_pkg::UOP_BRANCH: target_rs_ready = branch_alloc_ready;
-      rv32_pkg::UOP_LOAD:   target_rs_ready = mem_alloc_ready && lq_alloc_ready;
-      rv32_pkg::UOP_STORE:  target_rs_ready = mem_alloc_ready && sq_alloc_ready;
-      default:    target_rs_ready = 1'b1;
+    targetRsReadyInner = 1'b1;
+    unique case (decodedInner.uopClass)
+      rv32_pkg::UOP_ALU:    targetRsReadyInner = intAllocReadyInner;
+      rv32_pkg::UOP_MUL:    targetRsReadyInner = mulAllocReadyInner;
+      rv32_pkg::UOP_DIV:    targetRsReadyInner = divAllocReadyInner;
+      rv32_pkg::UOP_BRANCH: targetRsReadyInner = branchAllocReadyInner;
+      rv32_pkg::UOP_LOAD:   targetRsReadyInner = memAllocReadyInner && lqAllocReadyInner;
+      rv32_pkg::UOP_STORE:  targetRsReadyInner = memAllocReadyInner && sqAllocReadyInner;
+      default:    targetRsReadyInner = 1'b1;
     endcase
-    issue_resources_ready = rob_alloc_ready && target_rs_ready &&
-                            (!decoded.writes_rd || prf_alloc_ready);
-    issue_fire = frontend_iq_valid && issue_resources_ready &&
-                 !global_flush && !halted_q && !trap_q;
-    frontend_iq_ready = issue_fire;
+    issueResourcesReadyInner = robAllocReadyInner && targetRsReadyInner &&
+                             (!decodedInner.writesRd || prfAllocReadyInner);
+    issueFireInner = frontendIqValidInner && issueResourcesReadyInner &&
+                 !globalFlushInner && !haltedInner && !trapInner;
+    frontendIqReadyInner = issueFireInner;
 
-    rob_commit_ready = rob_commit_store ? lsu_store_commit_ready : 1'b1;
-    commit_valid_o = rob_commit_fire;
-    commit_pc_o = rob_commit_pc;
-    commit_instr_o = rob_commit_instr;
-    commit_rd_valid_o = rob_commit_fire && rob_commit_writes &&
-                        (rob_commit_rd != 5'd0) && !rob_commit_exception;
-    commit_rd_o = rob_commit_rd;
-    commit_rd_value_o = prf_commit_value;
-    commit_mem_valid_o = rob_commit_fire && rob_commit_store;
-    commit_mem_addr_o = dmem_req_addr_o;
-    commit_mem_data_o = dmem_req_wdata_o;
-    commit_mem_wstrb_o = dmem_req_wstrb_o;
-    halted_o = halted_q;
-    trap_o = trap_q;
-    dmem_req_size_o = lsu_dmem_size;
+    robCommitReadyInner = robCommitStoreInner ? lsuStoreCommitReadyInner : 1'b1;
+    commitValidOutput = robCommitFireInner;
+    commitPcOutput = robCommitPcInner;
+    commitInstrOutput = robCommitInstrInner;
+    commitRdValidOutput = robCommitFireInner && robCommitWritesInner &&
+                        (robCommitRdInner != 5'd0) && !robCommitExceptionInner;
+    commitRdOutput = robCommitRdInner;
+    commitRdValueOutput = prfCommitValueInner;
+    commitMemValidOutput = robCommitFireInner && robCommitStoreInner;
+    commitMemAddrOutput = dmemReqAddrOutput;
+    commitMemDataOutput = dmemReqWdataOutput;
+    commitMemWstrbOutput = dmemReqWstrbOutput;
+    haltedOutput = haltedInner;
+    trapOutput = trapInner;
+  end
+
+  always_comb begin
+    rsAllocBaseInner = '{
+      valid: issueFireInner,
+      operation: decodedInner.operation,
+      robTag: robAllocTagInner,
+      destinationPhy: issueDestPhyInner,
+      source1Ready: issueSrc1ReadyInner,
+      source1Tag: ratRs1PhyInner,
+      source1Value: issueSrc1ValueInner,
+      source2Ready: issueSrc2ReadyInner,
+      source2Tag: ratRs2PhyInner,
+      source2Value: issueSrc2ValueInner,
+      immediate: decodedInner.immediate,
+      programCounter: decodedInner.programCounter,
+      predictedProgramCounter: decodedInner.predictedNextProgramCounter,
+      useImmediate: decodedInner.usesImmediate
+    };
+    intRsAllocInputInner = rsAllocBaseInner;
+    intRsAllocInputInner.valid = rsAllocBaseInner.valid &&
+                                 (decodedInner.uopClass == rv32_pkg::UOP_ALU);
+    mulRsAllocInputInner = rsAllocBaseInner;
+    mulRsAllocInputInner.valid = rsAllocBaseInner.valid &&
+                                 (decodedInner.uopClass == rv32_pkg::UOP_MUL);
+    mulRsAllocInputInner.useImmediate = 1'b0;
+    divRsAllocInputInner = rsAllocBaseInner;
+    divRsAllocInputInner.valid = rsAllocBaseInner.valid &&
+                                 (decodedInner.uopClass == rv32_pkg::UOP_DIV);
+    divRsAllocInputInner.useImmediate = 1'b0;
+    branchRsAllocInputInner = rsAllocBaseInner;
+    branchRsAllocInputInner.valid = rsAllocBaseInner.valid &&
+                                    (decodedInner.uopClass == rv32_pkg::UOP_BRANCH);
+    memRsAllocInputInner = rsAllocBaseInner;
+    memRsAllocInputInner.valid = rsAllocBaseInner.valid &&
+      ((decodedInner.uopClass == rv32_pkg::UOP_LOAD) ||
+       (decodedInner.uopClass == rv32_pkg::UOP_STORE));
+    memRsAllocInputInner.source2Ready = 1'b1;
+    memRsAllocInputInner.source2Tag = '0;
+    memRsAllocInputInner.source2Value = '0;
+    memRsAllocInputInner.useImmediate = 1'b1;
   end
 
   rv32_rs #(.DEPTH(4), .AUX_W(1)) u_int_rs (
-    .clk_i(clk_i), .rst_ni(rst_ni), .flush_i(global_flush),
-    .flush_tag_i(global_flush_tag),
-    .alloc_valid_i(issue_fire && (decoded.uop_class == rv32_pkg::UOP_ALU)),
-    .alloc_ready_o(int_alloc_ready), .alloc_op_i(decoded.op),
-    .alloc_rob_tag_i(rob_alloc_tag), .alloc_dest_phy_i(issue_dest_phy),
-    .alloc_src1_ready_i(issue_src1_ready), .alloc_src1_tag_i(rat_rs1_phy),
-    .alloc_src1_value_i(issue_src1_value),
-    .alloc_src2_ready_i(issue_src2_ready), .alloc_src2_tag_i(rat_rs2_phy),
-    .alloc_src2_value_i(issue_src2_value),
-    .alloc_imm_i(decoded.imm), .alloc_pc_i(decoded.pc),
-    .alloc_predicted_pc_i(decoded.predicted_next_pc),
-    .alloc_use_imm_i(decoded.uses_imm), .alloc_aux_i(issue_is_jump),
-    .wb0_valid_i(wb_alu_valid), .wb0_phy_i(wb_alu_phy), .wb0_value_i(wb_alu_value),
-    .wb1_valid_i(wb_load_valid), .wb1_phy_i(wb_load_phy), .wb1_value_i(wb_load_value),
-    .wb2_valid_i(wb_mul_valid), .wb2_phy_i(wb_mul_phy), .wb2_value_i(wb_mul_value),
-    .wb3_valid_i(wb_div_valid), .wb3_phy_i(wb_div_phy), .wb3_value_i(wb_div_value),
-    .issue_valid_o(int_issue_valid), .issue_ready_i(int_issue_ready),
-    .issue_op_o(int_issue_op), .issue_rob_tag_o(int_issue_tag),
-    .issue_dest_phy_o(int_issue_phy), .issue_src1_value_o(int_issue_s1),
-    .issue_src2_value_o(int_issue_s2), .issue_imm_o(int_issue_imm),
-    .issue_pc_o(int_issue_pc), .issue_predicted_pc_o(int_issue_pred),
-    .issue_use_imm_o(int_issue_use_imm), .issue_aux_o(int_issue_aux),
-    .occupancy_o(int_occupancy)
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
+    .allocInput(intRsAllocInputInner),
+    .allocReadyOutput(intAllocReadyInner), .allocAuxInput(issueIsJumpInner),
+    .writebackInput(writebackInputInner),
+    .issueOutput(intRsIssueOutputInner), .issueReadyInput(intIssueReadyInner),
+    .issueAuxOutput(intIssueAuxInner),
+    .occupancyOutput(intOccupancyInner)
   );
+  assign intIssueValidInner = intRsIssueOutputInner.valid;
+  assign intIssueOpInner = intRsIssueOutputInner.operation;
+  assign intIssueTagInner = intRsIssueOutputInner.robTag;
+  assign intIssuePhyInner = intRsIssueOutputInner.destinationPhy;
+  assign intIssueS1Inner = intRsIssueOutputInner.source1Value;
+  assign intIssueS2Inner = intRsIssueOutputInner.source2Value;
+  assign intIssueImmInner = intRsIssueOutputInner.immediate;
+  assign intIssuePcInner = intRsIssueOutputInner.programCounter;
+  assign intIssuePredInner = intRsIssueOutputInner.predictedProgramCounter;
+  assign intIssueUseImmInner = intRsIssueOutputInner.useImmediate;
 
   rv32_rs #(.DEPTH(2), .AUX_W(1)) u_mul_rs (
-    .clk_i(clk_i), .rst_ni(rst_ni), .flush_i(global_flush), .flush_tag_i(global_flush_tag),
-    .alloc_valid_i(issue_fire && (decoded.uop_class == rv32_pkg::UOP_MUL)), .alloc_ready_o(mul_alloc_ready),
-    .alloc_op_i(decoded.op), .alloc_rob_tag_i(rob_alloc_tag), .alloc_dest_phy_i(issue_dest_phy),
-    .alloc_src1_ready_i(issue_src1_ready), .alloc_src1_tag_i(rat_rs1_phy), .alloc_src1_value_i(issue_src1_value),
-    .alloc_src2_ready_i(issue_src2_ready), .alloc_src2_tag_i(rat_rs2_phy), .alloc_src2_value_i(issue_src2_value),
-    .alloc_imm_i(decoded.imm), .alloc_pc_i(decoded.pc), .alloc_predicted_pc_i(decoded.predicted_next_pc),
-    .alloc_use_imm_i(1'b0), .alloc_aux_i(1'b0),
-    .wb0_valid_i(wb_alu_valid), .wb0_phy_i(wb_alu_phy), .wb0_value_i(wb_alu_value),
-    .wb1_valid_i(wb_load_valid), .wb1_phy_i(wb_load_phy), .wb1_value_i(wb_load_value),
-    .wb2_valid_i(wb_mul_valid), .wb2_phy_i(wb_mul_phy), .wb2_value_i(wb_mul_value),
-    .wb3_valid_i(wb_div_valid), .wb3_phy_i(wb_div_phy), .wb3_value_i(wb_div_value),
-    .issue_valid_o(mul_issue_valid), .issue_ready_i(mul_issue_ready), .issue_op_o(mul_issue_op),
-    .issue_rob_tag_o(mul_issue_tag), .issue_dest_phy_o(mul_issue_phy),
-    .issue_src1_value_o(mul_issue_s1), .issue_src2_value_o(mul_issue_s2),
-    .issue_imm_o(mul_issue_imm), .issue_pc_o(mul_issue_pc), .issue_predicted_pc_o(mul_issue_pred),
-    .issue_use_imm_o(mul_issue_use_imm), .issue_aux_o(mul_issue_aux), .occupancy_o(mul_occupancy)
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
+    .allocInput(mulRsAllocInputInner), .allocReadyOutput(mulAllocReadyInner),
+    .allocAuxInput(1'b0),
+    .writebackInput(writebackInputInner),
+    .issueOutput(mulRsIssueOutputInner), .issueReadyInput(mulIssueReadyInner),
+    .issueAuxOutput(mulIssueAuxInner), .occupancyOutput(mulOccupancyInner)
   );
+  assign mulIssueValidInner = mulRsIssueOutputInner.valid;
+  assign mulIssueOpInner = mulRsIssueOutputInner.operation;
+  assign mulIssueTagInner = mulRsIssueOutputInner.robTag;
+  assign mulIssuePhyInner = mulRsIssueOutputInner.destinationPhy;
+  assign mulIssueS1Inner = mulRsIssueOutputInner.source1Value;
+  assign mulIssueS2Inner = mulRsIssueOutputInner.source2Value;
+  assign mulIssueImmInner = mulRsIssueOutputInner.immediate;
+  assign mulIssuePcInner = mulRsIssueOutputInner.programCounter;
+  assign mulIssuePredInner = mulRsIssueOutputInner.predictedProgramCounter;
+  assign mulIssueUseImmInner = mulRsIssueOutputInner.useImmediate;
 
   rv32_rs #(.DEPTH(1), .AUX_W(1)) u_div_rs (
-    .clk_i(clk_i), .rst_ni(rst_ni), .flush_i(global_flush), .flush_tag_i(global_flush_tag),
-    .alloc_valid_i(issue_fire && (decoded.uop_class == rv32_pkg::UOP_DIV)), .alloc_ready_o(div_alloc_ready),
-    .alloc_op_i(decoded.op), .alloc_rob_tag_i(rob_alloc_tag), .alloc_dest_phy_i(issue_dest_phy),
-    .alloc_src1_ready_i(issue_src1_ready), .alloc_src1_tag_i(rat_rs1_phy), .alloc_src1_value_i(issue_src1_value),
-    .alloc_src2_ready_i(issue_src2_ready), .alloc_src2_tag_i(rat_rs2_phy), .alloc_src2_value_i(issue_src2_value),
-    .alloc_imm_i(decoded.imm), .alloc_pc_i(decoded.pc), .alloc_predicted_pc_i(decoded.predicted_next_pc),
-    .alloc_use_imm_i(1'b0), .alloc_aux_i(1'b0),
-    .wb0_valid_i(wb_alu_valid), .wb0_phy_i(wb_alu_phy), .wb0_value_i(wb_alu_value),
-    .wb1_valid_i(wb_load_valid), .wb1_phy_i(wb_load_phy), .wb1_value_i(wb_load_value),
-    .wb2_valid_i(wb_mul_valid), .wb2_phy_i(wb_mul_phy), .wb2_value_i(wb_mul_value),
-    .wb3_valid_i(wb_div_valid), .wb3_phy_i(wb_div_phy), .wb3_value_i(wb_div_value),
-    .issue_valid_o(div_issue_valid), .issue_ready_i(div_issue_ready), .issue_op_o(div_issue_op),
-    .issue_rob_tag_o(div_issue_tag), .issue_dest_phy_o(div_issue_phy),
-    .issue_src1_value_o(div_issue_s1), .issue_src2_value_o(div_issue_s2),
-    .issue_imm_o(div_issue_imm), .issue_pc_o(div_issue_pc), .issue_predicted_pc_o(div_issue_pred),
-    .issue_use_imm_o(div_issue_use_imm), .issue_aux_o(div_issue_aux), .occupancy_o(div_occupancy)
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
+    .allocInput(divRsAllocInputInner), .allocReadyOutput(divAllocReadyInner),
+    .allocAuxInput(1'b0),
+    .writebackInput(writebackInputInner),
+    .issueOutput(divRsIssueOutputInner), .issueReadyInput(divIssueReadyInner),
+    .issueAuxOutput(divIssueAuxInner), .occupancyOutput(divOccupancyInner)
   );
+  assign divIssueValidInner = divRsIssueOutputInner.valid;
+  assign divIssueOpInner = divRsIssueOutputInner.operation;
+  assign divIssueTagInner = divRsIssueOutputInner.robTag;
+  assign divIssuePhyInner = divRsIssueOutputInner.destinationPhy;
+  assign divIssueS1Inner = divRsIssueOutputInner.source1Value;
+  assign divIssueS2Inner = divRsIssueOutputInner.source2Value;
+  assign divIssueImmInner = divRsIssueOutputInner.immediate;
+  assign divIssuePcInner = divRsIssueOutputInner.programCounter;
+  assign divIssuePredInner = divRsIssueOutputInner.predictedProgramCounter;
+  assign divIssueUseImmInner = divRsIssueOutputInner.useImmediate;
 
   rv32_rs #(.DEPTH(4), .AUX_W(3)) u_branch_rs (
-    .clk_i(clk_i), .rst_ni(rst_ni), .flush_i(global_flush), .flush_tag_i(global_flush_tag),
-    .alloc_valid_i(issue_fire && (decoded.uop_class == rv32_pkg::UOP_BRANCH)), .alloc_ready_o(branch_alloc_ready),
-    .alloc_op_i(decoded.op), .alloc_rob_tag_i(rob_alloc_tag), .alloc_dest_phy_i(issue_dest_phy),
-    .alloc_src1_ready_i(issue_src1_ready), .alloc_src1_tag_i(rat_rs1_phy), .alloc_src1_value_i(issue_src1_value),
-    .alloc_src2_ready_i(issue_src2_ready), .alloc_src2_tag_i(rat_rs2_phy), .alloc_src2_value_i(issue_src2_value),
-    .alloc_imm_i(decoded.imm), .alloc_pc_i(decoded.pc), .alloc_predicted_pc_i(decoded.predicted_next_pc),
-    .alloc_use_imm_i(decoded.uses_imm), .alloc_aux_i({1'b0, issue_is_return, issue_is_call}),
-    .wb0_valid_i(wb_alu_valid), .wb0_phy_i(wb_alu_phy), .wb0_value_i(wb_alu_value),
-    .wb1_valid_i(wb_load_valid), .wb1_phy_i(wb_load_phy), .wb1_value_i(wb_load_value),
-    .wb2_valid_i(wb_mul_valid), .wb2_phy_i(wb_mul_phy), .wb2_value_i(wb_mul_value),
-    .wb3_valid_i(wb_div_valid), .wb3_phy_i(wb_div_phy), .wb3_value_i(wb_div_value),
-    .issue_valid_o(branch_issue_valid), .issue_ready_i(branch_issue_ready), .issue_op_o(branch_issue_op),
-    .issue_rob_tag_o(branch_issue_tag), .issue_dest_phy_o(branch_issue_phy),
-    .issue_src1_value_o(branch_issue_s1), .issue_src2_value_o(branch_issue_s2),
-    .issue_imm_o(branch_issue_imm), .issue_pc_o(branch_issue_pc), .issue_predicted_pc_o(branch_issue_pred),
-    .issue_use_imm_o(branch_issue_use_imm), .issue_aux_o(branch_issue_aux), .occupancy_o(branch_occupancy)
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
+    .allocInput(branchRsAllocInputInner), .allocReadyOutput(branchAllocReadyInner),
+    .allocAuxInput({1'b0, issueIsReturnInner, issueIsCallInner}),
+    .writebackInput(writebackInputInner),
+    .issueOutput(branchRsIssueOutputInner), .issueReadyInput(branchIssueReadyInner),
+    .issueAuxOutput(branchIssueAuxInner), .occupancyOutput(branchOccupancyInner)
   );
+  assign branchIssueValidInner = branchRsIssueOutputInner.valid;
+  assign branchIssueOpInner = branchRsIssueOutputInner.operation;
+  assign branchIssueTagInner = branchRsIssueOutputInner.robTag;
+  assign branchIssuePhyInner = branchRsIssueOutputInner.destinationPhy;
+  assign branchIssueS1Inner = branchRsIssueOutputInner.source1Value;
+  assign branchIssueS2Inner = branchRsIssueOutputInner.source2Value;
+  assign branchIssueImmInner = branchRsIssueOutputInner.immediate;
+  assign branchIssuePcInner = branchRsIssueOutputInner.programCounter;
+  assign branchIssuePredInner = branchRsIssueOutputInner.predictedProgramCounter;
+  assign branchIssueUseImmInner = branchRsIssueOutputInner.useImmediate;
 
   rv32_rs #(.DEPTH(4), .AUX_W(4)) u_mem_rs (
-    .clk_i(clk_i), .rst_ni(rst_ni), .flush_i(global_flush), .flush_tag_i(global_flush_tag),
-    .alloc_valid_i(issue_fire && ((decoded.uop_class == rv32_pkg::UOP_LOAD) ||
-                                  (decoded.uop_class == rv32_pkg::UOP_STORE))),
-    .alloc_ready_o(mem_alloc_ready), .alloc_op_i(decoded.op), .alloc_rob_tag_i(rob_alloc_tag),
-    .alloc_dest_phy_i(issue_dest_phy), .alloc_src1_ready_i(issue_src1_ready),
-    .alloc_src1_tag_i(rat_rs1_phy), .alloc_src1_value_i(issue_src1_value),
-    .alloc_src2_ready_i(1'b1), .alloc_src2_tag_i('0), .alloc_src2_value_i('0),
-    .alloc_imm_i(decoded.imm), .alloc_pc_i(decoded.pc), .alloc_predicted_pc_i(decoded.predicted_next_pc),
-    .alloc_use_imm_i(1'b1),
-    .alloc_aux_i({decoded.uop_class == rv32_pkg::UOP_STORE,
-                  (decoded.uop_class == rv32_pkg::UOP_STORE) ?
-                    sq_alloc_index : lq_alloc_index}),
-    .wb0_valid_i(wb_alu_valid), .wb0_phy_i(wb_alu_phy), .wb0_value_i(wb_alu_value),
-    .wb1_valid_i(wb_load_valid), .wb1_phy_i(wb_load_phy), .wb1_value_i(wb_load_value),
-    .wb2_valid_i(wb_mul_valid), .wb2_phy_i(wb_mul_phy), .wb2_value_i(wb_mul_value),
-    .wb3_valid_i(wb_div_valid), .wb3_phy_i(wb_div_phy), .wb3_value_i(wb_div_value),
-    .issue_valid_o(mem_issue_valid), .issue_ready_i(mem_issue_ready), .issue_op_o(mem_issue_op),
-    .issue_rob_tag_o(mem_issue_tag), .issue_dest_phy_o(mem_issue_phy),
-    .issue_src1_value_o(mem_issue_s1), .issue_src2_value_o(mem_issue_s2),
-    .issue_imm_o(mem_issue_imm), .issue_pc_o(mem_issue_pc), .issue_predicted_pc_o(mem_issue_pred),
-    .issue_use_imm_o(mem_issue_use_imm), .issue_aux_o(mem_issue_aux), .occupancy_o(mem_occupancy)
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
+    .allocInput(memRsAllocInputInner), .allocReadyOutput(memAllocReadyInner),
+    .allocAuxInput({decodedInner.uopClass == rv32_pkg::UOP_STORE,
+                    (decodedInner.uopClass == rv32_pkg::UOP_STORE) ?
+                      sqAllocIndexInner : lqAllocIndexInner}),
+    .writebackInput(writebackInputInner),
+    .issueOutput(memRsIssueOutputInner), .issueReadyInput(memIssueReadyInner),
+    .issueAuxOutput(memIssueAuxInner), .occupancyOutput(memOccupancyInner)
   );
+  assign memIssueValidInner = memRsIssueOutputInner.valid;
+  assign memIssueS1Inner = memRsIssueOutputInner.source1Value;
+  assign memIssueImmInner = memRsIssueOutputInner.immediate;
 
   rv32_alu_unit u_alu_unit (
-    .clk_i(clk_i), .rst_ni(rst_ni), .flush_i(global_flush), .flush_tag_i(global_flush_tag),
-    .in_valid_i(int_issue_valid), .in_ready_o(int_issue_ready), .op_i(int_issue_op),
-    .lhs_i(int_issue_s1), .rhs_i(int_issue_s2), .imm_i(int_issue_imm), .pc_i(int_issue_pc),
-    .use_imm_i(int_issue_use_imm), .rob_tag_i(int_issue_tag), .dest_phy_i(int_issue_phy),
-    .is_control_i(int_issue_aux[0]),
-    .out_valid_o(alu_cdb_valid), .out_ready_i(1'b1), .result_o(wb_alu_value),
-    .rob_tag_o(wb_alu_tag), .dest_phy_o(wb_alu_phy),
-    .is_control_o(alu_cdb_is_control),
-    .control_misaligned_o(alu_cdb_misaligned)
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
+    .executeInput('{valid: intIssueValidInner,
+                   operation: intIssueOpInner,
+                   source1: intIssueS1Inner,
+                   source2: intIssueS2Inner,
+                   immediate: intIssueImmInner,
+                   programCounter: intIssuePcInner,
+                   predictedNextProgramCounter: intIssuePredInner,
+                   useImmediate: intIssueUseImmInner,
+                   robTag: intIssueTagInner,
+                   destinationPhy: intIssuePhyInner,
+                   isControl: intIssueAuxInner[0],
+                   isCall: 1'b0,
+                   isReturn: 1'b0}),
+    .inReadyOutput(intIssueReadyInner), .outReadyInput(1'b1),
+    .executeOutput(aluExecuteOutputInner)
   );
 
   rv32_mul u_mul_unit (
-    .clk_i(clk_i), .rst_ni(rst_ni), .flush_i(global_flush), .flush_tag_i(global_flush_tag),
-    .in_valid_i(mul_issue_valid), .in_ready_o(mul_issue_ready), .op_i(mul_issue_op),
-    .lhs_i(mul_issue_s1), .rhs_i(mul_issue_s2), .rob_tag_i(mul_issue_tag), .dest_phy_i(mul_issue_phy),
-    .out_valid_o(mul_cdb_valid), .out_ready_i(1'b1), .result_o(wb_mul_value),
-    .rob_tag_o(wb_mul_tag), .dest_phy_o(wb_mul_phy)
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
+    .executeInput('{valid: mulIssueValidInner,
+                   operation: mulIssueOpInner,
+                   source1: mulIssueS1Inner,
+                   source2: mulIssueS2Inner,
+                   immediate: mulIssueImmInner,
+                   programCounter: mulIssuePcInner,
+                   predictedNextProgramCounter: mulIssuePredInner,
+                   useImmediate: mulIssueUseImmInner,
+                   robTag: mulIssueTagInner,
+                   destinationPhy: mulIssuePhyInner,
+                   isControl: 1'b0,
+                   isCall: 1'b0,
+                   isReturn: 1'b0}),
+    .inReadyOutput(mulIssueReadyInner), .outReadyInput(1'b1),
+    .executeOutput(mulExecuteOutputInner)
   );
 
   // Use literal child parameters so sv2v/Yosys can elaborate either whole-core
@@ -549,79 +794,100 @@ module rv32_core #(
   generate
     if (DIV_USE_SRT4) begin : g_div_srt4
       rv32_div_srt4 u_div_unit (
-        .clk_i(clk_i), .rst_ni(rst_ni), .flush_i(global_flush), .flush_tag_i(global_flush_tag),
-        .in_valid_i(div_issue_valid), .in_ready_o(div_issue_ready), .op_i(div_issue_op),
-        .dividend_i(div_issue_s1), .divisor_i(div_issue_s2), .rob_tag_i(div_issue_tag),
-        .dest_phy_i(div_issue_phy), .out_valid_o(div_cdb_valid), .out_ready_i(1'b1),
-        .result_o(wb_div_value), .rob_tag_o(wb_div_tag), .dest_phy_o(wb_div_phy)
+        .clkInput(clkInput), .rstNInput(rstNInput),
+        .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
+        .executeInput('{valid: divIssueValidInner,
+                       operation: divIssueOpInner,
+                       source1: divIssueS1Inner,
+                       source2: divIssueS2Inner,
+                       immediate: divIssueImmInner,
+                       programCounter: divIssuePcInner,
+                       predictedNextProgramCounter: divIssuePredInner,
+                       useImmediate: 1'b0,
+                       robTag: divIssueTagInner,
+                       destinationPhy: divIssuePhyInner,
+                       isControl: 1'b0,
+                       isCall: 1'b0,
+                       isReturn: 1'b0}),
+        .inReadyOutput(divIssueReadyInner), .outReadyInput(1'b1),
+        .executeOutput(divExecuteOutputInner)
       );
     end else begin : g_div_radix2
       rv32_div_radix2 u_div_unit (
-        .clk_i(clk_i), .rst_ni(rst_ni), .flush_i(global_flush), .flush_tag_i(global_flush_tag),
-        .in_valid_i(div_issue_valid), .in_ready_o(div_issue_ready), .op_i(div_issue_op),
-        .dividend_i(div_issue_s1), .divisor_i(div_issue_s2), .rob_tag_i(div_issue_tag),
-        .dest_phy_i(div_issue_phy), .out_valid_o(div_cdb_valid), .out_ready_i(1'b1),
-        .result_o(wb_div_value), .rob_tag_o(wb_div_tag), .dest_phy_o(wb_div_phy)
+        .clkInput(clkInput), .rstNInput(rstNInput),
+        .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
+        .executeInput('{valid: divIssueValidInner,
+                       operation: divIssueOpInner,
+                       source1: divIssueS1Inner,
+                       source2: divIssueS2Inner,
+                       immediate: divIssueImmInner,
+                       programCounter: divIssuePcInner,
+                       predictedNextProgramCounter: divIssuePredInner,
+                       useImmediate: 1'b0,
+                       robTag: divIssueTagInner,
+                       destinationPhy: divIssuePhyInner,
+                       isControl: 1'b0,
+                       isCall: 1'b0,
+                       isReturn: 1'b0}),
+        .inReadyOutput(divIssueReadyInner), .outReadyInput(1'b1),
+        .executeOutput(divExecuteOutputInner)
       );
     end
   endgenerate
 
   rv32_bru_unit u_bru_unit (
-    .clk_i(clk_i), .rst_ni(rst_ni), .flush_i(global_flush),
-    .in_valid_i(branch_issue_valid), .in_ready_o(branch_issue_ready), .op_i(branch_issue_op),
-    .src1_i(branch_issue_s1), .src2_i(branch_issue_s2), .pc_i(branch_issue_pc),
-    .imm_i(branch_issue_imm), .predicted_next_pc_i(branch_issue_pred),
-    .rob_tag_i(branch_issue_tag), .is_call_i(branch_issue_aux[0]),
-    .is_return_i(branch_issue_aux[1]), .out_valid_o(bru_valid), .out_rob_tag_o(bru_tag),
-    .out_pc_o(bru_pc), .out_target_o(bru_target), .out_next_pc_o(bru_next_pc),
-    .out_return_address_o(bru_return_address), .out_taken_o(bru_taken),
-    .out_conditional_o(bru_conditional), .out_mispredict_o(bru_mispredict),
-    .out_misaligned_o(bru_misaligned), .out_call_o(bru_call), .out_return_o(bru_return)
+    .clkInput(clkInput), .rstNInput(rstNInput), .flushInput(globalFlushInner),
+    .executeInput('{valid: branchIssueValidInner,
+                   operation: branchIssueOpInner,
+                   source1: branchIssueS1Inner,
+                   source2: branchIssueS2Inner,
+                   immediate: branchIssueImmInner,
+                   programCounter: branchIssuePcInner,
+                   predictedNextProgramCounter: branchIssuePredInner,
+                   useImmediate: branchIssueUseImmInner,
+                   robTag: branchIssueTagInner,
+                   destinationPhy: branchIssuePhyInner,
+                   isControl: 1'b0,
+                   isCall: branchIssueAuxInner[0],
+                   isReturn: branchIssueAuxInner[1]}),
+    .inReadyOutput(branchIssueReadyInner), .executeOutput(bruExecuteOutputInner)
   );
 
-  rv32_agu u_agu (.base_i(mem_issue_s1), .offset_i(mem_issue_imm), .address_o(mem_address));
-  assign mem_issue_ready = !global_flush;
+  rv32_agu u_agu (
+    .addressInput('{baseAddress: memIssueS1Inner, offset: memIssueImmInner}),
+    .addressOutput(aguOutputInner)
+  );
+  assign memAddressInner = aguOutputInner.address;
+  assign memIssueReadyInner = !globalFlushInner;
 
   rv32_lsu u_lsu (
-    .clk_i(clk_i), .rst_ni(rst_ni), .flush_i(global_flush), .flush_tag_i(global_flush_tag),
-    .load_alloc_valid_i(issue_fire && (decoded.uop_class == rv32_pkg::UOP_LOAD)),
-    .load_alloc_ready_o(lq_alloc_ready), .load_alloc_index_o(lq_alloc_index),
-    .load_alloc_rob_tag_i(rob_alloc_tag), .load_alloc_dest_phy_i(issue_dest_phy),
-    .load_alloc_size_i(decoded.mem_size), .load_alloc_unsigned_i(decoded.mem_unsigned),
-    .store_alloc_valid_i(issue_fire && (decoded.uop_class == rv32_pkg::UOP_STORE)),
-    .store_alloc_ready_o(sq_alloc_ready), .store_alloc_index_o(sq_alloc_index),
-    .store_alloc_rob_tag_i(rob_alloc_tag), .store_alloc_size_i(decoded.mem_size),
-    .store_alloc_data_ready_i(issue_src2_ready), .store_alloc_data_tag_i(rat_rs2_phy),
-    .store_alloc_data_value_i(issue_src2_value), .address_valid_i(mem_issue_valid && mem_issue_ready),
-    .address_is_store_i(mem_issue_aux[3]), .address_index_i(mem_issue_aux[2:0]),
-    .address_value_i(mem_address),
-    .wb0_valid_i(wb_alu_valid), .wb0_phy_i(wb_alu_phy), .wb0_value_i(wb_alu_value),
-    .wb1_valid_i(wb_load_valid), .wb1_phy_i(wb_load_phy), .wb1_value_i(wb_load_value),
-    .wb2_valid_i(wb_mul_valid), .wb2_phy_i(wb_mul_phy), .wb2_value_i(wb_mul_value),
-    .wb3_valid_i(wb_div_valid), .wb3_phy_i(wb_div_phy), .wb3_value_i(wb_div_value),
-    .load_result_valid_o(load_cdb_valid), .load_result_ready_i(1'b1),
-    .load_result_rob_tag_o(wb_load_tag), .load_result_dest_phy_o(wb_load_phy),
-    .load_result_value_o(wb_load_value), .store_complete_valid_o(store_complete_valid),
-    .store_complete_rob_tag_o(store_complete_tag),
-    .store_commit_valid_i(rob_commit_valid && rob_commit_store),
-    .store_commit_rob_tag_i(rob_commit_tag), .store_commit_index_i(rob_commit_sq_index),
-    .store_commit_ready_o(lsu_store_commit_ready), .dmem_req_valid_o(dmem_req_valid_o),
-    .dmem_req_ready_i(dmem_req_ready_i), .dmem_req_write_o(dmem_req_write_o),
-    .dmem_req_addr_o(dmem_req_addr_o), .dmem_req_wdata_o(dmem_req_wdata_o),
-    .dmem_req_wstrb_o(dmem_req_wstrb_o), .dmem_req_size_o(lsu_dmem_size),
-    .dmem_rsp_valid_i(dmem_rsp_valid_i), .dmem_rsp_rdata_i(dmem_rsp_rdata_i),
-    .lq_count_o(lq_count), .sq_count_o(sq_count)
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
+    .loadAllocationInput(lsuLoadAllocationInputInner),
+    .loadAllocReadyOutput(lqAllocReadyInner), .loadAllocIndexOutput(lqAllocIndexInner),
+    .storeAllocationInput(lsuStoreAllocationInputInner),
+    .storeAllocReadyOutput(sqAllocReadyInner), .storeAllocIndexOutput(sqAllocIndexInner),
+    .addressInput(lsuAddressInputInner), .addressIndexInput(memIssueAuxInner[2:0]),
+    .writebackInput(writebackInputInner),
+    .loadResultOutput(lsuLoadResultOutputInner), .loadResultReadyInput(1'b1),
+    .storeCompleteOutput(lsuStoreCompleteOutputInner),
+    .storeCommitInput(lsuStoreCommitInputInner),
+    .storeCommitIndexInput(robCommitSqIndexInner),
+    .storeCommitReadyOutput(lsuStoreCommitReadyInner),
+    .dmemRequestOutput(lsuDmemRequestOutputInner), .dmemReqReadyInput(dmemReqReadyInput),
+    .dmemResponseInput(lsuDmemResponseInputInner),
+    .lqCountOutput(lqCountInner), .sqCountOutput(sqCountInner)
   );
 
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      halted_q <= 1'b0;
-      trap_q <= 1'b0;
-    end else if (rob_commit_fire) begin
-      if (rob_commit_halt)
-        halted_q <= 1'b1;
-      if (rob_commit_exception)
-        trap_q <= 1'b1;
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) begin
+      haltedInner <= 1'b0;
+      trapInner <= 1'b0;
+    end else if (robCommitFireInner) begin
+      if (robCommitHaltInner)
+        haltedInner <= 1'b1;
+      if (robCommitExceptionInner)
+        trapInner <= 1'b1;
     end
   end
 endmodule

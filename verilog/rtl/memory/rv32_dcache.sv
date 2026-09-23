@@ -2,29 +2,19 @@ module rv32_dcache #(
   parameter int unsigned SETS = 1024,
   parameter int unsigned WAYS = 4
 ) (
-  input  logic             clk_i,
-  input  logic             rst_ni,
+  input  logic             clkInput,
+  input  logic             rstNInput,
 
-  input  logic             cpu_req_valid_i,
-  output logic             cpu_req_ready_o,
-  input  logic             cpu_req_write_i,
-  input  logic [31:0]      cpu_req_addr_i,
-  input  logic [31:0]      cpu_req_wdata_i,
-  input  logic [3:0]       cpu_req_wstrb_i,
-  input  logic [1:0]       cpu_req_size_i,
-  output logic             cpu_rsp_valid_o,
-  output logic [31:0]      cpu_rsp_data_o,
+  input  rv32_pkg::dcache_cpu_request_input_t cpuRequestInput,
+  output logic             cpuReqReadyOutput,
+  output rv32_pkg::dcache_cpu_response_output_t cpuResponseOutput,
 
-  output logic             mem_req_valid_o,
-  input  logic             mem_req_ready_i,
-  output logic             mem_req_write_o,
-  output logic [31:0]      mem_req_addr_o,
-  output logic [127:0]     mem_req_wdata_o,
-  input  logic             mem_rsp_valid_i,
-  input  logic [127:0]     mem_rsp_data_i,
+  output rv32_pkg::cache_line_request_output_t memRequestOutput,
+  input  logic             memReqReadyInput,
+  input  rv32_pkg::cache_line_response_input_t memResponseInput,
 
-  input  logic             flush_i,
-  output logic             flush_done_o
+  input  logic             flushInput,
+  output logic             flushDoneOutput
 );
   localparam int unsigned INDEX_W = $clog2(SETS);
   localparam int unsigned WAY_W = $clog2(WAYS);
@@ -40,347 +30,347 @@ module rv32_dcache #(
     FLUSH_READ,
     FLUSH_WRITEBACK
   } state_e;
-  state_e state_q;
+  state_e stateInner;
 
-  logic valid_q [0:WAYS-1][0:SETS-1];
-  logic dirty_q [0:WAYS-1][0:SETS-1];
-  logic [TAG_W-1:0] tag_q [0:WAYS-1][0:SETS-1];
-  logic [2:0] plru_q [0:SETS-1];
+  logic validInner [WAYS][SETS];
+  logic dirtyInner [WAYS][SETS];
+  logic [TAG_W-1:0] tagInner [WAYS][SETS];
+  logic [2:0] plruInner [SETS];
 
-  logic saved_write_q;
-  logic [31:0] saved_addr_q;
-  logic [31:0] saved_wdata_q;
-  logic [3:0] saved_wstrb_q;
-  logic [1:0] saved_size_q;
-  logic [INDEX_W-1:0] saved_index_q;
-  logic [3:0] saved_offset_q;
-  logic req_hit_q;
-  logic [WAY_W-1:0] req_hit_way_q, req_victim_q;
-  logic [WAY_W-1:0] victim_way_q;
-  logic [127:0] evict_data_q;
-  logic [127:0] flush_data_q;
-  logic [INDEX_W-1:0] flush_set_q;
-  logic [WAY_W-1:0] flush_way_q;
-  logic flush_done_q;
-  logic [WAY_W-1:0] flush_way_next;
-  logic [INDEX_W-1:0] flush_set_next;
-  logic unused_cout_flush_way, unused_cout_flush_set;
+  logic savedWriteInner;
+  logic [31:0] savedAddrInner;
+  logic [31:0] savedWdataInner;
+  logic [3:0] savedWstrbInner;
+  logic [1:0] savedSizeInner;
+  logic [INDEX_W-1:0] savedIndexRegisteredInner;
+  logic [3:0] savedOffsetInner;
+  logic reqHitInner;
+  logic [WAY_W-1:0] reqHitWayInner, reqVictimInner;
+  logic [WAY_W-1:0] victimWayInner;
+  logic [127:0] evictDataInner;
+  logic [127:0] flushDataInner;
+  logic [INDEX_W-1:0] flushSetInner;
+  logic [WAY_W-1:0] flushWayInner;
+  logic flushDoneInner;
+  logic [WAY_W-1:0] flushWayNext;
+  logic [INDEX_W-1:0] flushSetNext;
+  logic unusedCoutFlushWayInner, unusedCoutFlushSetInner;
 
-  logic rsp_valid_q;
-  logic [31:0] rsp_data_q;
-  logic [INDEX_W-1:0] request_index;
-  logic [TAG_W-1:0] request_tag;
-  logic [3:0] request_offset;
-  logic hit_found;
-  logic [WAY_W-1:0] hit_way;
-  logic victim_found;
-  logic [WAY_W-1:0] selected_victim;
-  logic [INDEX_W-1:0] saved_index;
-  logic [TAG_W-1:0] saved_tag;
-  logic [127:0] refill_merged;
-  logic [127:0] sram_rdata [0:WAYS-1];
-  logic [127:0] hit_line, victim_line, flush_line;
-  logic [31:0] hit_word, refill_word;
-  logic [15:0] store_wmask;
-  logic [127:0] store_wdata;
-  logic accept_q;
-  integer comb_way;
-  integer seq_way, seq_set;
-  genvar g_way;
+  logic rspValidInner;
+  logic [31:0] rspDataInner;
+  logic [INDEX_W-1:0] requestIndexInner;
+  logic [TAG_W-1:0] requestTagInner;
+  logic [3:0] requestOffsetInner;
+  logic hitFoundInner;
+  logic [WAY_W-1:0] hitWayInner;
+  logic victimFoundInner;
+  logic [WAY_W-1:0] selectedVictimInner;
+  logic [INDEX_W-1:0] savedIndexInner;
+  logic [TAG_W-1:0] savedTagInner;
+  logic [127:0] refillMergedInner;
+  logic [127:0] sramRdataInner [WAYS];
+  logic [127:0] hitLineInner, victimLineInner, flushLineInner;
+  logic [31:0] hitWordInner, refillWordInner;
+  logic [15:0] storeWmaskInner;
+  logic [127:0] storeWdataInner;
+  logic acceptInner;
+  integer combWayInner;
+  integer seqWayInner, seqSetInner;
+  genvar gWayInner;
 
   rv32_add #(.WIDTH(WAY_W)) u_flush_way_next (
-    .a_i(flush_way_q), .b_i(WAY_W'(1)), .cin_i(1'b0),
-    .sum_o(flush_way_next), .cout_o(unused_cout_flush_way)
+    .aInput(flushWayInner), .bInput(WAY_W'(1)), .cinInput(1'b0),
+    .sumOutput(flushWayNext), .coutOutput(unusedCoutFlushWayInner)
   );
 
   rv32_add #(.WIDTH(INDEX_W)) u_flush_set_next (
-    .a_i(flush_set_q), .b_i(INDEX_W'(1)), .cin_i(1'b0),
-    .sum_o(flush_set_next), .cout_o(unused_cout_flush_set)
+    .aInput(flushSetInner), .bInput(INDEX_W'(1)), .cinInput(1'b0),
+    .sumOutput(flushSetNext), .coutOutput(unusedCoutFlushSetInner)
   );
 
   function automatic logic [127:0] merge_store(
-    input logic [127:0] line,
-    input logic [3:0] offset,
-    input logic [31:0] data,
-    input logic [3:0] strobe
+    input logic [127:0] lineInput,
+    input logic [3:0] offsetInput,
+    input logic [31:0] dataInput,
+    input logic [3:0] strobeInput
   );
-    logic [127:0] result;
-    integer byte_index;
+    logic [127:0] resultInner;
+    integer byteIndexInner;
     begin
-      result = line;
-      for (byte_index = 0; byte_index < 4; byte_index = byte_index + 1)
-        if (strobe[byte_index])
-          result[((32'(offset) + byte_index) << 3) +: 8] =
-            data[(byte_index << 3) +: 8];
-      merge_store = result;
+      resultInner = lineInput;
+      for (byteIndexInner = 0; byteIndexInner < 4; byteIndexInner = byteIndexInner + 1)
+        if (strobeInput[byteIndexInner])
+          resultInner[((32'(offsetInput) + byteIndexInner) << 3) +: 8] =
+            dataInput[(byteIndexInner << 3) +: 8];
+      merge_store = resultInner;
     end
   endfunction
 
   function automatic logic [31:0] extract_line_word(
-    input logic [127:0] line,
-    input logic [3:0] offset
+    input logic [127:0] lineInput,
+    input logic [3:0] offsetInput
   );
-    logic [127:0] shifted;
+    logic [127:0] shiftedInner;
     begin
-      shifted = line >> ({4'b0, offset} << 3);
-      extract_line_word = shifted[31:0];
+      shiftedInner = lineInput >> ({4'b0, offsetInput} << 3);
+      extract_line_word = shiftedInner[31:0];
     end
   endfunction
 
   function automatic logic [2:0] plru_after_access(
-    input logic [2:0] old_plru,
-    input logic [WAY_W-1:0] accessed_way
+    input logic [2:0] oldPlruInput,
+    input logic [WAY_W-1:0] accessedWayInput
   );
-    logic [2:0] next_plru;
+    logic [2:0] nextPlruInner;
     begin
-      next_plru = old_plru;
-      if (accessed_way < WAY_W'(2))
-        next_plru[2] = 1'b1;
+      nextPlruInner = oldPlruInput;
+      if (accessedWayInput < WAY_W'(2))
+        nextPlruInner[2] = 1'b1;
       else
-        next_plru[2] = 1'b0;
-      unique case (accessed_way)
-        WAY_W'(0): next_plru[1] = 1'b1;
-        WAY_W'(1): next_plru[1] = 1'b0;
-        WAY_W'(2): next_plru[0] = 1'b1;
-        default:   next_plru[0] = 1'b0;
+        nextPlruInner[2] = 1'b0;
+      unique case (accessedWayInput)
+        WAY_W'(0): nextPlruInner[1] = 1'b1;
+        WAY_W'(1): nextPlruInner[1] = 1'b0;
+        WAY_W'(2): nextPlruInner[0] = 1'b1;
+        default:   nextPlruInner[0] = 1'b0;
       endcase
-      plru_after_access = next_plru;
+      plru_after_access = nextPlruInner;
     end
   endfunction
 
   generate
-    for (g_way = 0; g_way < WAYS; g_way = g_way + 1) begin : g_data
+    for (gWayInner = 0; gWayInner < WAYS; gWayInner = gWayInner + 1) begin : g_data
       rv32_sram_1rw #(
         .ADDR_W(INDEX_W),
         .DATA_W(128),
         .MASK_W(16)
       ) u_way (
-        .clk_i(clk_i),
-        .rd_en_i(accept_q ||
-                 (state_q == FLUSH_SCAN && !flush_done_q &&
-                  valid_q[flush_way_q][flush_set_q] &&
-                  dirty_q[flush_way_q][flush_set_q])),
-        .rd_addr_i((state_q == FLUSH_SCAN) ? flush_set_q : request_index),
-        .rd_data_o(sram_rdata[g_way]),
-        .wr_en_i((state_q == TAG_READ && req_hit_q && saved_write_q &&
-                  (req_hit_way_q == WAY_W'(g_way))) ||
-                 (state_q == REFILL_WAIT && mem_rsp_valid_i &&
-                  (victim_way_q == WAY_W'(g_way)))),
-        .wr_addr_i(saved_index),
-        .wr_data_i((state_q == REFILL_WAIT) ?
-                   (saved_write_q ? refill_merged : mem_rsp_data_i) :
-                   store_wdata),
-        .wr_mask_i((state_q == REFILL_WAIT) ? 16'hffff : store_wmask)
+        .clkInput(clkInput),
+        .rdEnInput(acceptInner ||
+                 (stateInner == FLUSH_SCAN && !flushDoneInner &&
+                  validInner[flushWayInner][flushSetInner] &&
+                  dirtyInner[flushWayInner][flushSetInner])),
+        .rdAddrInput((stateInner == FLUSH_SCAN) ? flushSetInner : requestIndexInner),
+        .rdDataOutput(sramRdataInner[gWayInner]),
+        .wrEnInput((stateInner == TAG_READ && reqHitInner && savedWriteInner &&
+                  (reqHitWayInner == WAY_W'(gWayInner))) ||
+                 (stateInner == REFILL_WAIT && memResponseInput.valid &&
+                  (victimWayInner == WAY_W'(gWayInner)))),
+         .wrAddrInput(savedIndexRegisteredInner),
+        .wrDataInput((stateInner == REFILL_WAIT) ?
+                   (savedWriteInner ? refillMergedInner : memResponseInput.data) :
+                   storeWdataInner),
+        .wrMaskInput((stateInner == REFILL_WAIT) ? 16'hffff : storeWmaskInner)
       );
     end
   endgenerate
 
-  assign cpu_req_ready_o = (state_q == IDLE) && !flush_i;
+  assign cpuReqReadyOutput = (stateInner == IDLE) && !flushInput;
 
   always_comb begin
-    request_index = cpu_req_addr_i[INDEX_W+3:4];
-    request_tag = cpu_req_addr_i[31:INDEX_W+4];
-    request_offset = cpu_req_addr_i[3:0];
-    hit_found = 1'b0;
-    hit_way = '0;
-    for (comb_way = 0; comb_way < WAYS; comb_way = comb_way + 1) begin
-      if (!hit_found && valid_q[comb_way][request_index] &&
-          (tag_q[comb_way][request_index] == request_tag)) begin
-        hit_found = 1'b1;
-        hit_way = comb_way[WAY_W-1:0];
+    requestIndexInner = cpuRequestInput.address[INDEX_W+3:4];
+    requestTagInner = cpuRequestInput.address[31:INDEX_W+4];
+    requestOffsetInner = cpuRequestInput.address[3:0];
+    hitFoundInner = 1'b0;
+    hitWayInner = '0;
+    for (combWayInner = 0; combWayInner < WAYS; combWayInner = combWayInner + 1) begin
+      if (!hitFoundInner && validInner[combWayInner][requestIndexInner] &&
+          (tagInner[combWayInner][requestIndexInner] == requestTagInner)) begin
+        hitFoundInner = 1'b1;
+        hitWayInner = combWayInner[WAY_W-1:0];
       end
     end
 
-    victim_found = 1'b0;
-    selected_victim = plru_q[request_index][2] ?
-      (plru_q[request_index][0] ? WAY_W'(3) : WAY_W'(2)) :
-      (plru_q[request_index][1] ? WAY_W'(1) : WAY_W'(0));
-    for (comb_way = 0; comb_way < WAYS; comb_way = comb_way + 1) begin
-      if (!victim_found && !valid_q[comb_way][request_index]) begin
-        victim_found = 1'b1;
-        selected_victim = comb_way[WAY_W-1:0];
+    victimFoundInner = 1'b0;
+    selectedVictimInner = plruInner[requestIndexInner][2] ?
+      (plruInner[requestIndexInner][0] ? WAY_W'(3) : WAY_W'(2)) :
+      (plruInner[requestIndexInner][1] ? WAY_W'(1) : WAY_W'(0));
+    for (combWayInner = 0; combWayInner < WAYS; combWayInner = combWayInner + 1) begin
+      if (!victimFoundInner && !validInner[combWayInner][requestIndexInner]) begin
+        victimFoundInner = 1'b1;
+        selectedVictimInner = combWayInner[WAY_W-1:0];
       end
     end
 
-    accept_q = cpu_req_valid_i && cpu_req_ready_o;
+    acceptInner = cpuRequestInput.valid && cpuReqReadyOutput;
 
-    saved_index = saved_addr_q[INDEX_W+3:4];
-    saved_tag = saved_addr_q[31:INDEX_W+4];
-    refill_merged = merge_store(mem_rsp_data_i, saved_addr_q[3:0],
-                                  saved_wdata_q, saved_wstrb_q);
+    savedIndexInner = savedAddrInner[INDEX_W+3:4];
+    savedTagInner = savedAddrInner[31:INDEX_W+4];
+    refillMergedInner = merge_store(memResponseInput.data, savedAddrInner[3:0],
+                                  savedWdataInner, savedWstrbInner);
 
-    hit_line = sram_rdata[req_hit_way_q];
-    victim_line = sram_rdata[req_victim_q];
-    flush_line = sram_rdata[flush_way_q];
-    hit_word = extract_line_word(hit_line, saved_offset_q);
-    refill_word = extract_line_word(mem_rsp_data_i, saved_addr_q[3:0]);
+    hitLineInner = sramRdataInner[reqHitWayInner];
+    victimLineInner = sramRdataInner[reqVictimInner];
+    flushLineInner = sramRdataInner[flushWayInner];
+    hitWordInner = extract_line_word(hitLineInner, savedOffsetInner);
+    refillWordInner = extract_line_word(memResponseInput.data, savedAddrInner[3:0]);
 
-    store_wmask = 16'b0;
-    store_wdata = 128'b0;
-    for (comb_way = 0; comb_way < 4; comb_way = comb_way + 1) begin
-      if (saved_wstrb_q[comb_way]) begin
-        store_wmask[saved_offset_q + comb_way[3:0]] = 1'b1;
-        store_wdata[((32'(saved_offset_q) + comb_way) << 3) +: 8] =
-          saved_wdata_q[(comb_way << 3) +: 8];
+    storeWmaskInner = 16'b0;
+    storeWdataInner = 128'b0;
+    for (combWayInner = 0; combWayInner < 4; combWayInner = combWayInner + 1) begin
+      if (savedWstrbInner[combWayInner]) begin
+        storeWmaskInner[savedOffsetInner + combWayInner[3:0]] = 1'b1;
+        storeWdataInner[((32'(savedOffsetInner) + combWayInner) << 3) +: 8] =
+          savedWdataInner[(combWayInner << 3) +: 8];
       end
     end
 
-    cpu_rsp_valid_o = rsp_valid_q;
-    cpu_rsp_data_o = rsp_data_q;
-    flush_done_o = flush_done_q;
+    cpuResponseOutput.valid = rspValidInner;
+    cpuResponseOutput.readData = rspDataInner;
+    flushDoneOutput = flushDoneInner;
 
-    mem_req_valid_o = (state_q == WRITEBACK_REQUEST) ||
-                      (state_q == REFILL_REQUEST) ||
-                      (state_q == FLUSH_WRITEBACK);
-    mem_req_write_o = (state_q == WRITEBACK_REQUEST) ||
-                      (state_q == FLUSH_WRITEBACK);
-    mem_req_addr_o = 32'b0;
-    mem_req_wdata_o = 128'b0;
-    if (state_q == WRITEBACK_REQUEST) begin
-      mem_req_addr_o = {tag_q[victim_way_q][saved_index], saved_index, 4'b0};
-      mem_req_wdata_o = evict_data_q;
-    end else if (state_q == REFILL_REQUEST) begin
-      mem_req_addr_o = {saved_addr_q[31:4], 4'b0};
-    end else if (state_q == FLUSH_WRITEBACK) begin
-      mem_req_addr_o = {tag_q[flush_way_q][flush_set_q], flush_set_q, 4'b0};
-      mem_req_wdata_o = flush_data_q;
+    memRequestOutput.valid = (stateInner == WRITEBACK_REQUEST) ||
+                      (stateInner == REFILL_REQUEST) ||
+                      (stateInner == FLUSH_WRITEBACK);
+    memRequestOutput.write = (stateInner == WRITEBACK_REQUEST) ||
+                      (stateInner == FLUSH_WRITEBACK);
+    memRequestOutput.address = 32'b0;
+    memRequestOutput.writeData = 128'b0;
+    if (stateInner == WRITEBACK_REQUEST) begin
+      memRequestOutput.address = {tagInner[victimWayInner][savedIndexInner], savedIndexInner, 4'b0};
+      memRequestOutput.writeData = evictDataInner;
+    end else if (stateInner == REFILL_REQUEST) begin
+      memRequestOutput.address = {savedAddrInner[31:4], 4'b0};
+    end else if (stateInner == FLUSH_WRITEBACK) begin
+      memRequestOutput.address = {tagInner[flushWayInner][flushSetInner], flushSetInner, 4'b0};
+      memRequestOutput.writeData = flushDataInner;
     end
   end
 
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      state_q <= IDLE;
-      saved_write_q <= 1'b0;
-      saved_addr_q <= '0;
-      saved_wdata_q <= '0;
-      saved_wstrb_q <= '0;
-      saved_size_q <= '0;
-      saved_index_q <= '0;
-      saved_offset_q <= '0;
-      req_hit_q <= 1'b0;
-      req_hit_way_q <= '0;
-      req_victim_q <= '0;
-      victim_way_q <= '0;
-      evict_data_q <= '0;
-      flush_data_q <= '0;
-      flush_set_q <= '0;
-      flush_way_q <= '0;
-      flush_done_q <= 1'b0;
-      rsp_valid_q <= 1'b0;
-      rsp_data_q <= '0;
-      for (seq_set = 0; seq_set < SETS; seq_set = seq_set + 1) begin
-        plru_q[seq_set] <= '0;
-        for (seq_way = 0; seq_way < WAYS; seq_way = seq_way + 1) begin
-          valid_q[seq_way][seq_set] <= 1'b0;
-          dirty_q[seq_way][seq_set] <= 1'b0;
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) begin
+      stateInner <= IDLE;
+      savedWriteInner <= 1'b0;
+      savedAddrInner <= '0;
+      savedWdataInner <= '0;
+      savedWstrbInner <= '0;
+      savedSizeInner <= '0;
+      savedIndexRegisteredInner <= '0;
+      savedOffsetInner <= '0;
+      reqHitInner <= 1'b0;
+      reqHitWayInner <= '0;
+      reqVictimInner <= '0;
+      victimWayInner <= '0;
+      evictDataInner <= '0;
+      flushDataInner <= '0;
+      flushSetInner <= '0;
+      flushWayInner <= '0;
+      flushDoneInner <= 1'b0;
+      rspValidInner <= 1'b0;
+      rspDataInner <= '0;
+      for (seqSetInner = 0; seqSetInner < SETS; seqSetInner = seqSetInner + 1) begin
+        plruInner[seqSetInner] <= '0;
+        for (seqWayInner = 0; seqWayInner < WAYS; seqWayInner = seqWayInner + 1) begin
+          validInner[seqWayInner][seqSetInner] <= 1'b0;
+          dirtyInner[seqWayInner][seqSetInner] <= 1'b0;
         end
       end
     end else begin
-      rsp_valid_q <= 1'b0;
-      unique case (state_q)
+      rspValidInner <= 1'b0;
+      unique case (stateInner)
         IDLE: begin
-          if (flush_i && !flush_done_q) begin
-            flush_set_q <= '0;
-            flush_way_q <= '0;
-            state_q <= FLUSH_SCAN;
-          end else if (!flush_i) begin
-            flush_done_q <= 1'b0;
+          if (flushInput && !flushDoneInner) begin
+            flushSetInner <= '0;
+            flushWayInner <= '0;
+            stateInner <= FLUSH_SCAN;
+          end else if (!flushInput) begin
+            flushDoneInner <= 1'b0;
           end
-          if (accept_q) begin
-            saved_write_q <= cpu_req_write_i;
-            saved_addr_q <= cpu_req_addr_i;
-            saved_wdata_q <= cpu_req_wdata_i;
-            saved_wstrb_q <= cpu_req_wstrb_i;
-            saved_size_q <= cpu_req_size_i;
-            saved_index_q <= request_index;
-            saved_offset_q <= request_offset;
-            req_hit_q <= hit_found;
-            req_hit_way_q <= hit_way;
-            req_victim_q <= selected_victim;
-            victim_way_q <= selected_victim;
-            state_q <= TAG_READ;
+          if (acceptInner) begin
+            savedWriteInner <= cpuRequestInput.write;
+            savedAddrInner <= cpuRequestInput.address;
+            savedWdataInner <= cpuRequestInput.writeData;
+            savedWstrbInner <= cpuRequestInput.writeStrobe;
+            savedSizeInner <= cpuRequestInput.size;
+            savedIndexRegisteredInner <= requestIndexInner;
+            savedOffsetInner <= requestOffsetInner;
+            reqHitInner <= hitFoundInner;
+            reqHitWayInner <= hitWayInner;
+            reqVictimInner <= selectedVictimInner;
+            victimWayInner <= selectedVictimInner;
+            stateInner <= TAG_READ;
           end
         end
         TAG_READ: begin
-          if (req_hit_q) begin
-            plru_q[saved_index_q] <=
-              plru_after_access(plru_q[saved_index_q], req_hit_way_q);
-            if (saved_write_q) begin
-              dirty_q[req_hit_way_q][saved_index_q] <= 1'b1;
+          if (reqHitInner) begin
+            plruInner[savedIndexRegisteredInner] <=
+              plru_after_access(plruInner[savedIndexRegisteredInner], reqHitWayInner);
+            if (savedWriteInner) begin
+              dirtyInner[reqHitWayInner][savedIndexRegisteredInner] <= 1'b1;
             end else begin
-              rsp_valid_q <= 1'b1;
-              rsp_data_q <= hit_word;
+              rspValidInner <= 1'b1;
+              rspDataInner <= hitWordInner;
             end
-            state_q <= IDLE;
+            stateInner <= IDLE;
           end else begin
-            if (valid_q[req_victim_q][saved_index_q] &&
-                dirty_q[req_victim_q][saved_index_q]) begin
-              evict_data_q <= victim_line;
-              state_q <= WRITEBACK_REQUEST;
+            if (validInner[reqVictimInner][savedIndexRegisteredInner] &&
+                dirtyInner[reqVictimInner][savedIndexRegisteredInner]) begin
+              evictDataInner <= victimLineInner;
+              stateInner <= WRITEBACK_REQUEST;
             end else begin
-              state_q <= REFILL_REQUEST;
+              stateInner <= REFILL_REQUEST;
             end
           end
         end
         WRITEBACK_REQUEST: begin
-          if (mem_req_valid_o && mem_req_ready_i)
-            state_q <= REFILL_REQUEST;
+          if (memRequestOutput.valid && memReqReadyInput)
+            stateInner <= REFILL_REQUEST;
         end
         REFILL_REQUEST: begin
-          if (mem_req_valid_o && mem_req_ready_i)
-            state_q <= REFILL_WAIT;
+          if (memRequestOutput.valid && memReqReadyInput)
+            stateInner <= REFILL_WAIT;
         end
         REFILL_WAIT: begin
-          if (mem_rsp_valid_i) begin
-            valid_q[victim_way_q][saved_index] <= 1'b1;
-            dirty_q[victim_way_q][saved_index] <= saved_write_q;
-            tag_q[victim_way_q][saved_index] <= saved_tag;
-            plru_q[saved_index] <=
-              plru_after_access(plru_q[saved_index], victim_way_q);
-            if (!saved_write_q) begin
-              rsp_valid_q <= 1'b1;
-              rsp_data_q <= refill_word;
+          if (memResponseInput.valid) begin
+            validInner[victimWayInner][savedIndexRegisteredInner] <= 1'b1;
+            dirtyInner[victimWayInner][savedIndexRegisteredInner] <= savedWriteInner;
+            tagInner[victimWayInner][savedIndexRegisteredInner] <= savedTagInner;
+            plruInner[savedIndexRegisteredInner] <=
+              plru_after_access(plruInner[savedIndexRegisteredInner], victimWayInner);
+            if (!savedWriteInner) begin
+              rspValidInner <= 1'b1;
+              rspDataInner <= refillWordInner;
             end
-            state_q <= IDLE;
+            stateInner <= IDLE;
           end
         end
         FLUSH_SCAN: begin
-          if (valid_q[flush_way_q][flush_set_q] &&
-              dirty_q[flush_way_q][flush_set_q]) begin
-            state_q <= FLUSH_READ;
-          end else if ((flush_way_q == WAY_W'(WAYS-1)) &&
-                       (flush_set_q == INDEX_W'(SETS-1))) begin
-            flush_done_q <= 1'b1;
-            state_q <= IDLE;
-          end else if (flush_way_q == WAY_W'(WAYS-1)) begin
-            flush_way_q <= '0;
-            flush_set_q <= flush_set_next;
+          if (validInner[flushWayInner][flushSetInner] &&
+              dirtyInner[flushWayInner][flushSetInner]) begin
+            stateInner <= FLUSH_READ;
+          end else if ((flushWayInner == WAY_W'(WAYS-1)) &&
+                       (flushSetInner == INDEX_W'(SETS-1))) begin
+            flushDoneInner <= 1'b1;
+            stateInner <= IDLE;
+          end else if (flushWayInner == WAY_W'(WAYS-1)) begin
+            flushWayInner <= '0;
+            flushSetInner <= flushSetNext;
           end else begin
-            flush_way_q <= flush_way_next;
+            flushWayInner <= flushWayNext;
           end
         end
         FLUSH_READ: begin
-          flush_data_q <= flush_line;
-          state_q <= FLUSH_WRITEBACK;
+          flushDataInner <= flushLineInner;
+          stateInner <= FLUSH_WRITEBACK;
         end
         FLUSH_WRITEBACK: begin
-          if (mem_req_valid_o && mem_req_ready_i) begin
-            dirty_q[flush_way_q][flush_set_q] <= 1'b0;
-            if ((flush_way_q == WAY_W'(WAYS-1)) &&
-                (flush_set_q == INDEX_W'(SETS-1))) begin
-              flush_done_q <= 1'b1;
-              state_q <= IDLE;
-            end else if (flush_way_q == WAY_W'(WAYS-1)) begin
-              flush_way_q <= '0;
-              flush_set_q <= flush_set_next;
-              state_q <= FLUSH_SCAN;
+          if (memRequestOutput.valid && memReqReadyInput) begin
+            dirtyInner[flushWayInner][flushSetInner] <= 1'b0;
+            if ((flushWayInner == WAY_W'(WAYS-1)) &&
+                (flushSetInner == INDEX_W'(SETS-1))) begin
+              flushDoneInner <= 1'b1;
+              stateInner <= IDLE;
+            end else if (flushWayInner == WAY_W'(WAYS-1)) begin
+              flushWayInner <= '0;
+              flushSetInner <= flushSetNext;
+              stateInner <= FLUSH_SCAN;
             end else begin
-              flush_way_q <= flush_way_next;
-              state_q <= FLUSH_SCAN;
+              flushWayInner <= flushWayNext;
+              stateInner <= FLUSH_SCAN;
             end
           end
         end
-        default: state_q <= IDLE;
+        default: stateInner <= IDLE;
       endcase
     end
   end

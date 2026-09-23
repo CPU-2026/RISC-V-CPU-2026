@@ -1,24 +1,14 @@
 module rv32_div #(
   parameter bit USE_SRT4 = 1'b0
 ) (
-  input  logic                   clk_i,
-  input  logic                   rst_ni,
-  input  logic                   flush_i,
-  input  rv32_pkg::rob_tag_t     flush_tag_i,
+  input  logic                   clkInput,
+  input  logic                   rstNInput,
+  input  rv32_pkg::rob_flush_input_t flushInfoInput,
+  input  rv32_pkg::execute_request_input_t executeInput,
+  output logic                   inReadyOutput,
 
-  input  logic                   in_valid_i,
-  output logic                   in_ready_o,
-  input  rv32_pkg::operation_e   op_i,
-  input  logic [31:0]            dividend_i,
-  input  logic [31:0]            divisor_i,
-  input  rv32_pkg::rob_tag_t     rob_tag_i,
-  input  rv32_pkg::phy_tag_t     dest_phy_i,
-
-  output logic                   out_valid_o,
-  input  logic                   out_ready_i,
-  output logic [31:0]            result_o,
-  output rv32_pkg::rob_tag_t     rob_tag_o,
-  output rv32_pkg::phy_tag_t     dest_phy_o
+  input  logic                   outReadyInput,
+  output rv32_pkg::execute_value_output_t executeOutput
 );
   generate
     if (USE_SRT4) begin : g_srt4
@@ -33,199 +23,189 @@ endmodule
 // Original 32-iteration restoring implementation, retained as the A/B
 // baseline for the SRT radix-4 implementation below.
 module rv32_div_radix2 (
-  input  logic                   clk_i,
-  input  logic                   rst_ni,
-  input  logic                   flush_i,
-  input  rv32_pkg::rob_tag_t     flush_tag_i,
+  input  logic                   clkInput,
+  input  logic                   rstNInput,
+  input  rv32_pkg::rob_flush_input_t flushInfoInput,
+  input  rv32_pkg::execute_request_input_t executeInput,
+  output logic                   inReadyOutput,
 
-  input  logic                   in_valid_i,
-  output logic                   in_ready_o,
-  input  rv32_pkg::operation_e   op_i,
-  input  logic [31:0]            dividend_i,
-  input  logic [31:0]            divisor_i,
-  input  rv32_pkg::rob_tag_t     rob_tag_i,
-  input  rv32_pkg::phy_tag_t     dest_phy_i,
-
-  output logic                   out_valid_o,
-  input  logic                   out_ready_i,
-  output logic [31:0]            result_o,
-  output rv32_pkg::rob_tag_t     rob_tag_o,
-  output rv32_pkg::phy_tag_t     dest_phy_o
+  input  logic                   outReadyInput,
+  output rv32_pkg::execute_value_output_t executeOutput
 );
   import rv32_pkg::*;
 
-  logic busy_q;
-  logic [5:0] count_q;
-  logic [31:0] dividend_q;
-  logic [31:0] divisor_q;
-  logic [32:0] remainder_q;
-  logic [31:0] quotient_q;
-  logic quotient_negative_q;
-  logic remainder_negative_q;
-  logic want_remainder_q;
-  rob_tag_t active_tag_q;
-  phy_tag_t active_phy_q;
+  logic busyInner;
+  logic [5:0] countInner;
+  logic [31:0] dividendInner;
+  logic [31:0] divisorInner;
+  logic [32:0] remainderInner;
+  logic [31:0] quotientInner;
+  logic quotientNegativeInner;
+  logic remainderNegativeInner;
+  logic wantRemainderRegisteredInner;
+  rob_tag_t activeTagInner;
+  phy_tag_t activePhyInner;
 
-  logic result_valid_q;
-  logic [31:0] result_q;
-  rob_tag_t result_tag_q;
-  phy_tag_t result_phy_q;
+  logic resultValidInner;
+  logic [31:0] resultInner;
+  rob_tag_t resultTagInner;
+  phy_tag_t resultPhyInner;
 
-  logic signed_op;
-  logic want_remainder;
-  logic [31:0] dividend_abs;
-  logic [31:0] divisor_abs;
-  logic [32:0] shifted_remainder;
-  logic [32:0] divisor_ext;
-  logic [32:0] remainder_diff;
-  logic [32:0] next_remainder;
-  logic [31:0] next_quotient;
-  logic [31:0] unsigned_final;
-  logic [31:0] signed_final;
-  logic remainder_ge;
-  logic [31:0] dividend_neg, divisor_neg, final_neg;
-  logic [5:0] count_next;
-  logic unused_borrow_remainder, unused_borrow_dividend, unused_borrow_divisor;
-  logic unused_borrow_final, unused_cout_count;
+  logic signedOpInner;
+  logic wantRemainderInner;
+  logic [31:0] dividendAbsInner;
+  logic [31:0] divisorAbsInner;
+  logic [32:0] shiftedRemainderInner;
+  logic [32:0] divisorExtInner;
+  logic [32:0] remainderDiffInner;
+  logic [32:0] nextRemainderInner;
+  logic [31:0] nextQuotientInner;
+  logic [31:0] unsignedFinalInner;
+  logic [31:0] signedFinalInner;
+  logic remainderGeInner;
+  logic [31:0] dividendNegInner, divisorNegInner, finalNegInner;
+  logic [5:0] countNext;
+  logic unusedBorrowRemainderInner, unusedBorrowDividendInner, unusedBorrowDivisorInner;
+  logic unusedBorrowFinalInner, unusedCoutCountInner;
 
-  assign signed_op = (op_i == OP_DIV) || (op_i == OP_REM);
-  assign want_remainder = (op_i == OP_REM) || (op_i == OP_REMU);
+  assign signedOpInner = (executeInput.operation == OP_DIV) || (executeInput.operation == OP_REM);
+  assign wantRemainderInner = (executeInput.operation == OP_REM) || (executeInput.operation == OP_REMU);
 
   rv32_sub #(.WIDTH(32)) u_dividend_neg (
-    .a_i(32'b0), .b_i(dividend_i),
-    .diff_o(dividend_neg), .borrow_o(unused_borrow_dividend)
+    .aInput(32'b0), .bInput(executeInput.source1),
+    .diffOutput(dividendNegInner), .borrowOutput(unusedBorrowDividendInner)
   );
 
   rv32_sub #(.WIDTH(32)) u_divisor_neg (
-    .a_i(32'b0), .b_i(divisor_i),
-    .diff_o(divisor_neg), .borrow_o(unused_borrow_divisor)
+    .aInput(32'b0), .bInput(executeInput.source2),
+    .diffOutput(divisorNegInner), .borrowOutput(unusedBorrowDivisorInner)
   );
 
-  assign dividend_abs = (signed_op && dividend_i[31]) ?
-                        dividend_neg : dividend_i;
-  assign divisor_abs = (signed_op && divisor_i[31]) ?
-                       divisor_neg : divisor_i;
+  assign dividendAbsInner = (signedOpInner && executeInput.source1[31]) ?
+                        dividendNegInner : executeInput.source1;
+  assign divisorAbsInner = (signedOpInner && executeInput.source2[31]) ?
+                       divisorNegInner : executeInput.source2;
 
-  assign shifted_remainder = {remainder_q[31:0], dividend_q[31]};
-  assign divisor_ext = {1'b0, divisor_q};
-  assign remainder_ge = (shifted_remainder >= divisor_ext);
+  assign shiftedRemainderInner = {remainderInner[31:0], dividendInner[31]};
+  assign divisorExtInner = {1'b0, divisorInner};
+  assign remainderGeInner = (shiftedRemainderInner >= divisorExtInner);
 
   rv32_sub #(.WIDTH(33)) u_remainder_diff (
-    .a_i(shifted_remainder), .b_i(divisor_ext),
-    .diff_o(remainder_diff), .borrow_o(unused_borrow_remainder)
+    .aInput(shiftedRemainderInner), .bInput(divisorExtInner),
+    .diffOutput(remainderDiffInner), .borrowOutput(unusedBorrowRemainderInner)
   );
 
-  assign next_remainder = remainder_ge ? remainder_diff : shifted_remainder;
-  assign next_quotient = remainder_ge ?
-                         {quotient_q[30:0], 1'b1} :
-                         {quotient_q[30:0], 1'b0};
-  assign unsigned_final = want_remainder_q ? next_remainder[31:0] :
-                                             next_quotient;
+  assign nextRemainderInner = remainderGeInner ? remainderDiffInner : shiftedRemainderInner;
+  assign nextQuotientInner = remainderGeInner ?
+                         {quotientInner[30:0], 1'b1} :
+                         {quotientInner[30:0], 1'b0};
+  assign unsignedFinalInner = wantRemainderRegisteredInner ? nextRemainderInner[31:0] :
+                                             nextQuotientInner;
 
   rv32_sub #(.WIDTH(32)) u_final_neg (
-    .a_i(32'b0), .b_i(unsigned_final),
-    .diff_o(final_neg), .borrow_o(unused_borrow_final)
+    .aInput(32'b0), .bInput(unsignedFinalInner),
+    .diffOutput(finalNegInner), .borrowOutput(unusedBorrowFinalInner)
   );
 
-  assign signed_final =
-    ((want_remainder_q && remainder_negative_q) ||
-     (!want_remainder_q && quotient_negative_q)) ? final_neg : unsigned_final;
+  assign signedFinalInner =
+    ((wantRemainderRegisteredInner && remainderNegativeInner) ||
+     (!wantRemainderRegisteredInner && quotientNegativeInner)) ? finalNegInner : unsignedFinalInner;
 
   rv32_add #(.WIDTH(6)) u_count_next (
-    .a_i(count_q), .b_i(6'd1), .cin_i(1'b0),
-    .sum_o(count_next), .cout_o(unused_cout_count)
+    .aInput(countInner), .bInput(6'd1), .cinInput(1'b0),
+    .sumOutput(countNext), .coutOutput(unusedCoutCountInner)
   );
 
   always_comb begin
-    in_ready_o = !busy_q && (!result_valid_q || out_ready_i);
-    out_valid_o = result_valid_q;
-    result_o = result_q;
-    rob_tag_o = result_tag_q;
-    dest_phy_o = result_phy_q;
+    inReadyOutput = !busyInner && (!resultValidInner || outReadyInput);
+    executeOutput.valid = resultValidInner;
+    executeOutput.value = resultInner;
+    executeOutput.robTag = resultTagInner;
+    executeOutput.destinationPhy = resultPhyInner;
   end
 
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      busy_q <= 1'b0;
-      count_q <= '0;
-      dividend_q <= '0;
-      divisor_q <= '0;
-      remainder_q <= '0;
-      quotient_q <= '0;
-      quotient_negative_q <= 1'b0;
-      remainder_negative_q <= 1'b0;
-      want_remainder_q <= 1'b0;
-      active_tag_q <= '0;
-      active_phy_q <= '0;
-      result_valid_q <= 1'b0;
-      result_q <= '0;
-      result_tag_q <= '0;
-      result_phy_q <= '0;
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) begin
+      busyInner <= 1'b0;
+      countInner <= '0;
+      dividendInner <= '0;
+      divisorInner <= '0;
+      remainderInner <= '0;
+      quotientInner <= '0;
+      quotientNegativeInner <= 1'b0;
+      remainderNegativeInner <= 1'b0;
+      wantRemainderRegisteredInner <= 1'b0;
+      activeTagInner <= '0;
+      activePhyInner <= '0;
+      resultValidInner <= 1'b0;
+      resultInner <= '0;
+      resultTagInner <= '0;
+      resultPhyInner <= '0;
     end else begin
-      if (flush_i && busy_q &&
-          !rob_is_older(active_tag_q, flush_tag_i)) begin
-        busy_q <= 1'b0;
-      end else if (flush_i && result_valid_q) begin
-        result_valid_q <= 1'b0;
+      if (flushInfoInput.valid && busyInner &&
+          !rob_is_older(activeTagInner, flushInfoInput.robTag)) begin
+        busyInner <= 1'b0;
+      end else if (flushInfoInput.valid && resultValidInner) begin
+        resultValidInner <= 1'b0;
       end else begin
-        if (result_valid_q && out_ready_i)
-          result_valid_q <= 1'b0;
+        if (resultValidInner && outReadyInput)
+          resultValidInner <= 1'b0;
 
-        if (in_valid_i && in_ready_o) begin
-          active_tag_q <= rob_tag_i;
-          active_phy_q <= dest_phy_i;
-          want_remainder_q <= want_remainder;
-          quotient_negative_q <= signed_op &&
-                                 (dividend_i[31] ^ divisor_i[31]);
-          remainder_negative_q <= signed_op && dividend_i[31];
+        if (executeInput.valid && inReadyOutput) begin
+          activeTagInner <= executeInput.robTag;
+          activePhyInner <= executeInput.destinationPhy;
+          wantRemainderRegisteredInner <= wantRemainderInner;
+          quotientNegativeInner <= signedOpInner &&
+                                 (executeInput.source1[31] ^ executeInput.source2[31]);
+          remainderNegativeInner <= signedOpInner && executeInput.source1[31];
 
-          if (divisor_i == 32'b0) begin
-            result_valid_q <= 1'b1;
-            result_q <= want_remainder ? dividend_i : 32'hffff_ffff;
-            result_tag_q <= rob_tag_i;
-            result_phy_q <= dest_phy_i;
-            busy_q <= 1'b0;
-          end else if (signed_op && (dividend_i == 32'h8000_0000) &&
-                       (divisor_i == 32'hffff_ffff)) begin
-            result_valid_q <= 1'b1;
-            result_q <= want_remainder ? 32'b0 : 32'h8000_0000;
-            result_tag_q <= rob_tag_i;
-            result_phy_q <= dest_phy_i;
-            busy_q <= 1'b0;
-          end else if (dividend_abs < divisor_abs) begin
-            result_valid_q <= 1'b1;
-            result_q <= want_remainder ? dividend_i : 32'b0;
-            result_tag_q <= rob_tag_i;
-            result_phy_q <= dest_phy_i;
-            busy_q <= 1'b0;
-          end else if (dividend_abs == divisor_abs) begin
-            result_valid_q <= 1'b1;
-            result_q <= want_remainder ? 32'b0 :
-                        ((signed_op && (dividend_i[31] ^ divisor_i[31])) ?
+          if (executeInput.source2 == 32'b0) begin
+            resultValidInner <= 1'b1;
+            resultInner <= wantRemainderInner ? executeInput.source1 : 32'hffff_ffff;
+            resultTagInner <= executeInput.robTag;
+            resultPhyInner <= executeInput.destinationPhy;
+            busyInner <= 1'b0;
+          end else if (signedOpInner && (executeInput.source1 == 32'h8000_0000) &&
+                       (executeInput.source2 == 32'hffff_ffff)) begin
+            resultValidInner <= 1'b1;
+            resultInner <= wantRemainderInner ? 32'b0 : 32'h8000_0000;
+            resultTagInner <= executeInput.robTag;
+            resultPhyInner <= executeInput.destinationPhy;
+            busyInner <= 1'b0;
+          end else if (dividendAbsInner < divisorAbsInner) begin
+            resultValidInner <= 1'b1;
+            resultInner <= wantRemainderInner ? executeInput.source1 : 32'b0;
+            resultTagInner <= executeInput.robTag;
+            resultPhyInner <= executeInput.destinationPhy;
+            busyInner <= 1'b0;
+          end else if (dividendAbsInner == divisorAbsInner) begin
+            resultValidInner <= 1'b1;
+            resultInner <= wantRemainderInner ? 32'b0 :
+                        ((signedOpInner && (executeInput.source1[31] ^ executeInput.source2[31])) ?
                          32'hffff_ffff : 32'd1);
-            result_tag_q <= rob_tag_i;
-            result_phy_q <= dest_phy_i;
-            busy_q <= 1'b0;
+            resultTagInner <= executeInput.robTag;
+            resultPhyInner <= executeInput.destinationPhy;
+            busyInner <= 1'b0;
           end else begin
-            busy_q <= 1'b1;
-            count_q <= 6'd0;
-            dividend_q <= dividend_abs;
-            divisor_q <= divisor_abs;
-            remainder_q <= 33'b0;
-            quotient_q <= 32'b0;
+            busyInner <= 1'b1;
+            countInner <= 6'd0;
+            dividendInner <= dividendAbsInner;
+            divisorInner <= divisorAbsInner;
+            remainderInner <= 33'b0;
+            quotientInner <= 32'b0;
           end
-        end else if (busy_q) begin
-          dividend_q <= {dividend_q[30:0], 1'b0};
-          remainder_q <= next_remainder;
-          quotient_q <= next_quotient;
-          if (count_q == 6'd31) begin
-            busy_q <= 1'b0;
-            result_valid_q <= 1'b1;
-            result_q <= signed_final;
-            result_tag_q <= active_tag_q;
-            result_phy_q <= active_phy_q;
+        end else if (busyInner) begin
+          dividendInner <= {dividendInner[30:0], 1'b0};
+          remainderInner <= nextRemainderInner;
+          quotientInner <= nextQuotientInner;
+          if (countInner == 6'd31) begin
+            busyInner <= 1'b0;
+            resultValidInner <= 1'b1;
+            resultInner <= signedFinalInner;
+            resultTagInner <= activeTagInner;
+            resultPhyInner <= activePhyInner;
           end else begin
-            count_q <= count_next;
+            countInner <= countNext;
           end
         end
       end
@@ -233,334 +213,324 @@ module rv32_div_radix2 (
   end
 endmodule
 
-// Radix-4 SRT divider translated from the C++ reference DIV module. It uses
+// Radix-4 SRT divider translated from the C++ referenceInput DIV module. It uses
 // carry-save partial remainders and redundant A/B quotient conversion, so each
 // loop consumes two quotient bits without using a combinational divide.
 module rv32_div_srt4 (
-  input  logic                   clk_i,
-  input  logic                   rst_ni,
-  input  logic                   flush_i,
-  input  rv32_pkg::rob_tag_t     flush_tag_i,
+  input  logic                   clkInput,
+  input  logic                   rstNInput,
+  input  rv32_pkg::rob_flush_input_t flushInfoInput,
+  input  rv32_pkg::execute_request_input_t executeInput,
+  output logic                   inReadyOutput,
 
-  input  logic                   in_valid_i,
-  output logic                   in_ready_o,
-  input  rv32_pkg::operation_e   op_i,
-  input  logic [31:0]            dividend_i,
-  input  logic [31:0]            divisor_i,
-  input  rv32_pkg::rob_tag_t     rob_tag_i,
-  input  rv32_pkg::phy_tag_t     dest_phy_i,
-
-  output logic                   out_valid_o,
-  input  logic                   out_ready_i,
-  output logic [31:0]            result_o,
-  output rv32_pkg::rob_tag_t     rob_tag_o,
-  output rv32_pkg::phy_tag_t     dest_phy_o
+  input  logic                   outReadyInput,
+  output rv32_pkg::execute_value_output_t executeOutput
 );
   import rv32_pkg::*;
 
   typedef enum logic [1:0] {PH_PREP, PH_LOOP, PH_FINISH} phase_e;
 
-  logic busy_q;
-  phase_e phase_q;
-  logic [5:0] loop_count_q;
-  logic [31:0] dividend_mag_q, divisor_mag_q;
-  logic [35:0] divisor_dp_q;
-  logic [5:0] clz_d_q;
-  logic shift_d_q;
-  logic [6:0] d_slice_q, d_slice3_q;
-  logic [35:0] reg_s_q, reg_c_q, mask_q;
-  logic [31:0] reg_a_q, reg_b_q;
-  logic quotient_negative_q, remainder_negative_q, want_remainder_q;
-  rob_tag_t active_tag_q;
-  phy_tag_t active_phy_q;
+  logic busyInner;
+  phase_e phaseInner;
+  logic [5:0] loopCountInner;
+  logic [31:0] dividendMagInner, divisorMagInner;
+  logic [35:0] divisorDpInner;
+  logic [5:0] clzDInner;
+  logic shiftDInner;
+  logic [6:0] dSliceInner, dSlice3Inner;
+  logic [35:0] regSInner, regCInner, maskInner;
+  logic [31:0] regAInner, regBInner;
+   logic quotientNegativeInner, remainderNegativeInner, wantRemainderRegisteredInner;
+  rob_tag_t activeTagInner;
+  phy_tag_t activePhyInner;
 
-  logic result_valid_q;
-  logic [31:0] result_q;
-  rob_tag_t result_tag_q;
-  phy_tag_t result_phy_q;
+  logic resultValidInner;
+  logic [31:0] resultInner;
+  rob_tag_t resultTagInner;
+  phy_tag_t resultPhyInner;
 
-  logic signed_op, want_remainder;
-  logic [31:0] dividend_neg, divisor_neg;
-  logic [31:0] dividend_abs, divisor_abs;
-  logic unused_borrow_dividend, unused_borrow_divisor;
+   logic signedOpInner, wantRemainderInner;
+  logic [31:0] dividendNegInner, divisorNegInner;
+  logic [31:0] dividendAbsInner, divisorAbsInner;
+  logic unusedBorrowDividendInner, unusedBorrowDivisorInner;
 
-  logic [5:0] prep_clz_x, prep_clz_d, prep_align, prep_loop_count;
-  logic prep_shift_d;
-  logic [35:0] prep_mask, prep_dividend_norm, prep_divisor_norm, prep_divisor_dp;
-  logic [6:0] prep_d_slice, prep_d_slice3, prep_slice;
-  logic [35:0] prep_subtrahend, prep_s, prep_c;
-  logic [31:0] prep_a, prep_b;
+  logic [5:0] prepClzXInner, prepClzDInner, prepAlignInner, prepLoopCountInner;
+  logic prepShiftDInner;
+  logic [35:0] prepMaskInner, prepDividendNormInner, prepDivisorNormInner, prepDivisorDpInner;
+  logic [6:0] prepDSliceInner, prepDSlice3Inner, prepSliceInner;
+  logic [35:0] prepSubtrahendInner, prepSInner, prepCInner;
+  logic [31:0] prepAInner, prepBInner;
 
-  logic [8:0] loop_sum9;
-  logic signed [9:0] loop_slice, loop_d_slice, loop_d_slice3;
-  logic [35:0] loop_s4, loop_c4, loop_subtrahend, loop_t, loop_s, loop_c;
-  logic [31:0] loop_a, loop_b;
+  logic [8:0] loopSum9Inner;
+  logic signed [9:0] loopSliceInner, loopDSliceInner, loopDSlice3Inner;
+  logic [35:0] loopS4Inner, loopC4Inner, loopSubtrahendInner, loopTInner, loopSInner, loopCInner;
+  logic [31:0] loopAInner, loopBInner;
 
-  logic [35:0] finish_pk, finish_corrected_pk;
-  logic finish_negative;
-  logic [31:0] finish_quotient, finish_remainder, finish_unsigned;
-  logic [31:0] finish_negated, finish_signed;
+  logic [35:0] finishPkInner, finishCorrectedPkInner;
+  logic finishNegativeInner;
+  logic [31:0] finishQuotientInner, finishRemainderInner, finishUnsignedInner;
+  logic [31:0] finishNegatedInner, finishSignedInner;
 
-  function automatic logic [5:0] clz32(input logic [31:0] value);
-    integer index;
-    logic seen_one;
+  function automatic logic [5:0] clz32(input logic [31:0] valueInput);
+    integer indexInner;
+    logic seenOneInner;
     begin
       clz32 = 6'd32;
-      seen_one = 1'b0;
-      for (index = 31; index >= 0; index = index - 1) begin
-        if (!seen_one && value[index]) begin
-          clz32 = 31 - index;
-          seen_one = 1'b1;
+      seenOneInner = 1'b0;
+      for (indexInner = 31; indexInner >= 0; indexInner = indexInner - 1) begin
+        if (!seenOneInner && valueInput[indexInner]) begin
+          clz32 = 31 - indexInner;
+          seenOneInner = 1'b1;
         end
       end
     end
   endfunction
 
-  assign signed_op = (op_i == OP_DIV) || (op_i == OP_REM);
-  assign want_remainder = (op_i == OP_REM) || (op_i == OP_REMU);
+  assign signedOpInner = (executeInput.operation == OP_DIV) || (executeInput.operation == OP_REM);
+  assign wantRemainderInner = (executeInput.operation == OP_REM) || (executeInput.operation == OP_REMU);
 
   rv32_sub #(.WIDTH(32)) u_dividend_neg (
-    .a_i(32'b0), .b_i(dividend_i),
-    .diff_o(dividend_neg), .borrow_o(unused_borrow_dividend)
+    .aInput(32'b0), .bInput(executeInput.source1),
+    .diffOutput(dividendNegInner), .borrowOutput(unusedBorrowDividendInner)
   );
   rv32_sub #(.WIDTH(32)) u_divisor_neg (
-    .a_i(32'b0), .b_i(divisor_i),
-    .diff_o(divisor_neg), .borrow_o(unused_borrow_divisor)
+    .aInput(32'b0), .bInput(executeInput.source2),
+    .diffOutput(divisorNegInner), .borrowOutput(unusedBorrowDivisorInner)
   );
-  assign dividend_abs = (signed_op && dividend_i[31]) ? dividend_neg : dividend_i;
-  assign divisor_abs = (signed_op && divisor_i[31]) ? divisor_neg : divisor_i;
+  assign dividendAbsInner = (signedOpInner && executeInput.source1[31]) ? dividendNegInner : executeInput.source1;
+  assign divisorAbsInner = (signedOpInner && executeInput.source2[31]) ? divisorNegInner : executeInput.source2;
 
   always_comb begin
-    prep_clz_x = clz32(dividend_mag_q);
-    prep_clz_d = clz32(divisor_mag_q);
-    prep_align = prep_clz_d - prep_clz_x;
-    prep_loop_count = (prep_align + 6'd1) >> 1;
-    prep_shift_d = prep_align[0];
-    prep_mask = prep_shift_d ? 36'hf_ffffffff : 36'h7_ffffffff;
-    prep_dividend_norm = ({4'b0, dividend_mag_q} << prep_clz_x) & prep_mask;
-    prep_divisor_norm = ({4'b0, divisor_mag_q} << prep_clz_d) & prep_mask;
-    prep_divisor_dp = (prep_divisor_norm << prep_shift_d) & prep_mask;
-    prep_d_slice = prep_shift_d ? {2'b0, prep_divisor_dp[32:28]} :
-                                 {2'b0, prep_divisor_dp[31:27]};
-    prep_d_slice3 = prep_d_slice + (prep_d_slice << 1);
-    prep_slice = prep_shift_d ? (prep_dividend_norm >> 27) :
-                                (prep_dividend_norm >> 26);
+    prepClzXInner = clz32(dividendMagInner);
+    prepClzDInner = clz32(divisorMagInner);
+    prepAlignInner = prepClzDInner - prepClzXInner;
+    prepLoopCountInner = (prepAlignInner + 6'd1) >> 1;
+    prepShiftDInner = prepAlignInner[0];
+    prepMaskInner = prepShiftDInner ? 36'hf_ffffffff : 36'h7_ffffffff;
+    prepDividendNormInner = ({4'b0, dividendMagInner} << prepClzXInner) & prepMaskInner;
+    prepDivisorNormInner = ({4'b0, divisorMagInner} << prepClzDInner) & prepMaskInner;
+    prepDivisorDpInner = (prepDivisorNormInner << prepShiftDInner) & prepMaskInner;
+    prepDSliceInner = prepShiftDInner ? {2'b0, prepDivisorDpInner[32:28]} :
+                                 {2'b0, prepDivisorDpInner[31:27]};
+    prepDSlice3Inner = prepDSliceInner + (prepDSliceInner << 1);
+    prepSliceInner = prepShiftDInner ? (prepDividendNormInner >> 27) :
+                                (prepDividendNormInner >> 26);
 
-    prep_subtrahend = '0;
-    prep_s = '0;
-    prep_c = '0;
-    prep_a = '0;
-    prep_b = '0;
-    if (prep_slice >= prep_d_slice3) begin
-      prep_subtrahend = (prep_divisor_dp << 1) & prep_mask;
-      prep_s = ((prep_dividend_norm ^ ~prep_subtrahend ^ 36'd1) << 2) & prep_mask;
-      prep_c = (((prep_dividend_norm & ~prep_subtrahend) |
-                 (prep_dividend_norm & 36'd1) |
-                 (~prep_subtrahend & 36'd1)) << 3) & prep_mask;
-      prep_a = 32'd2;
-      prep_b = 32'd1;
-    end else if (prep_slice >= prep_d_slice) begin
-      prep_subtrahend = prep_divisor_dp;
-      prep_s = ((prep_dividend_norm ^ ~prep_subtrahend ^ 36'd1) << 2) & prep_mask;
-      prep_c = (((prep_dividend_norm & ~prep_subtrahend) |
-                 (prep_dividend_norm & 36'd1) |
-                 (~prep_subtrahend & 36'd1)) << 3) & prep_mask;
-      prep_a = 32'd1;
-      prep_b = 32'd0;
+    prepSubtrahendInner = '0;
+    prepSInner = '0;
+    prepCInner = '0;
+    prepAInner = '0;
+    prepBInner = '0;
+    if (prepSliceInner >= prepDSlice3Inner) begin
+      prepSubtrahendInner = (prepDivisorDpInner << 1) & prepMaskInner;
+      prepSInner = ((prepDividendNormInner ^ ~prepSubtrahendInner ^ 36'd1) << 2) & prepMaskInner;
+      prepCInner = (((prepDividendNormInner & ~prepSubtrahendInner) |
+                 (prepDividendNormInner & 36'd1) |
+                 (~prepSubtrahendInner & 36'd1)) << 3) & prepMaskInner;
+      prepAInner = 32'd2;
+      prepBInner = 32'd1;
+    end else if (prepSliceInner >= prepDSliceInner) begin
+      prepSubtrahendInner = prepDivisorDpInner;
+      prepSInner = ((prepDividendNormInner ^ ~prepSubtrahendInner ^ 36'd1) << 2) & prepMaskInner;
+      prepCInner = (((prepDividendNormInner & ~prepSubtrahendInner) |
+                 (prepDividendNormInner & 36'd1) |
+                 (~prepSubtrahendInner & 36'd1)) << 3) & prepMaskInner;
+      prepAInner = 32'd1;
+      prepBInner = 32'd0;
     end else begin
-      prep_s = (prep_dividend_norm << 2) & prep_mask;
-      prep_c = '0;
-      prep_a = 32'd0;
-      prep_b = 32'd3;
+      prepSInner = (prepDividendNormInner << 2) & prepMaskInner;
+      prepCInner = '0;
+      prepAInner = 32'd0;
+      prepBInner = 32'd3;
     end
   end
 
   always_comb begin
-    if (shift_d_q)
-      loop_sum9 = reg_s_q[35:27] + reg_c_q[35:27];
+    if (shiftDInner)
+      loopSum9Inner = regSInner[35:27] + regCInner[35:27];
     else
-      loop_sum9 = reg_s_q[34:26] + reg_c_q[34:26];
-    loop_slice = {loop_sum9[8], loop_sum9};
-    loop_slice[0] = 1'b0;
-    loop_d_slice = $signed({3'b000, d_slice_q});
-    loop_d_slice3 = $signed({3'b000, d_slice3_q});
-    loop_s4 = (reg_s_q << 2) & mask_q;
-    loop_c4 = (reg_c_q << 2) & mask_q;
+      loopSum9Inner = regSInner[34:26] + regCInner[34:26];
+    loopSliceInner = {loopSum9Inner[8], loopSum9Inner};
+    loopSliceInner[0] = 1'b0;
+    loopDSliceInner = $signed({3'b000, dSliceInner});
+    loopDSlice3Inner = $signed({3'b000, dSlice3Inner});
+    loopS4Inner = (regSInner << 2) & maskInner;
+    loopC4Inner = (regCInner << 2) & maskInner;
 
-    loop_subtrahend = '0;
-    loop_t = '0;
-    loop_s = '0;
-    loop_c = '0;
-    loop_a = '0;
-    loop_b = '0;
-    if (loop_slice >= loop_d_slice3) begin
-      loop_subtrahend = (divisor_dp_q << 3) & mask_q;
-      loop_t = mask_q ^ loop_subtrahend;
-      loop_s = (loop_s4 ^ loop_c4 ^ loop_t) & mask_q;
-      loop_c = ((((loop_s4 & loop_c4) | (loop_s4 & loop_t) |
-                  (loop_c4 & loop_t)) << 1) | 36'd1) & mask_q;
-      loop_a = (reg_a_q << 2) | 32'd2;
-      loop_b = (reg_a_q << 2) | 32'd1;
-    end else if (loop_slice >= loop_d_slice) begin
-      loop_subtrahend = (divisor_dp_q << 2) & mask_q;
-      loop_t = mask_q ^ loop_subtrahend;
-      loop_s = (loop_s4 ^ loop_c4 ^ loop_t) & mask_q;
-      loop_c = ((((loop_s4 & loop_c4) | (loop_s4 & loop_t) |
-                  (loop_c4 & loop_t)) << 1) | 36'd1) & mask_q;
-      loop_a = (reg_a_q << 2) | 32'd1;
-      loop_b = reg_a_q << 2;
-    end else if (loop_slice >= -loop_d_slice) begin
-      loop_s = (loop_s4 ^ loop_c4) & mask_q;
-      loop_c = ((loop_s4 & loop_c4) << 1) & mask_q;
-      loop_a = reg_a_q << 2;
-      loop_b = (reg_b_q << 2) | 32'd3;
-    end else if (loop_slice >= -loop_d_slice3) begin
-      loop_subtrahend = (divisor_dp_q << 2) & mask_q;
-      loop_s = (loop_s4 ^ loop_c4 ^ loop_subtrahend) & mask_q;
-      loop_c = (((loop_s4 & loop_c4) | (loop_s4 & loop_subtrahend) |
-                 (loop_c4 & loop_subtrahend)) << 1) & mask_q;
-      loop_a = (reg_b_q << 2) | 32'd3;
-      loop_b = (reg_b_q << 2) | 32'd2;
+    loopSubtrahendInner = '0;
+    loopTInner = '0;
+    loopSInner = '0;
+    loopCInner = '0;
+    loopAInner = '0;
+    loopBInner = '0;
+    if (loopSliceInner >= loopDSlice3Inner) begin
+      loopSubtrahendInner = (divisorDpInner << 3) & maskInner;
+      loopTInner = maskInner ^ loopSubtrahendInner;
+      loopSInner = (loopS4Inner ^ loopC4Inner ^ loopTInner) & maskInner;
+      loopCInner = ((((loopS4Inner & loopC4Inner) | (loopS4Inner & loopTInner) |
+                  (loopC4Inner & loopTInner)) << 1) | 36'd1) & maskInner;
+      loopAInner = (regAInner << 2) | 32'd2;
+      loopBInner = (regAInner << 2) | 32'd1;
+    end else if (loopSliceInner >= loopDSliceInner) begin
+      loopSubtrahendInner = (divisorDpInner << 2) & maskInner;
+      loopTInner = maskInner ^ loopSubtrahendInner;
+      loopSInner = (loopS4Inner ^ loopC4Inner ^ loopTInner) & maskInner;
+      loopCInner = ((((loopS4Inner & loopC4Inner) | (loopS4Inner & loopTInner) |
+                  (loopC4Inner & loopTInner)) << 1) | 36'd1) & maskInner;
+      loopAInner = (regAInner << 2) | 32'd1;
+      loopBInner = regAInner << 2;
+    end else if (loopSliceInner >= -loopDSliceInner) begin
+      loopSInner = (loopS4Inner ^ loopC4Inner) & maskInner;
+      loopCInner = ((loopS4Inner & loopC4Inner) << 1) & maskInner;
+      loopAInner = regAInner << 2;
+      loopBInner = (regBInner << 2) | 32'd3;
+    end else if (loopSliceInner >= -loopDSlice3Inner) begin
+      loopSubtrahendInner = (divisorDpInner << 2) & maskInner;
+      loopSInner = (loopS4Inner ^ loopC4Inner ^ loopSubtrahendInner) & maskInner;
+      loopCInner = (((loopS4Inner & loopC4Inner) | (loopS4Inner & loopSubtrahendInner) |
+                 (loopC4Inner & loopSubtrahendInner)) << 1) & maskInner;
+      loopAInner = (regBInner << 2) | 32'd3;
+      loopBInner = (regBInner << 2) | 32'd2;
     end else begin
-      loop_subtrahend = (divisor_dp_q << 3) & mask_q;
-      loop_s = (loop_s4 ^ loop_c4 ^ loop_subtrahend) & mask_q;
-      loop_c = (((loop_s4 & loop_c4) | (loop_s4 & loop_subtrahend) |
-                 (loop_c4 & loop_subtrahend)) << 1) & mask_q;
-      loop_a = (reg_b_q << 2) | 32'd2;
-      loop_b = (reg_b_q << 2) | 32'd1;
+      loopSubtrahendInner = (divisorDpInner << 3) & maskInner;
+      loopSInner = (loopS4Inner ^ loopC4Inner ^ loopSubtrahendInner) & maskInner;
+      loopCInner = (((loopS4Inner & loopC4Inner) | (loopS4Inner & loopSubtrahendInner) |
+                 (loopC4Inner & loopSubtrahendInner)) << 1) & maskInner;
+      loopAInner = (regBInner << 2) | 32'd2;
+      loopBInner = (regBInner << 2) | 32'd1;
     end
   end
 
   always_comb begin
-    finish_pk = (reg_s_q + reg_c_q) & mask_q;
-    finish_negative = shift_d_q ? finish_pk[35] : finish_pk[34];
-    finish_corrected_pk = finish_negative ?
-                          ((finish_pk + (divisor_dp_q << 2)) & mask_q) : finish_pk;
-    finish_quotient = finish_negative ? reg_b_q : reg_a_q;
-    finish_remainder = (((finish_corrected_pk >> 2) >> shift_d_q) >> clz_d_q);
-    finish_unsigned = want_remainder_q ? finish_remainder : finish_quotient;
-    finish_negated = ~finish_unsigned + 32'd1;
-    finish_signed =
-      ((want_remainder_q && remainder_negative_q) ||
-       (!want_remainder_q && quotient_negative_q)) ? finish_negated : finish_unsigned;
+    finishPkInner = (regSInner + regCInner) & maskInner;
+    finishNegativeInner = shiftDInner ? finishPkInner[35] : finishPkInner[34];
+    finishCorrectedPkInner = finishNegativeInner ?
+                          ((finishPkInner + (divisorDpInner << 2)) & maskInner) : finishPkInner;
+    finishQuotientInner = finishNegativeInner ? regBInner : regAInner;
+    finishRemainderInner = (((finishCorrectedPkInner >> 2) >> shiftDInner) >> clzDInner);
+     finishUnsignedInner = wantRemainderRegisteredInner ? finishRemainderInner : finishQuotientInner;
+    finishNegatedInner = ~finishUnsignedInner + 32'd1;
+    finishSignedInner =
+       ((wantRemainderRegisteredInner && remainderNegativeInner) ||
+        (!wantRemainderRegisteredInner && quotientNegativeInner)) ? finishNegatedInner : finishUnsignedInner;
   end
 
   always_comb begin
-    in_ready_o = !busy_q && (!result_valid_q || out_ready_i);
-    out_valid_o = result_valid_q;
-    result_o = result_q;
-    rob_tag_o = result_tag_q;
-    dest_phy_o = result_phy_q;
+    inReadyOutput = !busyInner && (!resultValidInner || outReadyInput);
+    executeOutput.valid = resultValidInner;
+    executeOutput.value = resultInner;
+    executeOutput.robTag = resultTagInner;
+    executeOutput.destinationPhy = resultPhyInner;
   end
 
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      busy_q <= 1'b0;
-      phase_q <= PH_PREP;
-      loop_count_q <= '0;
-      dividend_mag_q <= '0;
-      divisor_mag_q <= '0;
-      divisor_dp_q <= '0;
-      clz_d_q <= '0;
-      shift_d_q <= 1'b0;
-      d_slice_q <= '0;
-      d_slice3_q <= '0;
-      reg_s_q <= '0;
-      reg_c_q <= '0;
-      mask_q <= '0;
-      reg_a_q <= '0;
-      reg_b_q <= '0;
-      quotient_negative_q <= 1'b0;
-      remainder_negative_q <= 1'b0;
-      want_remainder_q <= 1'b0;
-      active_tag_q <= '0;
-      active_phy_q <= '0;
-      result_valid_q <= 1'b0;
-      result_q <= '0;
-      result_tag_q <= '0;
-      result_phy_q <= '0;
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) begin
+      busyInner <= 1'b0;
+      phaseInner <= PH_PREP;
+      loopCountInner <= '0;
+      dividendMagInner <= '0;
+      divisorMagInner <= '0;
+      divisorDpInner <= '0;
+      clzDInner <= '0;
+      shiftDInner <= 1'b0;
+      dSliceInner <= '0;
+      dSlice3Inner <= '0;
+      regSInner <= '0;
+      regCInner <= '0;
+      maskInner <= '0;
+      regAInner <= '0;
+      regBInner <= '0;
+      quotientNegativeInner <= 1'b0;
+      remainderNegativeInner <= 1'b0;
+       wantRemainderRegisteredInner <= 1'b0;
+      activeTagInner <= '0;
+      activePhyInner <= '0;
+      resultValidInner <= 1'b0;
+      resultInner <= '0;
+      resultTagInner <= '0;
+      resultPhyInner <= '0;
     end else begin
-      if (flush_i && busy_q && !rob_is_older(active_tag_q, flush_tag_i)) begin
-        busy_q <= 1'b0;
-      end else if (flush_i && result_valid_q) begin
-        result_valid_q <= 1'b0;
+      if (flushInfoInput.valid && busyInner && !rob_is_older(activeTagInner, flushInfoInput.robTag)) begin
+        busyInner <= 1'b0;
+      end else if (flushInfoInput.valid && resultValidInner) begin
+        resultValidInner <= 1'b0;
       end else begin
-        if (result_valid_q && out_ready_i)
-          result_valid_q <= 1'b0;
+        if (resultValidInner && outReadyInput)
+          resultValidInner <= 1'b0;
 
-        if (in_valid_i && in_ready_o) begin
-          active_tag_q <= rob_tag_i;
-          active_phy_q <= dest_phy_i;
-          want_remainder_q <= want_remainder;
-          quotient_negative_q <= signed_op && (dividend_i[31] ^ divisor_i[31]);
-          remainder_negative_q <= signed_op && dividend_i[31];
+        if (executeInput.valid && inReadyOutput) begin
+          activeTagInner <= executeInput.robTag;
+          activePhyInner <= executeInput.destinationPhy;
+           wantRemainderRegisteredInner <= wantRemainderInner;
+          quotientNegativeInner <= signedOpInner && (executeInput.source1[31] ^ executeInput.source2[31]);
+          remainderNegativeInner <= signedOpInner && executeInput.source1[31];
 
-          if (divisor_i == 32'b0) begin
-            result_valid_q <= 1'b1;
-            result_q <= want_remainder ? dividend_i : 32'hffff_ffff;
-            result_tag_q <= rob_tag_i;
-            result_phy_q <= dest_phy_i;
-            busy_q <= 1'b0;
-          end else if (signed_op && (dividend_i == 32'h8000_0000) &&
-                       (divisor_i == 32'hffff_ffff)) begin
-            result_valid_q <= 1'b1;
-            result_q <= want_remainder ? 32'b0 : 32'h8000_0000;
-            result_tag_q <= rob_tag_i;
-            result_phy_q <= dest_phy_i;
-            busy_q <= 1'b0;
-          end else if (dividend_abs < divisor_abs) begin
-            result_valid_q <= 1'b1;
-            result_q <= want_remainder ? dividend_i : 32'b0;
-            result_tag_q <= rob_tag_i;
-            result_phy_q <= dest_phy_i;
-            busy_q <= 1'b0;
-          end else if (dividend_abs == divisor_abs) begin
-            result_valid_q <= 1'b1;
-            result_q <= want_remainder ? 32'b0 :
-                        ((signed_op && (dividend_i[31] ^ divisor_i[31])) ?
+          if (executeInput.source2 == 32'b0) begin
+            resultValidInner <= 1'b1;
+            resultInner <= wantRemainderInner ? executeInput.source1 : 32'hffff_ffff;
+            resultTagInner <= executeInput.robTag;
+            resultPhyInner <= executeInput.destinationPhy;
+            busyInner <= 1'b0;
+          end else if (signedOpInner && (executeInput.source1 == 32'h8000_0000) &&
+                       (executeInput.source2 == 32'hffff_ffff)) begin
+            resultValidInner <= 1'b1;
+            resultInner <= wantRemainderInner ? 32'b0 : 32'h8000_0000;
+            resultTagInner <= executeInput.robTag;
+            resultPhyInner <= executeInput.destinationPhy;
+            busyInner <= 1'b0;
+          end else if (dividendAbsInner < divisorAbsInner) begin
+            resultValidInner <= 1'b1;
+            resultInner <= wantRemainderInner ? executeInput.source1 : 32'b0;
+            resultTagInner <= executeInput.robTag;
+            resultPhyInner <= executeInput.destinationPhy;
+            busyInner <= 1'b0;
+          end else if (dividendAbsInner == divisorAbsInner) begin
+            resultValidInner <= 1'b1;
+            resultInner <= wantRemainderInner ? 32'b0 :
+                        ((signedOpInner && (executeInput.source1[31] ^ executeInput.source2[31])) ?
                          32'hffff_ffff : 32'd1);
-            result_tag_q <= rob_tag_i;
-            result_phy_q <= dest_phy_i;
-            busy_q <= 1'b0;
+            resultTagInner <= executeInput.robTag;
+            resultPhyInner <= executeInput.destinationPhy;
+            busyInner <= 1'b0;
           end else begin
-            busy_q <= 1'b1;
-            phase_q <= PH_PREP;
-            dividend_mag_q <= dividend_abs;
-            divisor_mag_q <= divisor_abs;
+            busyInner <= 1'b1;
+            phaseInner <= PH_PREP;
+            dividendMagInner <= dividendAbsInner;
+            divisorMagInner <= divisorAbsInner;
           end
-        end else if (busy_q) begin
-          unique case (phase_q)
+        end else if (busyInner) begin
+          unique case (phaseInner)
             PH_PREP: begin
-              loop_count_q <= prep_loop_count;
-              divisor_dp_q <= prep_divisor_dp;
-              clz_d_q <= prep_clz_d;
-              shift_d_q <= prep_shift_d;
-              d_slice_q <= prep_d_slice;
-              d_slice3_q <= prep_d_slice3;
-              reg_s_q <= prep_s;
-              reg_c_q <= prep_c;
-              mask_q <= prep_mask;
-              reg_a_q <= prep_a;
-              reg_b_q <= prep_b;
-              phase_q <= (prep_loop_count == 6'd0) ? PH_FINISH : PH_LOOP;
+              loopCountInner <= prepLoopCountInner;
+              divisorDpInner <= prepDivisorDpInner;
+              clzDInner <= prepClzDInner;
+              shiftDInner <= prepShiftDInner;
+              dSliceInner <= prepDSliceInner;
+              dSlice3Inner <= prepDSlice3Inner;
+              regSInner <= prepSInner;
+              regCInner <= prepCInner;
+              maskInner <= prepMaskInner;
+              regAInner <= prepAInner;
+              regBInner <= prepBInner;
+              phaseInner <= (prepLoopCountInner == 6'd0) ? PH_FINISH : PH_LOOP;
             end
             PH_LOOP: begin
-              reg_s_q <= loop_s;
-              reg_c_q <= loop_c;
-              reg_a_q <= loop_a;
-              reg_b_q <= loop_b;
-              if (loop_count_q == 6'd1) begin
-                phase_q <= PH_FINISH;
+              regSInner <= loopSInner;
+              regCInner <= loopCInner;
+              regAInner <= loopAInner;
+              regBInner <= loopBInner;
+              if (loopCountInner == 6'd1) begin
+                phaseInner <= PH_FINISH;
               end else begin
-                loop_count_q <= loop_count_q - 6'd1;
+                loopCountInner <= loopCountInner - 6'd1;
               end
             end
             default: begin
-              busy_q <= 1'b0;
-              result_valid_q <= 1'b1;
-              result_q <= finish_signed;
-              result_tag_q <= active_tag_q;
-              result_phy_q <= active_phy_q;
+              busyInner <= 1'b0;
+              resultValidInner <= 1'b1;
+              resultInner <= finishSignedInner;
+              resultTagInner <= activeTagInner;
+              resultPhyInner <= activePhyInner;
             end
           endcase
         end

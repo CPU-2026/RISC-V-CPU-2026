@@ -1,145 +1,123 @@
 module rv32_bpu_ras #(
-  parameter int unsigned RAS_ENTRIES = 8,
-  parameter int unsigned ALIGNQ_ENTRIES = 16
+  parameter int unsigned RAS_ENTRIES = 8
 ) (
-  input  logic                   clk_i,
-  input  logic                   rst_ni,
+  input logic clkInput,
+  input logic rstNInput,
 
-  input  logic                   fetch_info_valid_i,
-  input  logic                   fetch_info_call_i,
-  input  logic                   fetch_info_return_i,
-  input  logic [31:0]            fetch_info_pc_i,
+  input rv32_pkg::predictor_fetch_info_t fetchInfoInput,
+  input rv32_pkg::squash_input_t         squashInput,
+  input rv32_pkg::rob_predictor_input_t  robInput,
 
-  input  logic                   squash_valid_i,
-  input  logic [7:0]             squash_align_tail_i,
-  input  logic [7:0]             squash_ras_top_i,
-
-  output logic [7:0]             ras_top_o,
-  output logic [7:0]             align_tail_o,
-  output logic [31:0]            query_ret_target_o
+  output logic [15:0]            rasTopOutput,
+  output logic [31:0]            queryRetTargetOutput
 );
+  import rv32_pkg::*;
   localparam int unsigned RAS_PTR_W = $clog2(RAS_ENTRIES);
-  localparam int unsigned ALIGNQ_PTR_W = $clog2(ALIGNQ_ENTRIES);
 
-  logic [31:0] ras_pc_q [0:RAS_ENTRIES-1];
-  logic [7:0] ras_times_q [0:RAS_ENTRIES-1];
-  // This is a logical ring pointer. Only the low bits index physical storage.
-  logic [7:0] ras_top_q;
-  logic [31:0] align_addr_q [0:ALIGNQ_ENTRIES-1];
-  logic [RAS_PTR_W-1:0] align_index_q [0:ALIGNQ_ENTRIES-1];
-  logic [7:0] align_times_q [0:ALIGNQ_ENTRIES-1];
-  logic [7:0] align_tail_q;
+  logic [31:0] specRasPcInner [RAS_ENTRIES];
+  logic [15:0] specRasTopInner;  // TOS of spec RAS
+  logic [31:0] archRasPcInner [RAS_ENTRIES];
+  logic [15:0] archRasTopInner;  // TOS of arch RAS
 
-  logic [7:0] ras_top_next, align_tail_next;
-  logic [31:0] ras_pc_next [0:RAS_ENTRIES-1];
-  logic [7:0] ras_times_next [0:RAS_ENTRIES-1];
-  logic [31:0] align_addr_next [0:ALIGNQ_ENTRIES-1];
-  logic [RAS_PTR_W-1:0] align_index_next [0:ALIGNQ_ENTRIES-1];
-  logic [7:0] align_times_next [0:ALIGNQ_ENTRIES-1];
-  logic [7:0] replay_distance;
-  logic [RAS_PTR_W-1:0] ras_prev_index;
-  logic [ALIGNQ_PTR_W-1:0] replay_index;
-  integer comb_i;
-  integer seq_i;
+  logic [15:0] specRasTopNext;
+  logic [15:0] archRasTopNext;
+  logic [31:0] specRasPcNext [RAS_ENTRIES];
+  logic [31:0] archRasPcNext [RAS_ENTRIES];
+  rob_tag_t replayCountInner;
+  rob_tag_t replayTagInner;
+  logic replayCallInner, replayRetInner;
+  logic replayRdLinkInner, replayRs1LinkInner;
+  integer combIndexInner;
+  integer seqIndexInner;
 
   always_comb begin
-    if (ras_top_q == 8'd0)
-      query_ret_target_o = 32'd0;
+    if (specRasTopInner == 16'd0)
+      queryRetTargetOutput = 32'd0;
     else
-      query_ret_target_o = ras_pc_q[ras_top_q[RAS_PTR_W-1:0] - 1'b1];
-  end
+      queryRetTargetOutput = specRasPcInner[RAS_PTR_W'(specRasTopInner - 16'd1)];
+  end  // query the return address
 
-  assign ras_top_o = ras_top_q;
-  assign align_tail_o = align_tail_q;
+  assign rasTopOutput = specRasTopInner;
 
   always_comb begin
-    ras_top_next = ras_top_q;
-    align_tail_next = align_tail_q;
-    replay_distance = 8'd0;
-    ras_prev_index = RAS_PTR_W'(ras_top_next - 8'd1);
-    replay_index = '0;
-    for (comb_i = 0; comb_i < RAS_ENTRIES; comb_i = comb_i + 1) begin
-      ras_pc_next[comb_i] = ras_pc_q[comb_i];
-      ras_times_next[comb_i] = ras_times_q[comb_i];
-    end
-    for (comb_i = 0; comb_i < ALIGNQ_ENTRIES; comb_i = comb_i + 1) begin
-      align_addr_next[comb_i] = align_addr_q[comb_i];
-      align_index_next[comb_i] = align_index_q[comb_i];
-      align_times_next[comb_i] = align_times_q[comb_i];
+    specRasTopNext = specRasTopInner;
+    archRasTopNext = archRasTopInner;
+    replayCountInner = squashInput.robTag - robInput.headTag + rob_tag_t'(1);
+    replayTagInner = '0;
+    replayCallInner = 1'b0;
+    replayRetInner = 1'b0;
+    replayRdLinkInner = 1'b0;
+    replayRs1LinkInner = 1'b0;
+    for (combIndexInner = 0; combIndexInner < RAS_ENTRIES; combIndexInner = combIndexInner + 1) begin
+      specRasPcNext[combIndexInner] = specRasPcInner[combIndexInner];
+      archRasPcNext[combIndexInner] = archRasPcInner[combIndexInner];
     end
 
-    if (fetch_info_valid_i) begin
-      if (fetch_info_call_i) begin
-        if ((ras_top_next != 8'd0) &&
-            (ras_pc_next[ras_prev_index] ==
-             (fetch_info_pc_i + 32'd4))) begin
-          align_addr_next[align_tail_next[ALIGNQ_PTR_W-1:0]] =
-            ras_pc_next[ras_prev_index];
-          align_index_next[align_tail_next[ALIGNQ_PTR_W-1:0]] =
-            ras_prev_index;
-          align_times_next[align_tail_next[ALIGNQ_PTR_W-1:0]] =
-            ras_times_next[ras_prev_index];
-          align_tail_next = align_tail_next + 8'd1;
-          ras_times_next[ras_prev_index] = ras_times_next[ras_prev_index] + 8'd1;
-        end else begin
-          ras_pc_next[ras_top_next[RAS_PTR_W-1:0]] = fetch_info_pc_i + 32'd4;
-          ras_times_next[ras_top_next[RAS_PTR_W-1:0]] = 8'd1;
-          ras_top_next = ras_top_next + 8'd1;
-        end
-      end else if (fetch_info_return_i && (ras_top_next != 8'd0)) begin
-        align_addr_next[align_tail_next[ALIGNQ_PTR_W-1:0]] =
-          ras_pc_next[ras_prev_index];
-        align_index_next[align_tail_next[ALIGNQ_PTR_W-1:0]] =
-          ras_prev_index;
-        align_times_next[align_tail_next[ALIGNQ_PTR_W-1:0]] =
-          ras_times_next[ras_prev_index];
-        align_tail_next = align_tail_next + 8'd1;
-        if (ras_times_next[ras_prev_index] > 8'd1)
-          ras_times_next[ras_prev_index] = ras_times_next[ras_prev_index] - 8'd1;
-        else
-          ras_top_next = ras_top_next - 8'd1;
+    if (robInput.willCommit) begin
+      if (robInput.isHeadCall) begin
+        archRasPcNext[archRasTopNext[RAS_PTR_W-1:0]] = robInput.headProgramCounter + 32'd4;
+        archRasTopNext = archRasTopNext + 16'd1;
+      end else if (robInput.isHeadReturn && (archRasTopNext != 16'd0)) begin
+        archRasTopNext = archRasTopNext - 16'd1;
       end
     end
 
-    if (squash_valid_i) begin
-      replay_distance = align_tail_q - squash_align_tail_i;
-      for (comb_i = 0; comb_i < ALIGNQ_ENTRIES; comb_i = comb_i + 1) begin
-        if (comb_i < replay_distance) begin
-          replay_index = align_tail_q[ALIGNQ_PTR_W-1:0] - ALIGNQ_PTR_W'(1) -
-                         comb_i[ALIGNQ_PTR_W-1:0];
-          ras_pc_next[align_index_q[replay_index]] = align_addr_q[replay_index];
-          ras_times_next[align_index_q[replay_index]] = align_times_q[replay_index];
+    if (squashInput.valid) begin
+      // Start at the post-commit architectural stack, then replay every
+      // surviving ROB instruction (including the mispredicted boundaryInput).
+      // Skipping a simultaneous commit avoids applying it twice.
+      specRasTopNext = archRasTopNext;
+      for (combIndexInner = 0; combIndexInner < RAS_ENTRIES; combIndexInner = combIndexInner + 1)
+        specRasPcNext[combIndexInner] = archRasPcNext[combIndexInner];
+      for (combIndexInner = 0; combIndexInner < ROB_ENTRIES; combIndexInner = combIndexInner + 1) begin
+        replayTagInner = robInput.headTag + rob_tag_t'(combIndexInner);
+        if ((combIndexInner < replayCountInner) &&
+            (robInput.replayEntries[combIndexInner].robTag == replayTagInner) &&
+            !(robInput.willCommit && (combIndexInner == 0))) begin
+          replayRdLinkInner = (robInput.replayEntries[combIndexInner].instruction[11:7] == 5'd1) ||
+                           (robInput.replayEntries[combIndexInner].instruction[11:7] == 5'd5);
+          replayRs1LinkInner = (robInput.replayEntries[combIndexInner].instruction[19:15] == 5'd1) ||
+                            (robInput.replayEntries[combIndexInner].instruction[19:15] == 5'd5);
+          replayCallInner = ((robInput.replayEntries[combIndexInner].instruction[6:0] == OPCODE_JAL) ||
+                         ((robInput.replayEntries[combIndexInner].instruction[6:0] == OPCODE_JALR) &&
+                          (robInput.replayEntries[combIndexInner].instruction[14:12] == 3'b000))) &&
+                        replayRdLinkInner;
+          replayRetInner = (robInput.replayEntries[combIndexInner].instruction[6:0] == OPCODE_JALR) &&
+                        (robInput.replayEntries[combIndexInner].instruction[14:12] == 3'b000) &&
+                       replayRs1LinkInner && !replayRdLinkInner;
+          if (replayCallInner) begin
+            specRasPcNext[specRasTopNext[RAS_PTR_W-1:0]] =
+              robInput.replayEntries[combIndexInner].programCounter + 32'd4;
+            specRasTopNext = specRasTopNext + 16'd1;
+          end else if (replayRetInner && (specRasTopNext != 16'd0)) begin
+            specRasTopNext = specRasTopNext - 16'd1;
+          end
         end
       end
-      align_tail_next = squash_align_tail_i;
-      ras_top_next = squash_ras_top_i;
+    end else if (fetchInfoInput.valid) begin
+      if (fetchInfoInput.isCall) begin
+        specRasPcNext[specRasTopNext[RAS_PTR_W-1:0]] = fetchInfoInput.programCounter + 32'd4;
+        specRasTopNext = specRasTopNext + 16'd1;
+      end else if (fetchInfoInput.isReturn && (specRasTopNext != 16'd0)) begin
+        specRasTopNext = specRasTopNext - 16'd1;
+      end
     end
   end
 
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      ras_top_q <= 8'd0;
-      align_tail_q <= 8'd0;
-      for (seq_i = 0; seq_i < RAS_ENTRIES; seq_i = seq_i + 1) begin
-        ras_pc_q[seq_i] <= '0;
-        ras_times_q[seq_i] <= 8'd0;
-      end
-      for (seq_i = 0; seq_i < ALIGNQ_ENTRIES; seq_i = seq_i + 1) begin
-        align_addr_q[seq_i] <= '0;
-        align_index_q[seq_i] <= '0;
-        align_times_q[seq_i] <= 8'd0;
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) begin
+      specRasTopInner <= '0;
+      archRasTopInner <= '0;
+      for (seqIndexInner = 0; seqIndexInner < RAS_ENTRIES; seqIndexInner = seqIndexInner + 1) begin
+        specRasPcInner[seqIndexInner] <= '0;
+        archRasPcInner[seqIndexInner] <= '0;
       end
     end else begin
-      ras_top_q <= ras_top_next;
-      align_tail_q <= align_tail_next;
-      for (seq_i = 0; seq_i < RAS_ENTRIES; seq_i = seq_i + 1) begin
-        ras_pc_q[seq_i] <= ras_pc_next[seq_i];
-        ras_times_q[seq_i] <= ras_times_next[seq_i];
-      end
-      for (seq_i = 0; seq_i < ALIGNQ_ENTRIES; seq_i = seq_i + 1) begin
-        align_addr_q[seq_i] <= align_addr_next[seq_i];
-        align_index_q[seq_i] <= align_index_next[seq_i];
-        align_times_q[seq_i] <= align_times_next[seq_i];
+      specRasTopInner <= specRasTopNext;
+      archRasTopInner <= archRasTopNext;
+      for (seqIndexInner = 0; seqIndexInner < RAS_ENTRIES; seqIndexInner = seqIndexInner + 1) begin
+        specRasPcInner[seqIndexInner] <= specRasPcNext[seqIndexInner];
+        archRasPcInner[seqIndexInner] <= archRasPcNext[seqIndexInner];
       end
     end
   end

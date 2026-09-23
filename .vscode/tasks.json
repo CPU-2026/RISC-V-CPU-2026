@@ -1,0 +1,48 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "RTL: lint project",
+      "type": "process",
+      "command": "verilator",
+      "args": [
+        "--lint-only",
+        "-Wno-fatal",
+        "-Wno-BLKLOOPINIT",
+        "--top-module",
+        "${input:rtlTop}",
+        "-F",
+        "verilog/filelist.f"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": {
+        "owner": "verilator",
+        "source": "verilator",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^%(Error|Warning)(?:-[A-Za-z0-9]+)?:\\s+(.+?):(\\d+):(\\d+):\\s+(.*)$",
+          "severity": 1,
+          "file": 2,
+          "line": 3,
+          "column": 4,
+          "message": 5
+        }
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "rtlTop",
+      "type": "pickString",
+      "description": "选择要检查的顶层模块",
+      "options": ["cpu_top", "cpu_cached_top"],
+      "default": "cpu_top"
+    }
+  ]
+}

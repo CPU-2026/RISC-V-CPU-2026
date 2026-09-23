@@ -1,149 +1,138 @@
 module rv32_flush_arbiter #(
   parameter int unsigned DEPTH = 4
 ) (
-  input  logic                         clk_i,
-  input  logic                         rst_ni,
+  input  logic                         clkInput,
+  input  logic                         rstNInput,
 
-  input  logic                         branch_valid_i,
-  input  rv32_pkg::rob_tag_t           branch_tag_i,
-  input  logic [31:0]                  branch_pc_i,
-  input  rv32_pkg::bpu_ckpt_id_t       branch_ckpt_id_i,
-
-  input  logic                         jump_valid_i,
-  input  rv32_pkg::rob_tag_t           jump_tag_i,
-  input  logic [31:0]                  jump_pc_i,
-  input  rv32_pkg::bpu_ckpt_id_t       jump_ckpt_id_i,
-
-  output logic                         squash_valid_o,
-  output rv32_pkg::rob_tag_t           squash_tag_o,
-  output logic [31:0]                  squash_pc_o,
-  output rv32_pkg::bpu_ckpt_id_t       squash_ckpt_id_o
+  input  rv32_pkg::flush_candidate_input_t branchInput,
+  input  rv32_pkg::flush_candidate_input_t jumpInput,
+  output rv32_pkg::squash_input_t        squashOutput
 );
   import rv32_pkg::*;
 
-  logic valid_q [0:DEPTH-1];
-  rob_tag_t tag_q [0:DEPTH-1];
-  logic [31:0] pc_q [0:DEPTH-1];
-  bpu_ckpt_id_t ckpt_id_q [0:DEPTH-1];
+  logic validInner [DEPTH];
+  rob_tag_t tagInner [DEPTH];
+  logic [31:0] pcInner [DEPTH];
+  bpu_ckpt_id_t ckptIdInner [DEPTH];
 
-  logic valid_next [0:DEPTH-1];
-  rob_tag_t tag_next [0:DEPTH-1];
-  logic [31:0] pc_next [0:DEPTH-1];
-  bpu_ckpt_id_t ckpt_id_next [0:DEPTH-1];
+  logic validNext [DEPTH];
+  rob_tag_t tagNext [DEPTH];
+  logic [31:0] pcNext [DEPTH];
+  bpu_ckpt_id_t ckptIdNext [DEPTH];
 
-  integer select_i;
-  integer comb_i, comb_j, count, write_index, insert_pos;
-  integer seq_i;
+  integer selectIndexInner;
+  integer combIndexInner, combJInner, countInner, writeIndexInner, insertPosInner;
+  integer seqIndexInner;
 
   always @* begin
-    squash_valid_o = 1'b0;
-    squash_tag_o = '0;
-    squash_pc_o = '0;
-    squash_ckpt_id_o = '0;
-    for (select_i = 0; select_i < DEPTH; select_i = select_i + 1) begin
-      if (valid_q[select_i] && (!squash_valid_o ||
-                         rob_is_older(tag_q[select_i], squash_tag_o))) begin
-        squash_valid_o = 1'b1;
-        squash_tag_o = tag_q[select_i];
-        squash_pc_o = pc_q[select_i];
-        squash_ckpt_id_o = ckpt_id_q[select_i];
+    squashOutput.valid = 1'b0;
+    squashOutput.robTag = '0;
+    squashOutput.programCounter = '0;
+    squashOutput.checkpointId = '0;
+    for (selectIndexInner = 0; selectIndexInner < DEPTH; selectIndexInner = selectIndexInner + 1) begin
+      if (validInner[selectIndexInner] && (!squashOutput.valid ||
+                         rob_is_older(tagInner[selectIndexInner], squashOutput.robTag))) begin
+        squashOutput.valid = 1'b1;
+        squashOutput.robTag = tagInner[selectIndexInner];
+        squashOutput.programCounter = pcInner[selectIndexInner];
+        squashOutput.checkpointId = ckptIdInner[selectIndexInner];
       end
     end
   end
 
   always @* begin
-    count = 0;
-    write_index = 0;
-    insert_pos = 0;
-    for (comb_i = 0; comb_i < DEPTH; comb_i = comb_i + 1) begin
-      valid_next[comb_i] = valid_q[comb_i];
-      tag_next[comb_i] = tag_q[comb_i];
-      pc_next[comb_i] = pc_q[comb_i];
-      ckpt_id_next[comb_i] = ckpt_id_q[comb_i];
+    countInner = 0;
+    writeIndexInner = 0;
+    insertPosInner = 0;
+    for (combIndexInner = 0; combIndexInner < DEPTH; combIndexInner = combIndexInner + 1) begin
+      validNext[combIndexInner] = validInner[combIndexInner];
+      tagNext[combIndexInner] = tagInner[combIndexInner];
+      pcNext[combIndexInner] = pcInner[combIndexInner];
+      ckptIdNext[combIndexInner] = ckptIdInner[combIndexInner];
     end
 
     // A broadcast squash has won arbitration. Keep only strictly older queued
     // requests before accepting this cycle's independently detected events.
-    if (squash_valid_o) begin
-      for (comb_i = 0; comb_i < DEPTH; comb_i = comb_i + 1)
-        if (valid_next[comb_i] && !rob_is_older(tag_next[comb_i], squash_tag_o))
-          valid_next[comb_i] = 1'b0;
+    if (squashOutput.valid) begin
+      for (combIndexInner = 0; combIndexInner < DEPTH; combIndexInner = combIndexInner + 1)
+        if (validNext[combIndexInner] && !rob_is_older(tagNext[combIndexInner], squashOutput.robTag))
+          validNext[combIndexInner] = 1'b0;
     end
 
     // Compact first so each insertion can use the same oldest-first layout.
-    write_index = 0;
-    for (comb_i = 0; comb_i < DEPTH; comb_i = comb_i + 1) begin
-      if (valid_next[comb_i]) begin
-        if (write_index != comb_i) begin
-          valid_next[write_index] = 1'b1;
-          tag_next[write_index] = tag_next[comb_i];
-          pc_next[write_index] = pc_next[comb_i];
-          ckpt_id_next[write_index] = ckpt_id_next[comb_i];
-          valid_next[comb_i] = 1'b0;
+    writeIndexInner = 0;
+    for (combIndexInner = 0; combIndexInner < DEPTH; combIndexInner = combIndexInner + 1) begin
+      if (validNext[combIndexInner]) begin
+        if (writeIndexInner != combIndexInner) begin
+          validNext[writeIndexInner] = 1'b1;
+          tagNext[writeIndexInner] = tagNext[combIndexInner];
+          pcNext[writeIndexInner] = pcNext[combIndexInner];
+          ckptIdNext[writeIndexInner] = ckptIdNext[combIndexInner];
+          validNext[combIndexInner] = 1'b0;
         end
-        write_index = write_index + 1;
+        writeIndexInner = writeIndexInner + 1;
       end
     end
-    count = write_index;
+    countInner = writeIndexInner;
 
-    if (branch_valid_i &&
-        (!squash_valid_o || rob_is_older(branch_tag_i, squash_tag_o)) &&
-        (count < DEPTH)) begin
-      insert_pos = 0;
-      for (comb_i = 0; comb_i < DEPTH; comb_i = comb_i + 1)
-        if ((comb_i < count) && rob_is_younger(branch_tag_i, tag_next[comb_i]))
-          insert_pos = insert_pos + 1;
-      for (comb_j = DEPTH-1; comb_j > 0; comb_j = comb_j - 1) begin
-        if ((comb_j > insert_pos) && (comb_j <= count)) begin
-          valid_next[comb_j] = valid_next[comb_j-1];
-          tag_next[comb_j] = tag_next[comb_j-1];
-          pc_next[comb_j] = pc_next[comb_j-1];
-          ckpt_id_next[comb_j] = ckpt_id_next[comb_j-1];
+    if (branchInput.valid &&
+        (!squashOutput.valid || rob_is_older(branchInput.robTag, squashOutput.robTag)) &&
+        (countInner < DEPTH)) begin
+      insertPosInner = 0;
+      for (combIndexInner = 0; combIndexInner < DEPTH; combIndexInner = combIndexInner + 1)
+        if ((combIndexInner < countInner) && rob_is_younger(branchInput.robTag, tagNext[combIndexInner]))
+          insertPosInner = insertPosInner + 1;
+      for (combJInner = DEPTH-1; combJInner > 0; combJInner = combJInner - 1) begin
+        if ((combJInner > insertPosInner) && (combJInner <= countInner)) begin
+          validNext[combJInner] = validNext[combJInner-1];
+          tagNext[combJInner] = tagNext[combJInner-1];
+          pcNext[combJInner] = pcNext[combJInner-1];
+          ckptIdNext[combJInner] = ckptIdNext[combJInner-1];
         end
       end
-      valid_next[insert_pos] = 1'b1;
-      tag_next[insert_pos] = branch_tag_i;
-      pc_next[insert_pos] = branch_pc_i;
-      ckpt_id_next[insert_pos] = branch_ckpt_id_i;
-      count = count + 1;
+      validNext[insertPosInner] = 1'b1;
+      tagNext[insertPosInner] = branchInput.robTag;
+      pcNext[insertPosInner] = branchInput.programCounter;
+      ckptIdNext[insertPosInner] = branchInput.checkpointId;
+      countInner = countInner + 1;
     end
 
-    if (jump_valid_i &&
-        (!squash_valid_o || rob_is_older(jump_tag_i, squash_tag_o)) &&
-        (count < DEPTH)) begin
-      insert_pos = 0;
-      for (comb_i = 0; comb_i < DEPTH; comb_i = comb_i + 1)
-        if ((comb_i < count) && rob_is_younger(jump_tag_i, tag_next[comb_i]))
-          insert_pos = insert_pos + 1;
-      for (comb_j = DEPTH-1; comb_j > 0; comb_j = comb_j - 1) begin
-        if ((comb_j > insert_pos) && (comb_j <= count)) begin
-          valid_next[comb_j] = valid_next[comb_j-1];
-          tag_next[comb_j] = tag_next[comb_j-1];
-          pc_next[comb_j] = pc_next[comb_j-1];
-          ckpt_id_next[comb_j] = ckpt_id_next[comb_j-1];
+    if (jumpInput.valid &&
+        (!squashOutput.valid || rob_is_older(jumpInput.robTag, squashOutput.robTag)) &&
+        (countInner < DEPTH)) begin
+      insertPosInner = 0;
+      for (combIndexInner = 0; combIndexInner < DEPTH; combIndexInner = combIndexInner + 1)
+        if ((combIndexInner < countInner) && rob_is_younger(jumpInput.robTag, tagNext[combIndexInner]))
+          insertPosInner = insertPosInner + 1;
+      for (combJInner = DEPTH-1; combJInner > 0; combJInner = combJInner - 1) begin
+        if ((combJInner > insertPosInner) && (combJInner <= countInner)) begin
+          validNext[combJInner] = validNext[combJInner-1];
+          tagNext[combJInner] = tagNext[combJInner-1];
+          pcNext[combJInner] = pcNext[combJInner-1];
+          ckptIdNext[combJInner] = ckptIdNext[combJInner-1];
         end
       end
-      valid_next[insert_pos] = 1'b1;
-      tag_next[insert_pos] = jump_tag_i;
-      pc_next[insert_pos] = jump_pc_i;
-      ckpt_id_next[insert_pos] = jump_ckpt_id_i;
+      validNext[insertPosInner] = 1'b1;
+      tagNext[insertPosInner] = jumpInput.robTag;
+      pcNext[insertPosInner] = jumpInput.programCounter;
+      ckptIdNext[insertPosInner] = jumpInput.checkpointId;
     end
   end
 
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      for (seq_i = 0; seq_i < DEPTH; seq_i = seq_i + 1) begin
-        valid_q[seq_i] <= 1'b0;
-        tag_q[seq_i] <= '0;
-        pc_q[seq_i] <= '0;
-        ckpt_id_q[seq_i] <= '0;
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) begin
+      for (seqIndexInner = 0; seqIndexInner < DEPTH; seqIndexInner = seqIndexInner + 1) begin
+        validInner[seqIndexInner] <= 1'b0;
+        tagInner[seqIndexInner] <= '0;
+        pcInner[seqIndexInner] <= '0;
+        ckptIdInner[seqIndexInner] <= '0;
       end
     end else begin
-      for (seq_i = 0; seq_i < DEPTH; seq_i = seq_i + 1) begin
-        valid_q[seq_i] <= valid_next[seq_i];
-        tag_q[seq_i] <= tag_next[seq_i];
-        pc_q[seq_i] <= pc_next[seq_i];
-        ckpt_id_q[seq_i] <= ckpt_id_next[seq_i];
+      for (seqIndexInner = 0; seqIndexInner < DEPTH; seqIndexInner = seqIndexInner + 1) begin
+        validInner[seqIndexInner] <= validNext[seqIndexInner];
+        tagInner[seqIndexInner] <= tagNext[seqIndexInner];
+        pcInner[seqIndexInner] <= pcNext[seqIndexInner];
+        ckptIdInner[seqIndexInner] <= ckptIdNext[seqIndexInner];
       end
     end
   end

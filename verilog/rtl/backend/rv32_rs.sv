@@ -2,249 +2,215 @@ module rv32_rs #(
   parameter int unsigned DEPTH = 4,
   parameter int unsigned AUX_W = 3
 ) (
-  input  logic                   clk_i,
-  input  logic                   rst_ni,
-  input  logic                   flush_i,
-  input  rv32_pkg::rob_tag_t     flush_tag_i,
+  input  logic                   clkInput,
+  input  logic                   rstNInput,
+  input  rv32_pkg::rob_flush_input_t flushInfoInput,
 
-  input  logic                   alloc_valid_i,
-  output logic                   alloc_ready_o,
-  input  rv32_pkg::operation_e   alloc_op_i,
-  input  rv32_pkg::rob_tag_t     alloc_rob_tag_i,
-  input  rv32_pkg::phy_tag_t     alloc_dest_phy_i,
-  input  logic                   alloc_src1_ready_i,
-  input  rv32_pkg::phy_tag_t     alloc_src1_tag_i,
-  input  logic [31:0]            alloc_src1_value_i,
-  input  logic                   alloc_src2_ready_i,
-  input  rv32_pkg::phy_tag_t     alloc_src2_tag_i,
-  input  logic [31:0]            alloc_src2_value_i,
-  input  logic [31:0]            alloc_imm_i,
-  input  logic [31:0]            alloc_pc_i,
-  input  logic [31:0]            alloc_predicted_pc_i,
-  input  logic                   alloc_use_imm_i,
-  input  logic [AUX_W-1:0]       alloc_aux_i,
+  input  rv32_pkg::rs_allocation_input_t allocInput,
+  output logic                   allocReadyOutput,
+  input  logic [AUX_W-1:0]       allocAuxInput,
 
-  input  logic                   wb0_valid_i,
-  input  rv32_pkg::phy_tag_t     wb0_phy_i,
-  input  logic [31:0]            wb0_value_i,
-  input  logic                   wb1_valid_i,
-  input  rv32_pkg::phy_tag_t     wb1_phy_i,
-  input  logic [31:0]            wb1_value_i,
-  input  logic                   wb2_valid_i,
-  input  rv32_pkg::phy_tag_t     wb2_phy_i,
-  input  logic [31:0]            wb2_value_i,
-  input  logic                   wb3_valid_i,
-  input  rv32_pkg::phy_tag_t     wb3_phy_i,
-  input  logic [31:0]            wb3_value_i,
+  input  rv32_pkg::cdb_result_t [3:0] writebackInput,
 
-  output logic                   issue_valid_o,
-  input  logic                   issue_ready_i,
-  output rv32_pkg::operation_e   issue_op_o,
-  output rv32_pkg::rob_tag_t     issue_rob_tag_o,
-  output rv32_pkg::phy_tag_t     issue_dest_phy_o,
-  output logic [31:0]            issue_src1_value_o,
-  output logic [31:0]            issue_src2_value_o,
-  output logic [31:0]            issue_imm_o,
-  output logic [31:0]            issue_pc_o,
-  output logic [31:0]            issue_predicted_pc_o,
-  output logic                   issue_use_imm_o,
-  output logic [AUX_W-1:0]       issue_aux_o,
-  output logic [$clog2(DEPTH+1)-1:0] occupancy_o
+  output rv32_pkg::rs_issue_output_t issueOutput,
+  input  logic                   issueReadyInput,
+  output logic [AUX_W-1:0]       issueAuxOutput,
+  output logic [$clog2(DEPTH+1)-1:0] occupancyOutput
 );
   import rv32_pkg::*;
 
   localparam int unsigned INDEX_W = (DEPTH <= 1) ? 1 : $clog2(DEPTH);
 
-  logic busy_q [0:DEPTH-1];
-  operation_e op_q [0:DEPTH-1];
-  rob_tag_t rob_tag_q [0:DEPTH-1];
-  phy_tag_t dest_phy_q [0:DEPTH-1];
-  logic src1_ready_q [0:DEPTH-1];
-  phy_tag_t src1_tag_q [0:DEPTH-1];
-  logic [31:0] src1_value_q [0:DEPTH-1];
-  logic src2_ready_q [0:DEPTH-1];
-  phy_tag_t src2_tag_q [0:DEPTH-1];
-  logic [31:0] src2_value_q [0:DEPTH-1];
-  logic [31:0] imm_q [0:DEPTH-1];
-  logic [31:0] pc_q [0:DEPTH-1];
-  logic [31:0] predicted_pc_q [0:DEPTH-1];
-  logic use_imm_q [0:DEPTH-1];
-  logic [AUX_W-1:0] aux_q [0:DEPTH-1];
+  logic busyInner [DEPTH];
+  operation_e opInner [DEPTH];
+  rob_tag_t robTagInner [DEPTH];
+  phy_tag_t destPhyInner [DEPTH];
+  logic src1ReadyInner [DEPTH];
+  phy_tag_t src1TagInner [DEPTH];
+  logic [31:0] src1ValueInner [DEPTH];
+  logic src2ReadyInner [DEPTH];
+  phy_tag_t src2TagInner [DEPTH];
+  logic [31:0] src2ValueInner [DEPTH];
+  logic [31:0] immInner [DEPTH];
+  logic [31:0] pcInner [DEPTH];
+  logic [31:0] predictedPcInner [DEPTH];
+  logic useImmInner [DEPTH];
+  logic [AUX_W-1:0] auxInner [DEPTH];
 
-  logic issue_found;
-  logic [INDEX_W-1:0] issue_index;
-  logic alloc_found;
-  logic [INDEX_W-1:0] alloc_index;
-  logic alloc_src1_ready_resolved;
-  logic [31:0] alloc_src1_value_resolved;
-  logic alloc_src2_ready_resolved;
-  logic [31:0] alloc_src2_value_resolved;
-  integer comb_i;
-  integer seq_i;
+  logic issueFoundInner;
+  logic [INDEX_W-1:0] issueIndexInner;
+  logic allocFoundInner;
+  logic [INDEX_W-1:0] allocIndexInner;
+  logic allocSrc1ReadyResolvedInner;
+  logic [31:0] allocSrc1ValueResolvedInner;
+  logic allocSrc2ReadyResolvedInner;
+  logic [31:0] allocSrc2ValueResolvedInner;
+  integer combIndexInner;
+  integer seqIndexInner;
 
   function automatic logic rs_is_older(
-    input rob_tag_t candidate,
-    input rob_tag_t reference
+    input rob_tag_t candidateInput,
+    input rob_tag_t referenceInput
   );
-    rs_is_older = (candidate != reference) &&
-                  ((reference - candidate) < ROB_TAG_W'(ROB_ENTRIES));
+    rs_is_older = (candidateInput != referenceInput) &&
+                  ((referenceInput - candidateInput) < ROB_TAG_W'(ROB_ENTRIES));
   endfunction
 
   always_comb begin
-    issue_found = 1'b0;
-    issue_index = '0;
-    for (comb_i = 0; comb_i < DEPTH; comb_i = comb_i + 1) begin
-      if (busy_q[comb_i] && src1_ready_q[comb_i] &&
-          src2_ready_q[comb_i] &&
-          (!issue_found || rs_is_older(rob_tag_q[comb_i],
-                                       rob_tag_q[issue_index]))) begin
-        issue_found = 1'b1;
-        issue_index = comb_i[INDEX_W-1:0];
+    issueFoundInner = 1'b0;
+    issueIndexInner = '0;
+    for (combIndexInner = 0; combIndexInner < DEPTH; combIndexInner = combIndexInner + 1) begin
+      if (busyInner[combIndexInner] && src1ReadyInner[combIndexInner] &&
+          src2ReadyInner[combIndexInner] &&
+          (!issueFoundInner || rs_is_older(robTagInner[combIndexInner],
+                                       robTagInner[issueIndexInner]))) begin
+        issueFoundInner = 1'b1;
+        issueIndexInner = combIndexInner[INDEX_W-1:0];
       end
     end
 
-    issue_valid_o = issue_found && !flush_i;
-    issue_op_o = operation_e'(op_q[issue_index]);
-    issue_rob_tag_o = rob_tag_q[issue_index];
-    issue_dest_phy_o = dest_phy_q[issue_index];
-    issue_src1_value_o = src1_value_q[issue_index];
-    issue_src2_value_o = src2_value_q[issue_index];
-    issue_imm_o = imm_q[issue_index];
-    issue_pc_o = pc_q[issue_index];
-    issue_predicted_pc_o = predicted_pc_q[issue_index];
-    issue_use_imm_o = use_imm_q[issue_index];
-    issue_aux_o = aux_q[issue_index];
+    issueOutput.valid = issueFoundInner && !flushInfoInput.valid;
+    issueOutput.operation = operation_e'(opInner[issueIndexInner]);
+    issueOutput.robTag = robTagInner[issueIndexInner];
+    issueOutput.destinationPhy = destPhyInner[issueIndexInner];
+    issueOutput.source1Value = src1ValueInner[issueIndexInner];
+    issueOutput.source2Value = src2ValueInner[issueIndexInner];
+    issueOutput.immediate = immInner[issueIndexInner];
+    issueOutput.programCounter = pcInner[issueIndexInner];
+    issueOutput.predictedProgramCounter = predictedPcInner[issueIndexInner];
+    issueOutput.useImmediate = useImmInner[issueIndexInner];
+    issueAuxOutput = auxInner[issueIndexInner];
 
-    alloc_found = 1'b0;
-    alloc_index = '0;
-    for (comb_i = 0; comb_i < DEPTH; comb_i = comb_i + 1) begin
-      if (!alloc_found && !busy_q[comb_i]) begin
-        alloc_found = 1'b1;
-        alloc_index = comb_i[INDEX_W-1:0];
+    allocFoundInner = 1'b0;
+    allocIndexInner = '0;
+    for (combIndexInner = 0; combIndexInner < DEPTH; combIndexInner = combIndexInner + 1) begin
+      if (!allocFoundInner && !busyInner[combIndexInner]) begin
+        allocFoundInner = 1'b1;
+        allocIndexInner = combIndexInner[INDEX_W-1:0];
       end
     end
-    alloc_ready_o = alloc_found && !flush_i;
+    allocReadyOutput = allocFoundInner && !flushInfoInput.valid;
 
-    occupancy_o = '0;
-    for (comb_i = 0; comb_i < DEPTH; comb_i = comb_i + 1)
-      if (busy_q[comb_i])
-        occupancy_o = occupancy_o + 1'b1;
+    occupancyOutput = '0;
+    for (combIndexInner = 0; combIndexInner < DEPTH; combIndexInner = combIndexInner + 1)
+      if (busyInner[combIndexInner])
+        occupancyOutput = occupancyOutput + 1'b1;
 
-    alloc_src1_ready_resolved = alloc_src1_ready_i;
-    alloc_src1_value_resolved = alloc_src1_value_i;
-    if (!alloc_src1_ready_resolved) begin
-      if (wb0_valid_i && (wb0_phy_i == alloc_src1_tag_i)) begin
-        alloc_src1_ready_resolved = 1'b1;
-        alloc_src1_value_resolved = wb0_value_i;
-      end else if (wb1_valid_i && (wb1_phy_i == alloc_src1_tag_i)) begin
-        alloc_src1_ready_resolved = 1'b1;
-        alloc_src1_value_resolved = wb1_value_i;
-      end else if (wb2_valid_i && (wb2_phy_i == alloc_src1_tag_i)) begin
-        alloc_src1_ready_resolved = 1'b1;
-        alloc_src1_value_resolved = wb2_value_i;
-      end else if (wb3_valid_i && (wb3_phy_i == alloc_src1_tag_i)) begin
-        alloc_src1_ready_resolved = 1'b1;
-        alloc_src1_value_resolved = wb3_value_i;
+    allocSrc1ReadyResolvedInner = allocInput.source1Ready;
+    allocSrc1ValueResolvedInner = allocInput.source1Value;
+    if (!allocSrc1ReadyResolvedInner) begin
+      if (writebackInput[0].valid && (writebackInput[0].phyTag == allocInput.source1Tag)) begin
+        allocSrc1ReadyResolvedInner = 1'b1;
+        allocSrc1ValueResolvedInner = writebackInput[0].value;
+      end else if (writebackInput[1].valid && (writebackInput[1].phyTag == allocInput.source1Tag)) begin
+        allocSrc1ReadyResolvedInner = 1'b1;
+        allocSrc1ValueResolvedInner = writebackInput[1].value;
+      end else if (writebackInput[2].valid && (writebackInput[2].phyTag == allocInput.source1Tag)) begin
+        allocSrc1ReadyResolvedInner = 1'b1;
+        allocSrc1ValueResolvedInner = writebackInput[2].value;
+      end else if (writebackInput[3].valid && (writebackInput[3].phyTag == allocInput.source1Tag)) begin
+        allocSrc1ReadyResolvedInner = 1'b1;
+        allocSrc1ValueResolvedInner = writebackInput[3].value;
       end
     end
 
-    alloc_src2_ready_resolved = alloc_src2_ready_i;
-    alloc_src2_value_resolved = alloc_src2_value_i;
-    if (!alloc_src2_ready_resolved) begin
-      if (wb0_valid_i && (wb0_phy_i == alloc_src2_tag_i)) begin
-        alloc_src2_ready_resolved = 1'b1;
-        alloc_src2_value_resolved = wb0_value_i;
-      end else if (wb1_valid_i && (wb1_phy_i == alloc_src2_tag_i)) begin
-        alloc_src2_ready_resolved = 1'b1;
-        alloc_src2_value_resolved = wb1_value_i;
-      end else if (wb2_valid_i && (wb2_phy_i == alloc_src2_tag_i)) begin
-        alloc_src2_ready_resolved = 1'b1;
-        alloc_src2_value_resolved = wb2_value_i;
-      end else if (wb3_valid_i && (wb3_phy_i == alloc_src2_tag_i)) begin
-        alloc_src2_ready_resolved = 1'b1;
-        alloc_src2_value_resolved = wb3_value_i;
+    allocSrc2ReadyResolvedInner = allocInput.source2Ready;
+    allocSrc2ValueResolvedInner = allocInput.source2Value;
+    if (!allocSrc2ReadyResolvedInner) begin
+      if (writebackInput[0].valid && (writebackInput[0].phyTag == allocInput.source2Tag)) begin
+        allocSrc2ReadyResolvedInner = 1'b1;
+        allocSrc2ValueResolvedInner = writebackInput[0].value;
+      end else if (writebackInput[1].valid && (writebackInput[1].phyTag == allocInput.source2Tag)) begin
+        allocSrc2ReadyResolvedInner = 1'b1;
+        allocSrc2ValueResolvedInner = writebackInput[1].value;
+      end else if (writebackInput[2].valid && (writebackInput[2].phyTag == allocInput.source2Tag)) begin
+        allocSrc2ReadyResolvedInner = 1'b1;
+        allocSrc2ValueResolvedInner = writebackInput[2].value;
+      end else if (writebackInput[3].valid && (writebackInput[3].phyTag == allocInput.source2Tag)) begin
+        allocSrc2ReadyResolvedInner = 1'b1;
+        allocSrc2ValueResolvedInner = writebackInput[3].value;
       end
     end
   end
 
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      for (seq_i = 0; seq_i < DEPTH; seq_i = seq_i + 1) begin
-        busy_q[seq_i] <= 1'b0;
-        op_q[seq_i] <= OP_INVALID;
-        rob_tag_q[seq_i] <= '0;
-        dest_phy_q[seq_i] <= '0;
-        src1_ready_q[seq_i] <= 1'b0;
-        src1_tag_q[seq_i] <= '0;
-        src1_value_q[seq_i] <= '0;
-        src2_ready_q[seq_i] <= 1'b0;
-        src2_tag_q[seq_i] <= '0;
-        src2_value_q[seq_i] <= '0;
-        imm_q[seq_i] <= '0;
-        pc_q[seq_i] <= '0;
-        predicted_pc_q[seq_i] <= '0;
-        use_imm_q[seq_i] <= 1'b0;
-        aux_q[seq_i] <= '0;
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) begin
+      for (seqIndexInner = 0; seqIndexInner < DEPTH; seqIndexInner = seqIndexInner + 1) begin
+        busyInner[seqIndexInner] <= 1'b0;
+        opInner[seqIndexInner] <= OP_INVALID;
+        robTagInner[seqIndexInner] <= '0;
+        destPhyInner[seqIndexInner] <= '0;
+        src1ReadyInner[seqIndexInner] <= 1'b0;
+        src1TagInner[seqIndexInner] <= '0;
+        src1ValueInner[seqIndexInner] <= '0;
+        src2ReadyInner[seqIndexInner] <= 1'b0;
+        src2TagInner[seqIndexInner] <= '0;
+        src2ValueInner[seqIndexInner] <= '0;
+        immInner[seqIndexInner] <= '0;
+        pcInner[seqIndexInner] <= '0;
+        predictedPcInner[seqIndexInner] <= '0;
+        useImmInner[seqIndexInner] <= 1'b0;
+        auxInner[seqIndexInner] <= '0;
       end
     end else begin
-      for (seq_i = 0; seq_i < DEPTH; seq_i = seq_i + 1) begin
-        if (flush_i && busy_q[seq_i] &&
-            rob_is_younger(rob_tag_q[seq_i], flush_tag_i)) begin
-          busy_q[seq_i] <= 1'b0;
-        end else if (busy_q[seq_i]) begin
-          if (!src1_ready_q[seq_i]) begin
-            if (wb0_valid_i && (wb0_phy_i == src1_tag_q[seq_i])) begin
-              src1_ready_q[seq_i] <= 1'b1;
-              src1_value_q[seq_i] <= wb0_value_i;
-            end else if (wb1_valid_i && (wb1_phy_i == src1_tag_q[seq_i])) begin
-              src1_ready_q[seq_i] <= 1'b1;
-              src1_value_q[seq_i] <= wb1_value_i;
-            end else if (wb2_valid_i && (wb2_phy_i == src1_tag_q[seq_i])) begin
-              src1_ready_q[seq_i] <= 1'b1;
-              src1_value_q[seq_i] <= wb2_value_i;
-            end else if (wb3_valid_i && (wb3_phy_i == src1_tag_q[seq_i])) begin
-              src1_ready_q[seq_i] <= 1'b1;
-              src1_value_q[seq_i] <= wb3_value_i;
+      for (seqIndexInner = 0; seqIndexInner < DEPTH; seqIndexInner = seqIndexInner + 1) begin
+        if (flushInfoInput.valid && busyInner[seqIndexInner] &&
+            rob_is_younger(robTagInner[seqIndexInner], flushInfoInput.robTag)) begin
+          busyInner[seqIndexInner] <= 1'b0;
+        end else if (busyInner[seqIndexInner]) begin
+          if (!src1ReadyInner[seqIndexInner]) begin
+            if (writebackInput[0].valid && (writebackInput[0].phyTag == src1TagInner[seqIndexInner])) begin
+              src1ReadyInner[seqIndexInner] <= 1'b1;
+              src1ValueInner[seqIndexInner] <= writebackInput[0].value;
+            end else if (writebackInput[1].valid && (writebackInput[1].phyTag == src1TagInner[seqIndexInner])) begin
+              src1ReadyInner[seqIndexInner] <= 1'b1;
+              src1ValueInner[seqIndexInner] <= writebackInput[1].value;
+            end else if (writebackInput[2].valid && (writebackInput[2].phyTag == src1TagInner[seqIndexInner])) begin
+              src1ReadyInner[seqIndexInner] <= 1'b1;
+              src1ValueInner[seqIndexInner] <= writebackInput[2].value;
+            end else if (writebackInput[3].valid && (writebackInput[3].phyTag == src1TagInner[seqIndexInner])) begin
+              src1ReadyInner[seqIndexInner] <= 1'b1;
+              src1ValueInner[seqIndexInner] <= writebackInput[3].value;
             end
           end
-          if (!src2_ready_q[seq_i]) begin
-            if (wb0_valid_i && (wb0_phy_i == src2_tag_q[seq_i])) begin
-              src2_ready_q[seq_i] <= 1'b1;
-              src2_value_q[seq_i] <= wb0_value_i;
-            end else if (wb1_valid_i && (wb1_phy_i == src2_tag_q[seq_i])) begin
-              src2_ready_q[seq_i] <= 1'b1;
-              src2_value_q[seq_i] <= wb1_value_i;
-            end else if (wb2_valid_i && (wb2_phy_i == src2_tag_q[seq_i])) begin
-              src2_ready_q[seq_i] <= 1'b1;
-              src2_value_q[seq_i] <= wb2_value_i;
-            end else if (wb3_valid_i && (wb3_phy_i == src2_tag_q[seq_i])) begin
-              src2_ready_q[seq_i] <= 1'b1;
-              src2_value_q[seq_i] <= wb3_value_i;
+          if (!src2ReadyInner[seqIndexInner]) begin
+            if (writebackInput[0].valid && (writebackInput[0].phyTag == src2TagInner[seqIndexInner])) begin
+              src2ReadyInner[seqIndexInner] <= 1'b1;
+              src2ValueInner[seqIndexInner] <= writebackInput[0].value;
+            end else if (writebackInput[1].valid && (writebackInput[1].phyTag == src2TagInner[seqIndexInner])) begin
+              src2ReadyInner[seqIndexInner] <= 1'b1;
+              src2ValueInner[seqIndexInner] <= writebackInput[1].value;
+            end else if (writebackInput[2].valid && (writebackInput[2].phyTag == src2TagInner[seqIndexInner])) begin
+              src2ReadyInner[seqIndexInner] <= 1'b1;
+              src2ValueInner[seqIndexInner] <= writebackInput[2].value;
+            end else if (writebackInput[3].valid && (writebackInput[3].phyTag == src2TagInner[seqIndexInner])) begin
+              src2ReadyInner[seqIndexInner] <= 1'b1;
+              src2ValueInner[seqIndexInner] <= writebackInput[3].value;
             end
           end
         end
       end
 
-      if (!flush_i) begin
-        if (issue_valid_o && issue_ready_i)
-          busy_q[issue_index] <= 1'b0;
+      if (!flushInfoInput.valid) begin
+        if (issueOutput.valid && issueReadyInput)
+          busyInner[issueIndexInner] <= 1'b0;
 
-        if (alloc_valid_i && alloc_ready_o) begin
-          busy_q[alloc_index] <= 1'b1;
-          op_q[alloc_index] <= alloc_op_i;
-          rob_tag_q[alloc_index] <= alloc_rob_tag_i;
-          dest_phy_q[alloc_index] <= alloc_dest_phy_i;
-          src1_ready_q[alloc_index] <= alloc_src1_ready_resolved;
-          src1_tag_q[alloc_index] <= alloc_src1_tag_i;
-          src1_value_q[alloc_index] <= alloc_src1_value_resolved;
-          src2_ready_q[alloc_index] <= alloc_src2_ready_resolved;
-          src2_tag_q[alloc_index] <= alloc_src2_tag_i;
-          src2_value_q[alloc_index] <= alloc_src2_value_resolved;
-          imm_q[alloc_index] <= alloc_imm_i;
-          pc_q[alloc_index] <= alloc_pc_i;
-          predicted_pc_q[alloc_index] <= alloc_predicted_pc_i;
-          use_imm_q[alloc_index] <= alloc_use_imm_i;
-          aux_q[alloc_index] <= alloc_aux_i;
+        if (allocInput.valid && allocReadyOutput) begin
+          busyInner[allocIndexInner] <= 1'b1;
+          opInner[allocIndexInner] <= allocInput.operation;
+          robTagInner[allocIndexInner] <= allocInput.robTag;
+          destPhyInner[allocIndexInner] <= allocInput.destinationPhy;
+          src1ReadyInner[allocIndexInner] <= allocSrc1ReadyResolvedInner;
+          src1TagInner[allocIndexInner] <= allocInput.source1Tag;
+          src1ValueInner[allocIndexInner] <= allocSrc1ValueResolvedInner;
+          src2ReadyInner[allocIndexInner] <= allocSrc2ReadyResolvedInner;
+          src2TagInner[allocIndexInner] <= allocInput.source2Tag;
+          src2ValueInner[allocIndexInner] <= allocSrc2ValueResolvedInner;
+          immInner[allocIndexInner] <= allocInput.immediate;
+          pcInner[allocIndexInner] <= allocInput.programCounter;
+          predictedPcInner[allocIndexInner] <= allocInput.predictedProgramCounter;
+          useImmInner[allocIndexInner] <= allocInput.useImmediate;
+          auxInner[allocIndexInner] <= allocAuxInput;
         end
       end
     end

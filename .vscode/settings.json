@@ -1,0 +1,5 @@
+{
+  "verilog.linting.linter": "none",
+  "systemverilog.compileOnSave": false,
+  "systemverilog.compileOnOpen": false
+}
