@@ -7,6 +7,8 @@ import math
 import os
 import re
 from pathlib import Path
+import re
+import shutil
 import subprocess
 
 from build import read_sources
@@ -22,9 +24,15 @@ def quote(value):
 
 def run_yosys(yosys, out, name, commands):
     script = out / f"{name}.ys"
+    # Keep Unicode workspace prefixes out of RTLIL identifiers/source attrs.
+    # Relative paths let checkpoints stay in the durable project build folder.
+    def relative_path(match):
+        value = json.loads(match[0])
+        return quote(os.path.relpath(value, out)) if os.path.isabs(value) and not value.isascii() else match[0]
+    commands = [re.sub(r'"(?:[^"\\]|\\.)*"', relative_path, command) for command in commands]
     script.write_text("\n".join(commands) + "\n")
     subprocess.run([yosys, "-Q", "-T", "-q", "-l", str(out / f"{name}.log"),
-                    "-s", str(script)], check=True)
+                    "-s", script.name], cwd=out, check=True)
 
 
 def main():
@@ -33,6 +41,8 @@ def main():
     parser.add_argument("--out", type=Path, default=Path("build/synth"),
                         help="output root; results go in its opt/ or diagnose/ subdirectory")
     parser.add_argument("--mode", choices=("opt", "diagnose"), default="opt")
+    parser.add_argument("--no-hieropt", action="store_true",
+                        help="preserve hierarchy without opt_hier (workaround for port-removal bugs)")
     parser.add_argument("--clock-period", type=float, default=2.0, help="target clock period in ns (default: 2)")
     parser.add_argument("--clock-port", default="clock", help="top-level clock input (default: clock)")
     parser.add_argument("--abc-driving-cell", default="INVx1_ASAP7_75t_R",
@@ -86,14 +96,19 @@ def main():
     # Elaborate the framework's empty SRAM interface as a normal module so
     # Yosys resolves parameter expressions, defaults, hierarchy and generates.
     # No RAM array is lowered to flops in this stage.
-    run_yosys(yosys, out, "elaborate", [
-        *["read_verilog -sv -D SYNTHESIS " + quote(path) for path in sources if path != RAM_SOURCE],
-        "read_verilog -sv -noblackbox -D SYNTHESIS " + quote(RAM_SOURCE),
-        "hierarchy -top student_top",
-        "proc",
-        "memory_collect",
-        "write_json " + quote(out / "elaborated.json"),
-    ])
+    if args.elaborated_json:
+        previous = args.elaborated_json.resolve()
+        if previous != out / "elaborated.json":
+            shutil.copyfile(previous, out / "elaborated.json")
+    else:
+        run_yosys(yosys, out, "elaborate", [
+            *["read_verilog -sv -D SYNTHESIS " + quote(path) for path in sources if path != RAM_SOURCE],
+            "read_verilog -sv -noblackbox -D SYNTHESIS " + quote(RAM_SOURCE),
+            "hierarchy -top student_top",
+            "proc",
+            "memory_collect",
+            "write_json " + quote(out / "elaborated.json"),
+        ])
     try:
         elaborated = json.loads((out / "elaborated.json").read_text())
         clock = elaborated["modules"]["student_top"].get("ports", {}).get(args.clock_port, {})
@@ -114,9 +129,11 @@ def main():
         "read_verilog " + quote(wrappers),
         *library_reads,
         "hierarchy -check -top student_top",
-        "synth -top student_top -noabc " + ("-flatten" if args.mode == "opt" else "-hieropt"),
+        "synth -top student_top -noabc " +
+        ("-flatten" if args.mode == "opt" else ("" if args.no_hieropt else "-hieropt")),
         "check -assert",
         "select -assert-none a:init t:$dlatch* t:$_DLATCH*",
+        *(["write_json " + quote(out / "generic.json")] if args.checkpoints else []),
         "dfflibmap -liberty " + quote(seq),
         "abc " + ("-exe " + quote(abc) + " " if abc else "") + library_args
         + " -constr " + quote(abc_constraints) + f" -D {args.clock_period * 1000:.9g}",
@@ -134,6 +151,11 @@ def main():
         "hierarchy -check -top student_top",
         "check -assert -mapped",
     ]
+    if args.pre_abc_json:
+        abc_start = next(index for index, command in enumerate(script) if command.startswith("abc "))
+        script = ["read_json " + quote(args.pre_abc_json.resolve()), *library_reads,
+                  "hierarchy -check -top student_top", "check -assert",
+                  "select -assert-none a:init t:$dlatch* t:$_DLATCH*"] + script[abc_start:]
     run_yosys(yosys, out, "synth", script)
     try:
         area = area_report(json.loads((out / "design.json").read_text()),
@@ -148,8 +170,12 @@ def main():
               "area": area, "timing": timing,
               "inputs": identities([*sources, RAM_SOURCE]), "libraries": identities([*libs, *ram_libs]),
               "sram_model": MODEL,
-              "tools": {"yosys": subprocess.check_output([yosys, "-V"], text=True).strip(),
-                        "opensta": subprocess.check_output([sta, "-version"], text=True).strip()}}
+               "tools": {"yosys": subprocess.check_output([yosys, "-V"], text=True).strip(),
+                         "opensta": subprocess.check_output([sta, "-version"], text=True).strip()}}
+    if args.elaborated_json:
+        report["elaboration_snapshot"] = identities([args.elaborated_json.resolve()])[0]
+    if args.pre_abc_json:
+        report["pre_abc_snapshot"] = identities([args.pre_abc_json.resolve()])[0]
     for name, data in (("report.json", report), ("timing.json", timing),
                        ("area.json", {"mode": args.mode, **area, "sram_model": MODEL, "timing_analyzed": True})):
         (out / name).write_text(json.dumps(data, indent=2, allow_nan=False) + "\n")

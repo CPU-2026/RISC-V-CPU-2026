@@ -156,6 +156,7 @@ module rv32_rob #(
   );
 
   always_comb begin
+    lookupOutput = '0;
     headSlotInner = headInner[SLOT_W-1:0];
     tailSlotInner = tailInner[SLOT_W-1:0];
     statusOutput.empty = (countInner == '0);

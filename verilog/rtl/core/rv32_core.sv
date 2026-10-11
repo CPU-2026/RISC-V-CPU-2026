@@ -882,7 +882,7 @@ module rv32_core #(
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .executeInput(memRsIssueOutputInner), .auxiliaryInput(memIssueAuxInner),
     .inReadyOutput(memIssueReadyInner), .addressOutput(lsuAddressInputInner),
-    .auxiliaryOutput(aguResultAuxInner), .robTagOutput(), .resultValidOutput()
+    .auxiliaryOutput(aguResultAuxInner), .robTagOutput()
   );
 
   rv32_lsu #(.STORE_DATA_LANES(STORE_VALUE_RS_ENTRIES)) u_lsu (

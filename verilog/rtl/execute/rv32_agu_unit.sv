@@ -10,8 +10,7 @@ module rv32_agu_unit (
   output logic inReadyOutput,
   output rv32_pkg::lsu_address_input_t addressOutput,
   output logic [3:0] auxiliaryOutput,
-  output rv32_pkg::rob_tag_t robTagOutput,
-  output logic resultValidOutput
+  output rv32_pkg::rob_tag_t robTagOutput
 );
   import rv32_pkg::*;
   address_generation_output_t sumInner;
@@ -27,7 +26,6 @@ module rv32_agu_unit (
   );
 
   assign inReadyOutput = 1'b1;
-  assign resultValidOutput = validInner;
   assign robTagOutput = robTagInner;
   assign auxiliaryOutput = auxiliaryInner;
   assign addressOutput = '{
