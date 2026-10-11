@@ -31,26 +31,34 @@ module tb_cpu;
   int storeCount = 0;
   int loadCount = 0;
 
-  cpu_top dut (.*);
+  logic imemRspReadyOutput, imemFlushOutput;
+  rv32_pkg::icache_cpu_request_input_t imemCacheRequestOutput;
+  rv32_core dut (.*);
+  function automatic logic [31:0] instruction(input logic [31:0] pc);
+    case (pc)
+      0: return 32'h04000093;
+      4: return 32'h02a00113;
+      8: return 32'h0020a023;
+      12: return 32'h0000a183;
+      16: return 32'h00218463;
+      20: return 32'h06300213;
+      24: return 32'h0040a283;
+      28: return 32'h0ff00513;
+      default: return 32'h00000013;
+    endcase
+  endfunction
+  logic [2:0] instructionSourceCount;
+  rv32_epoch_fifo #(.DEPTH(4), .WIDTH(32)) instructionSource (
+    .clkInput(clkInput), .rstNInput(rstNInput), .flushInput(imemFlushOutput),
+    .inValidInput(imemReqValidOutput), .inReadyOutput(imemReqReadyInput), .inDataInput(instruction(imemReqAddrOutput)),
+    .outValidOutput(imemRspValidInput), .outReadyInput(imemRspReadyOutput), .outDataOutput(imemRspDataInput), .countOutput(instructionSourceCount)
+  );
 
   always @(posedge clkInput) begin
     if (!rstNInput) begin
-      imemRspValidInput <= 1'b0;
       dmemRspValidInput <= 1'b0;
       dmemRspRdataInput <= '0;
     end else begin
-      imemRspValidInput <= imemReqValidOutput && imemReqReadyInput;
-      case (imemReqAddrOutput)
-        32'd0:  imemRspDataInput <= 32'h04000093; // addi x1, x0, 64
-        32'd4:  imemRspDataInput <= 32'h02a00113; // addi x2, x0, 42
-        32'd8:  imemRspDataInput <= 32'h0020a023; // sw x2, 0(x1)
-        32'd12: imemRspDataInput <= 32'h0000a183; // lw x3, 0(x1)
-        32'd16: imemRspDataInput <= 32'h00218463; // beq x3, x2, +8
-        32'd20: imemRspDataInput <= 32'h06300213; // must be squashed
-        32'd24: imemRspDataInput <= 32'h0040a283; // lw x5, 4(x1), external response
-        32'd28: imemRspDataInput <= 32'h0ff00513; // halt
-        default: imemRspDataInput <= 32'h00000013; // nop
-      endcase
       dmemRspValidInput <= 1'b0;
       if (dmemReqValidOutput && dmemReqReadyInput) begin
         if (dmemReqWriteOutput) begin
@@ -59,9 +67,9 @@ module tb_cpu;
             $fatal(1, "incorrect store payload");
           storeCount <= storeCount + 1;
         end else begin
-          if (dmemReqAddrOutput != 32'h44)
+          if (dmemReqAddrOutput != 32'h44 && dmemReqAddrOutput != 32'h40)
             $fatal(1, "unexpected external load address %h", dmemReqAddrOutput);
-          dmemRspRdataInput <= 32'h11223344;
+          dmemRspRdataInput <= dmemReqAddrOutput == 32'h40 ? 32'd42 : 32'h11223344;
           dmemRspValidInput <= 1'b1;
           loadCount <= loadCount + 1;
         end
@@ -133,7 +141,7 @@ module tb_rob_count;
   logic [3:0] countOutput;
   rob_replay_entry_t [7:0] replayOutput;
 
-  rv32_rob #(.DEPTH(8)) dut (.*);
+  rv32_rob #(.DEPTH(8)) dut (.storeReadyInput('0), .*);
 
   initial begin
     repeat (3) @(negedge clkInput);
@@ -170,6 +178,8 @@ module tb_lsu_capacity;
   logic loadAllocReadyOutput;
   logic [3:0] loadAllocIndexOutput;
   store_allocation_input_t storeAllocationInput = '0;
+  store_data_input_t storeDataInput [0:0] = '{default: '0};
+  logic [3:0] storeDataIndexInput [0:0] = '{default: '0};
   logic storeAllocReadyOutput;
   logic [3:0] storeAllocIndexOutput;
   lsu_address_input_t addressInput = '0;
@@ -177,10 +187,12 @@ module tb_lsu_capacity;
   cdb_result_t [3:0] writebackInput = '0;
   load_result_output_t loadResultOutput;
   logic loadResultReadyInput = 1'b1;
+  rob_retirement_input_t robRetireInput = '0;
   store_completion_output_t storeCompleteOutput;
   store_commit_input_t storeCommitInput = '0;
   logic [3:0] storeCommitIndexInput = '0;
   logic storeCommitReadyOutput;
+  data_memory_request_output_t storeRetirementOutput;
   data_memory_request_output_t dmemRequestOutput;
   logic dmemReqReadyInput = 1'b1;
   data_memory_response_input_t dmemResponseInput = '0;
@@ -201,22 +213,23 @@ module tb_lsu_capacity;
       @(negedge clkInput);
     end
     storeAllocationInput.valid = 1'b0;
-    addressInput = '{valid: 1'b1, isStore: 1'b1, address: 32'h00000040};
-    addressIndexInput = 4'd12;
-    @(negedge clkInput);
-    addressInput.valid = 1'b0;
-    storeCommitInput = '{valid: 1'b1, robTag: rob_tag_t'(12)};
-    storeCommitIndexInput = 4'd12;
-    #1;
-    if (!storeCommitReadyOutput || !dmemRequestOutput.valid ||
-        !dmemRequestOutput.write || dmemRequestOutput.address != 32'h40 ||
-        dmemRequestOutput.writeData != 32'h12345678 ||
-        dmemRequestOutput.writeStrobe != 4'hf)
-      $fatal(1, "high-slot store commit was misrouted");
-    @(negedge clkInput);
-    storeCommitInput.valid = 1'b0;
-    if (sqCountOutput != 5'd12)
-      $fatal(1, "store queue count incorrect after committing high slot");
+    // Retire/send in FIFO order; slot 12 is reached through real older pops.
+    for (int slot = 0; slot <= 12; slot++) begin
+      addressInput = '{valid: 1'b1, isStore: 1'b1, robTag: rob_tag_t'(slot), address: 32'h40+32'(slot<<2)};
+      addressIndexInput = 4'(slot);
+      @(negedge clkInput); addressInput.valid = 1'b0;
+      storeCommitInput = '{valid: 1'b1, robTag: rob_tag_t'(slot)};
+      storeCommitIndexInput = 4'(slot);
+      robRetireInput = '{valid: 1'b1, robTag: rob_tag_t'(slot)};
+      #1;
+      if (!storeCommitReadyOutput || !dmemRequestOutput.valid ||
+          !dmemRequestOutput.write || dmemRequestOutput.address != 32'h40+32'(slot<<2) ||
+          dmemRequestOutput.writeData != 32'h12345678 || dmemRequestOutput.writeStrobe != 4'hf)
+        $fatal(1, "store commit was misrouted at slot %0d", slot);
+      @(negedge clkInput); storeCommitInput.valid = 1'b0; robRetireInput.valid = 1'b0; #1;
+      if (sqCountOutput != 5'(12-slot))
+        $fatal(1, "store queue count incorrect after committing slot %0d", slot);
+    end
     $display("PASS lsu: parameterized high queue index");
     $finish;
   end

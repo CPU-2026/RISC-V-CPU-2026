@@ -1,6 +1,10 @@
 module rv32_rs #(
   parameter int unsigned DEPTH = 4,
-  parameter int unsigned AUX_W = 3
+  parameter int unsigned AUX_W = 3,
+  // Lanes exposed by the wide issue port.  ISSUE_WIDTH == 1 keeps the pool
+  // single issue; a pool whose consumer accepts every valid lane in the same
+  // cycle (storeValue) passes its DEPTH.
+  parameter int unsigned ISSUE_WIDTH = 1
 ) (
   input  logic                   clkInput,
   input  logic                   rstNInput,
@@ -15,6 +19,11 @@ module rv32_rs #(
   output rv32_pkg::rs_issue_output_t issueOutput,
   input  logic                   issueReadyInput,
   output logic [AUX_W-1:0]       issueAuxOutput,
+
+  output logic [ISSUE_WIDTH-1:0] issueLaneValidOutput,
+  output rv32_pkg::rs_issue_output_t issueLaneOutput [ISSUE_WIDTH],
+  output logic [AUX_W-1:0]       issueLaneAuxOutput [ISSUE_WIDTH],
+
   output logic [$clog2(DEPTH+1)-1:0] occupancyOutput
 );
   import rv32_pkg::*;
@@ -47,6 +56,12 @@ module rv32_rs #(
   logic [31:0] allocSrc2ValueResolvedInner;
   integer combIndexInner;
   integer seqIndexInner;
+  integer laneInner;
+  integer seqLaneInner;
+
+  logic [DEPTH-1:0] laneTakenInner;
+  logic laneFoundInner [ISSUE_WIDTH];
+  logic [INDEX_W-1:0] laneIndexInner [ISSUE_WIDTH];
 
   function automatic logic rs_is_older(
     input rob_tag_t candidateInput,
@@ -57,19 +72,34 @@ module rv32_rs #(
   endfunction
 
   always_comb begin
-    issueFoundInner = 1'b0;
-    issueIndexInner = '0;
-    for (combIndexInner = 0; combIndexInner < DEPTH; combIndexInner = combIndexInner + 1) begin
-      if (busyInner[combIndexInner] && src1ReadyInner[combIndexInner] &&
-          src2ReadyInner[combIndexInner] &&
-          (!issueFoundInner || rs_is_older(robTagInner[combIndexInner],
-                                       robTagInner[issueIndexInner]))) begin
-        issueFoundInner = 1'b1;
-        issueIndexInner = combIndexInner[INDEX_W-1:0];
+    // Rank the eligible entries by ROB age.  Lane 0 repeats the original
+    // single-issue selection, so ISSUE_WIDTH == 1 reproduces the previous
+    // behaviour exactly; every later lane takes the oldest entry that no
+    // earlier lane already took.
+    for (laneInner = 0; laneInner < ISSUE_WIDTH; laneInner = laneInner + 1) begin
+      laneFoundInner[laneInner] = 1'b0;
+      laneIndexInner[laneInner] = '0;
+    end
+    laneTakenInner = '0;
+    for (laneInner = 0; laneInner < ISSUE_WIDTH; laneInner = laneInner + 1) begin
+      for (combIndexInner = 0; combIndexInner < DEPTH; combIndexInner = combIndexInner + 1) begin
+        if (busyInner[combIndexInner] && src1ReadyInner[combIndexInner] &&
+            src2ReadyInner[combIndexInner] && !laneTakenInner[combIndexInner] &&
+            (!laneFoundInner[laneInner] ||
+             rs_is_older(robTagInner[combIndexInner],
+                         robTagInner[laneIndexInner[laneInner]]))) begin
+          laneFoundInner[laneInner] = 1'b1;
+          laneIndexInner[laneInner] = combIndexInner[INDEX_W-1:0];
+        end
       end
+      if (laneFoundInner[laneInner])
+        laneTakenInner[laneIndexInner[laneInner]] = 1'b1;
     end
 
-    issueOutput.valid = issueFoundInner && !flushInfoInput.valid;
+    issueFoundInner = laneFoundInner[0];
+    issueIndexInner = laneIndexInner[0];
+    issueOutput.valid = issueFoundInner && (!flushInfoInput.valid ||
+        rs_is_older(robTagInner[issueIndexInner], flushInfoInput.robTag));
     issueOutput.operation = operation_e'(opInner[issueIndexInner]);
     issueOutput.robTag = robTagInner[issueIndexInner];
     issueOutput.destinationPhy = destPhyInner[issueIndexInner];
@@ -80,6 +110,25 @@ module rv32_rs #(
     issueOutput.predictedProgramCounter = predictedPcInner[issueIndexInner];
     issueOutput.useImmediate = useImmInner[issueIndexInner];
     issueAuxOutput = auxInner[issueIndexInner];
+
+    // Same candidates, same flush age gate: lane 0 is bit-identical to
+    // issueOutput, and lane l is the (l+1)-th oldest eligible entry.
+    for (laneInner = 0; laneInner < ISSUE_WIDTH; laneInner = laneInner + 1) begin
+      issueLaneValidOutput[laneInner] = laneFoundInner[laneInner] &&
+          (!flushInfoInput.valid ||
+           rs_is_older(robTagInner[laneIndexInner[laneInner]], flushInfoInput.robTag));
+      issueLaneOutput[laneInner].valid = issueLaneValidOutput[laneInner];
+      issueLaneOutput[laneInner].operation = operation_e'(opInner[laneIndexInner[laneInner]]);
+      issueLaneOutput[laneInner].robTag = robTagInner[laneIndexInner[laneInner]];
+      issueLaneOutput[laneInner].destinationPhy = destPhyInner[laneIndexInner[laneInner]];
+      issueLaneOutput[laneInner].source1Value = src1ValueInner[laneIndexInner[laneInner]];
+      issueLaneOutput[laneInner].source2Value = src2ValueInner[laneIndexInner[laneInner]];
+      issueLaneOutput[laneInner].immediate = immInner[laneIndexInner[laneInner]];
+      issueLaneOutput[laneInner].programCounter = pcInner[laneIndexInner[laneInner]];
+      issueLaneOutput[laneInner].predictedProgramCounter = predictedPcInner[laneIndexInner[laneInner]];
+      issueLaneOutput[laneInner].useImmediate = useImmInner[laneIndexInner[laneInner]];
+      issueLaneAuxOutput[laneInner] = auxInner[laneIndexInner[laneInner]];
+    end
 
     allocFoundInner = 1'b0;
     allocIndexInner = '0;
@@ -191,10 +240,19 @@ module rv32_rs #(
         end
       end
 
-      if (!flushInfoInput.valid) begin
-        if (issueOutput.valid && issueReadyInput)
-          busyInner[issueIndexInner] <= 1'b0;
+      // An accepted older instruction leaves even during flush. Boundary
+      // entries are preserved, younger entries were cancelled above.
+      if (issueOutput.valid && issueReadyInput)
+        busyInner[issueIndexInner] <= 1'b0;
 
+      // The wide lanes share that single grant, so a lane leaves only in a
+      // cycle the pool is allowed to issue in -- the same rule as a narrow
+      // pool.  Lane 0 was already released above.
+      for (seqLaneInner = 1; seqLaneInner < ISSUE_WIDTH; seqLaneInner = seqLaneInner + 1)
+        if (issueLaneValidOutput[seqLaneInner] && issueReadyInput)
+          busyInner[laneIndexInner[seqLaneInner]] <= 1'b0;
+
+      if (!flushInfoInput.valid) begin
         if (allocInput.valid && allocReadyOutput) begin
           busyInner[allocIndexInner] <= 1'b1;
           opInner[allocIndexInner] <= allocInput.operation;

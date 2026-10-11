@@ -1,234 +1,23 @@
-module rv32_div #(
-  parameter bit USE_SRT4 = 1'b0
-) (
-  input  logic                   clkInput,
-  input  logic                   rstNInput,
-  input  rv32_pkg::rob_flush_input_t flushInfoInput,
-  input  rv32_pkg::execute_request_input_t executeInput,
-  output logic                   inReadyOutput,
-
-  input  logic                   outReadyInput,
-  output rv32_pkg::execute_value_output_t executeOutput
-);
-  generate
-    if (USE_SRT4) begin : g_srt4
-      rv32_div_srt4 u_impl (.*);
-    end else begin : g_radix2
-      rv32_div_radix2 u_impl (.*);
-    end
-  endgenerate
-endmodule
-
-/* verilator lint_off DECLFILENAME */
-// Original 32-iteration restoring implementation, retained as the A/B
-// baseline for the SRT radix-4 implementation below.
-module rv32_div_radix2 (
-  input  logic                   clkInput,
-  input  logic                   rstNInput,
-  input  rv32_pkg::rob_flush_input_t flushInfoInput,
-  input  rv32_pkg::execute_request_input_t executeInput,
-  output logic                   inReadyOutput,
-
-  input  logic                   outReadyInput,
-  output rv32_pkg::execute_value_output_t executeOutput
-);
-  import rv32_pkg::*;
-
-  logic busyInner;
-  logic [5:0] countInner;
-  logic [31:0] dividendInner;
-  logic [31:0] divisorInner;
-  logic [32:0] remainderInner;
-  logic [31:0] quotientInner;
-  logic quotientNegativeInner;
-  logic remainderNegativeInner;
-  logic wantRemainderRegisteredInner;
-  rob_tag_t activeTagInner;
-  phy_tag_t activePhyInner;
-
-  logic resultValidInner;
-  logic [31:0] resultInner;
-  rob_tag_t resultTagInner;
-  phy_tag_t resultPhyInner;
-
-  logic signedOpInner;
-  logic wantRemainderInner;
-  logic [31:0] dividendAbsInner;
-  logic [31:0] divisorAbsInner;
-  logic [32:0] shiftedRemainderInner;
-  logic [32:0] divisorExtInner;
-  logic [32:0] remainderDiffInner;
-  logic [32:0] nextRemainderInner;
-  logic [31:0] nextQuotientInner;
-  logic [31:0] unsignedFinalInner;
-  logic [31:0] signedFinalInner;
-  logic remainderGeInner;
-  logic [31:0] dividendNegInner, divisorNegInner, finalNegInner;
-  logic [5:0] countNext;
-  logic unusedBorrowRemainderInner, unusedBorrowDividendInner, unusedBorrowDivisorInner;
-  logic unusedBorrowFinalInner, unusedCoutCountInner;
-
-  assign signedOpInner = (executeInput.operation == OP_DIV) || (executeInput.operation == OP_REM);
-  assign wantRemainderInner = (executeInput.operation == OP_REM) || (executeInput.operation == OP_REMU);
-
-  rv32_sub #(.WIDTH(32)) u_dividend_neg (
-    .aInput(32'b0), .bInput(executeInput.source1),
-    .diffOutput(dividendNegInner), .borrowOutput(unusedBorrowDividendInner)
-  );
-
-  rv32_sub #(.WIDTH(32)) u_divisor_neg (
-    .aInput(32'b0), .bInput(executeInput.source2),
-    .diffOutput(divisorNegInner), .borrowOutput(unusedBorrowDivisorInner)
-  );
-
-  assign dividendAbsInner = (signedOpInner && executeInput.source1[31]) ?
-                        dividendNegInner : executeInput.source1;
-  assign divisorAbsInner = (signedOpInner && executeInput.source2[31]) ?
-                       divisorNegInner : executeInput.source2;
-
-  assign shiftedRemainderInner = {remainderInner[31:0], dividendInner[31]};
-  assign divisorExtInner = {1'b0, divisorInner};
-  assign remainderGeInner = (shiftedRemainderInner >= divisorExtInner);
-
-  rv32_sub #(.WIDTH(33)) u_remainder_diff (
-    .aInput(shiftedRemainderInner), .bInput(divisorExtInner),
-    .diffOutput(remainderDiffInner), .borrowOutput(unusedBorrowRemainderInner)
-  );
-
-  assign nextRemainderInner = remainderGeInner ? remainderDiffInner : shiftedRemainderInner;
-  assign nextQuotientInner = remainderGeInner ?
-                         {quotientInner[30:0], 1'b1} :
-                         {quotientInner[30:0], 1'b0};
-  assign unsignedFinalInner = wantRemainderRegisteredInner ? nextRemainderInner[31:0] :
-                                             nextQuotientInner;
-
-  rv32_sub #(.WIDTH(32)) u_final_neg (
-    .aInput(32'b0), .bInput(unsignedFinalInner),
-    .diffOutput(finalNegInner), .borrowOutput(unusedBorrowFinalInner)
-  );
-
-  assign signedFinalInner =
-    ((wantRemainderRegisteredInner && remainderNegativeInner) ||
-     (!wantRemainderRegisteredInner && quotientNegativeInner)) ? finalNegInner : unsignedFinalInner;
-
-  rv32_add #(.WIDTH(6)) u_count_next (
-    .aInput(countInner), .bInput(6'd1), .cinInput(1'b0),
-    .sumOutput(countNext), .coutOutput(unusedCoutCountInner)
-  );
-
-  always_comb begin
-    inReadyOutput = !busyInner && (!resultValidInner || outReadyInput);
-    executeOutput.valid = resultValidInner;
-    executeOutput.value = resultInner;
-    executeOutput.robTag = resultTagInner;
-    executeOutput.destinationPhy = resultPhyInner;
-  end
-
-  always_ff @(posedge clkInput or negedge rstNInput) begin
-    if (!rstNInput) begin
-      busyInner <= 1'b0;
-      countInner <= '0;
-      dividendInner <= '0;
-      divisorInner <= '0;
-      remainderInner <= '0;
-      quotientInner <= '0;
-      quotientNegativeInner <= 1'b0;
-      remainderNegativeInner <= 1'b0;
-      wantRemainderRegisteredInner <= 1'b0;
-      activeTagInner <= '0;
-      activePhyInner <= '0;
-      resultValidInner <= 1'b0;
-      resultInner <= '0;
-      resultTagInner <= '0;
-      resultPhyInner <= '0;
-    end else begin
-      if (flushInfoInput.valid && busyInner &&
-          !rob_is_older(activeTagInner, flushInfoInput.robTag)) begin
-        busyInner <= 1'b0;
-      end else if (flushInfoInput.valid && resultValidInner) begin
-        resultValidInner <= 1'b0;
-      end else begin
-        if (resultValidInner && outReadyInput)
-          resultValidInner <= 1'b0;
-
-        if (executeInput.valid && inReadyOutput) begin
-          activeTagInner <= executeInput.robTag;
-          activePhyInner <= executeInput.destinationPhy;
-          wantRemainderRegisteredInner <= wantRemainderInner;
-          quotientNegativeInner <= signedOpInner &&
-                                 (executeInput.source1[31] ^ executeInput.source2[31]);
-          remainderNegativeInner <= signedOpInner && executeInput.source1[31];
-
-          if (executeInput.source2 == 32'b0) begin
-            resultValidInner <= 1'b1;
-            resultInner <= wantRemainderInner ? executeInput.source1 : 32'hffff_ffff;
-            resultTagInner <= executeInput.robTag;
-            resultPhyInner <= executeInput.destinationPhy;
-            busyInner <= 1'b0;
-          end else if (signedOpInner && (executeInput.source1 == 32'h8000_0000) &&
-                       (executeInput.source2 == 32'hffff_ffff)) begin
-            resultValidInner <= 1'b1;
-            resultInner <= wantRemainderInner ? 32'b0 : 32'h8000_0000;
-            resultTagInner <= executeInput.robTag;
-            resultPhyInner <= executeInput.destinationPhy;
-            busyInner <= 1'b0;
-          end else if (dividendAbsInner < divisorAbsInner) begin
-            resultValidInner <= 1'b1;
-            resultInner <= wantRemainderInner ? executeInput.source1 : 32'b0;
-            resultTagInner <= executeInput.robTag;
-            resultPhyInner <= executeInput.destinationPhy;
-            busyInner <= 1'b0;
-          end else if (dividendAbsInner == divisorAbsInner) begin
-            resultValidInner <= 1'b1;
-            resultInner <= wantRemainderInner ? 32'b0 :
-                        ((signedOpInner && (executeInput.source1[31] ^ executeInput.source2[31])) ?
-                         32'hffff_ffff : 32'd1);
-            resultTagInner <= executeInput.robTag;
-            resultPhyInner <= executeInput.destinationPhy;
-            busyInner <= 1'b0;
-          end else begin
-            busyInner <= 1'b1;
-            countInner <= 6'd0;
-            dividendInner <= dividendAbsInner;
-            divisorInner <= divisorAbsInner;
-            remainderInner <= 33'b0;
-            quotientInner <= 32'b0;
-          end
-        end else if (busyInner) begin
-          dividendInner <= {dividendInner[30:0], 1'b0};
-          remainderInner <= nextRemainderInner;
-          quotientInner <= nextQuotientInner;
-          if (countInner == 6'd31) begin
-            busyInner <= 1'b0;
-            resultValidInner <= 1'b1;
-            resultInner <= signedFinalInner;
-            resultTagInner <= activeTagInner;
-            resultPhyInner <= activePhyInner;
-          end else begin
-            countInner <= countNext;
-          end
-        end
-      end
-    end
-  end
-endmodule
-
-// Radix-4 SRT divider translated from the C++ referenceInput DIV module. It uses
+// Radix-4 SRT divider translated from the C++ reference DIV module. It uses
 // carry-save partial remainders and redundant A/B quotient conversion, so each
 // loop consumes two quotient bits without using a combinational divide.
-module rv32_div_srt4 (
-  input  logic                   clkInput,
-  input  logic                   rstNInput,
-  input  rv32_pkg::rob_flush_input_t flushInfoInput,
-  input  rv32_pkg::execute_request_input_t executeInput,
-  output logic                   inReadyOutput,
+module rv32_div (
+    input  logic                             clkInput,
+    input  logic                             rstNInput,
+    input  rv32_pkg::rob_flush_input_t       flushInfoInput,
+    input  rv32_pkg::execute_request_input_t executeInput,
+    output logic                             inReadyOutput,
 
-  input  logic                   outReadyInput,
-  output rv32_pkg::execute_value_output_t executeOutput
+    input  logic                            outReadyInput,
+    output rv32_pkg::execute_value_output_t executeOutput
 );
   import rv32_pkg::*;
 
-  typedef enum logic [1:0] {PH_PREP, PH_LOOP, PH_FINISH} phase_e;
+  typedef enum logic [1:0] {
+    PH_PREP,
+    PH_LOOP,
+    PH_FINISH
+  } phase_e;
 
   logic busyInner;
   phase_e phaseInner;
@@ -240,7 +29,7 @@ module rv32_div_srt4 (
   logic [6:0] dSliceInner, dSlice3Inner;
   logic [35:0] regSInner, regCInner, maskInner;
   logic [31:0] regAInner, regBInner;
-   logic quotientNegativeInner, remainderNegativeInner, wantRemainderRegisteredInner;
+  logic quotientNegativeInner, remainderNegativeInner, wantRemainderRegisteredInner;
   rob_tag_t activeTagInner;
   phy_tag_t activePhyInner;
 
@@ -249,7 +38,7 @@ module rv32_div_srt4 (
   rob_tag_t resultTagInner;
   phy_tag_t resultPhyInner;
 
-   logic signedOpInner, wantRemainderInner;
+  logic signedOpInner, wantRemainderInner;
   logic [31:0] dividendNegInner, divisorNegInner;
   logic [31:0] dividendAbsInner, divisorAbsInner;
   logic unusedBorrowDividendInner, unusedBorrowDivisorInner;
@@ -273,13 +62,13 @@ module rv32_div_srt4 (
 
   function automatic logic [5:0] clz32(input logic [31:0] valueInput);
     integer indexInner;
-    logic seenOneInner;
+    logic   seenOneInner;
     begin
       clz32 = 6'd32;
       seenOneInner = 1'b0;
       for (indexInner = 31; indexInner >= 0; indexInner = indexInner - 1) begin
         if (!seenOneInner && valueInput[indexInner]) begin
-          clz32 = 31 - indexInner;
+          clz32 = 6'(31 - indexInner);
           seenOneInner = 1'b1;
         end
       end
@@ -289,13 +78,21 @@ module rv32_div_srt4 (
   assign signedOpInner = (executeInput.operation == OP_DIV) || (executeInput.operation == OP_REM);
   assign wantRemainderInner = (executeInput.operation == OP_REM) || (executeInput.operation == OP_REMU);
 
-  rv32_sub #(.WIDTH(32)) u_dividend_neg (
-    .aInput(32'b0), .bInput(executeInput.source1),
-    .diffOutput(dividendNegInner), .borrowOutput(unusedBorrowDividendInner)
+  rv32_sub #(
+      .WIDTH(32)
+  ) u_dividend_neg (
+      .aInput(32'b0),
+      .bInput(executeInput.source1),
+      .diffOutput(dividendNegInner),
+      .borrowOutput(unusedBorrowDividendInner)
   );
-  rv32_sub #(.WIDTH(32)) u_divisor_neg (
-    .aInput(32'b0), .bInput(executeInput.source2),
-    .diffOutput(divisorNegInner), .borrowOutput(unusedBorrowDivisorInner)
+  rv32_sub #(
+      .WIDTH(32)
+  ) u_divisor_neg (
+      .aInput(32'b0),
+      .bInput(executeInput.source2),
+      .diffOutput(divisorNegInner),
+      .borrowOutput(unusedBorrowDivisorInner)
   );
   assign dividendAbsInner = (signedOpInner && executeInput.source1[31]) ? dividendNegInner : executeInput.source1;
   assign divisorAbsInner = (signedOpInner && executeInput.source2[31]) ? divisorNegInner : executeInput.source2;
@@ -313,8 +110,8 @@ module rv32_div_srt4 (
     prepDSliceInner = prepShiftDInner ? {2'b0, prepDivisorDpInner[32:28]} :
                                  {2'b0, prepDivisorDpInner[31:27]};
     prepDSlice3Inner = prepDSliceInner + (prepDSliceInner << 1);
-    prepSliceInner = prepShiftDInner ? (prepDividendNormInner >> 27) :
-                                (prepDividendNormInner >> 26);
+    prepSliceInner = prepShiftDInner ? 7'(prepDividendNormInner >> 27) :
+                                     7'(prepDividendNormInner >> 26);
 
     prepSubtrahendInner = '0;
     prepSInner = '0;
@@ -346,10 +143,8 @@ module rv32_div_srt4 (
   end
 
   always_comb begin
-    if (shiftDInner)
-      loopSum9Inner = regSInner[35:27] + regCInner[35:27];
-    else
-      loopSum9Inner = regSInner[34:26] + regCInner[34:26];
+    if (shiftDInner) loopSum9Inner = regSInner[35:27] + regCInner[35:27];
+    else loopSum9Inner = regSInner[34:26] + regCInner[34:26];
     loopSliceInner = {loopSum9Inner[8], loopSum9Inner};
     loopSliceInner[0] = 1'b0;
     loopDSliceInner = $signed({3'b000, dSliceInner});
@@ -407,8 +202,8 @@ module rv32_div_srt4 (
     finishCorrectedPkInner = finishNegativeInner ?
                           ((finishPkInner + (divisorDpInner << 2)) & maskInner) : finishPkInner;
     finishQuotientInner = finishNegativeInner ? regBInner : regAInner;
-    finishRemainderInner = (((finishCorrectedPkInner >> 2) >> shiftDInner) >> clzDInner);
-     finishUnsignedInner = wantRemainderRegisteredInner ? finishRemainderInner : finishQuotientInner;
+    finishRemainderInner = 32'(((finishCorrectedPkInner >> 2) >> shiftDInner) >> clzDInner);
+    finishUnsignedInner = wantRemainderRegisteredInner ? finishRemainderInner : finishQuotientInner;
     finishNegatedInner = ~finishUnsignedInner + 32'd1;
     finishSignedInner =
        ((wantRemainderRegisteredInner && remainderNegativeInner) ||
@@ -416,8 +211,13 @@ module rv32_div_srt4 (
   end
 
   always_comb begin
-    inReadyOutput = !busyInner && (!resultValidInner || outReadyInput);
-    executeOutput.valid = resultValidInner;
+    executeOutput.valid = resultValidInner && (!flushInfoInput.valid ||
+        rob_is_older(resultTagInner, flushInfoInput.robTag));
+    inReadyOutput = !busyInner && (!resultValidInner ||
+        (executeOutput.valid && outReadyInput) ||
+        (outReadyInput && flushInfoInput.valid &&
+         rob_is_older(flushInfoInput.robTag, resultTagInner))) &&
+        (!executeInput.valid || !flushInfoInput.valid || rob_is_older(executeInput.robTag, flushInfoInput.robTag));
     executeOutput.value = resultInner;
     executeOutput.robTag = resultTagInner;
     executeOutput.destinationPhy = resultPhyInner;
@@ -442,7 +242,7 @@ module rv32_div_srt4 (
       regBInner <= '0;
       quotientNegativeInner <= 1'b0;
       remainderNegativeInner <= 1'b0;
-       wantRemainderRegisteredInner <= 1'b0;
+      wantRemainderRegisteredInner <= 1'b0;
       activeTagInner <= '0;
       activePhyInner <= '0;
       resultValidInner <= 1'b0;
@@ -450,18 +250,18 @@ module rv32_div_srt4 (
       resultTagInner <= '0;
       resultPhyInner <= '0;
     end else begin
-      if (flushInfoInput.valid && busyInner && !rob_is_older(activeTagInner, flushInfoInput.robTag)) begin
-        busyInner <= 1'b0;
-      end else if (flushInfoInput.valid && resultValidInner) begin
+      if (resultValidInner && ((executeOutput.valid && outReadyInput) ||
+          (flushInfoInput.valid && rob_is_older(flushInfoInput.robTag, resultTagInner))))
         resultValidInner <= 1'b0;
+      if (flushInfoInput.valid && busyInner && rob_is_older(
+              flushInfoInput.robTag, activeTagInner
+          )) begin
+        busyInner <= 1'b0;
       end else begin
-        if (resultValidInner && outReadyInput)
-          resultValidInner <= 1'b0;
-
         if (executeInput.valid && inReadyOutput) begin
           activeTagInner <= executeInput.robTag;
           activePhyInner <= executeInput.destinationPhy;
-           wantRemainderRegisteredInner <= wantRemainderInner;
+          wantRemainderRegisteredInner <= wantRemainderInner;
           quotientNegativeInner <= signedOpInner && (executeInput.source1[31] ^ executeInput.source2[31]);
           remainderNegativeInner <= signedOpInner && executeInput.source1[31];
 
@@ -538,4 +338,3 @@ module rv32_div_srt4 (
     end
   end
 endmodule
-/* verilator lint_on DECLFILENAME */

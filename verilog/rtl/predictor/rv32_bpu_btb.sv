@@ -34,7 +34,8 @@ module rv32_bpu_btb #(
   output rv32_pkg::btb_lookup_output_t lookupOutput,
   input  rv32_pkg::btb_training_input_t trainingInput
 );
-  localparam int unsigned BTB_INDEX_W = $clog2(BTB_ENTRIES);
+  localparam int unsigned BTB_INDEX_W = BTB_ENTRIES > 1 ? $clog2(BTB_ENTRIES) : 1;
+  localparam int unsigned BTB_STORAGE_ENTRIES = BTB_ENTRIES > 0 ? BTB_ENTRIES : 1;
 
   // Packed entry layout. BTB_ENTRIES=64 gives the 56-bit word
   // {tag 24, target 30, state 2}; other geometries shift the tag width so the
@@ -52,7 +53,7 @@ module rv32_bpu_btb #(
   localparam logic [BTB_STATE_W-1:0] BTB_STATE_UNCOND  = 2'b10;
   localparam logic [BTB_STATE_W-1:0] BTB_STATE_RET     = 2'b11;
 
-  logic [BTB_ENTRY_W-1:0] btbEntryInner [BTB_ENTRIES];
+  logic [BTB_ENTRY_W-1:0] btbEntryInner [BTB_STORAGE_ENTRIES];
 
   logic [31:0] queryP2Inner;
   logic [BTB_INDEX_W-1:0] queryBtbIdxInner;
@@ -138,7 +139,7 @@ module rv32_bpu_btb #(
 
   always_ff @(posedge clkInput or negedge rstNInput) begin
     if (!rstNInput) begin
-      for (seqIndexInner = 0; seqIndexInner < BTB_ENTRIES; seqIndexInner = seqIndexInner + 1)
+      for (seqIndexInner = 0; seqIndexInner < BTB_STORAGE_ENTRIES; seqIndexInner = seqIndexInner + 1)
         btbEntryInner[seqIndexInner] <= '0; // state 0 = invalid, tag/target clear
     end else begin
       // One write per entry per cycle. The write qualifiers are the *lineInput*
@@ -154,4 +155,10 @@ module rv32_bpu_btb #(
         btbEntryInner[branchBtbIdxInner] <= branchEntryNext;
     end
   end
+`ifndef SYNTHESIS
+  initial begin
+    assert (BTB_ENTRIES >= 2 && (BTB_ENTRIES & (BTB_ENTRIES - 1)) == 0 && BTB_TAG_W >= 1)
+      else $fatal(1, "BPU BTB parameter must be power-of-two >=2 with a nonempty PC tag");
+  end
+`endif
 endmodule

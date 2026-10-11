@@ -1,6 +1,5 @@
 module rv32_core #(
-  parameter logic [31:0] RESET_PC = 32'b0,
-  parameter bit DIV_USE_SRT4 = 1'b0
+  parameter logic [31:0] RESET_PC = 32'b0
 ) (
   input  logic             clkInput,
   input  logic             rstNInput,
@@ -10,6 +9,9 @@ module rv32_core #(
   output logic [31:0]      imemReqAddrOutput,
   input  logic             imemRspValidInput,
   input  logic [31:0]      imemRspDataInput,
+  output logic             imemRspReadyOutput,
+  output logic             imemFlushOutput,
+  output rv32_pkg::icache_cpu_request_input_t imemCacheRequestOutput,
 
   output logic             dmemReqValidOutput,
   input  logic             dmemReqReadyInput,
@@ -48,7 +50,6 @@ module rv32_core #(
   rv32_pkg::predictor_fetch_info_t fetchInfoOutputInner;
   logic frontendIqValidInner, frontendIqReadyInner;
   logic [31:0] iqPcInner, iqInstrInner, iqPredictedPcInner;
-  logic [2:0] fqCountInner, iqCountInner;
   decode_context_t decodeContextInner;
   predictor_fetch_info_t predictorFetchInfoInner;
   branch_result_input_t predictorBranchInputInner;
@@ -60,7 +61,7 @@ module rv32_core #(
   prediction_output_t predictorOutputInner;
   decoded_uop_t decodedInner;
 
-  phy_tag_t ratRs1PhyInner, ratRs2PhyInner, ratOldPhyInner, ratDebugPhyInner;
+  phy_tag_t ratRs1PhyInner, ratRs2PhyInner, ratOldPhyInner;
   rv32_pkg::rat_read_input_t ratReadInputInner;
   rv32_pkg::rat_read_output_t ratReadOutputInner;
   rv32_pkg::rat_rename_input_t ratRenameInputInner;
@@ -72,7 +73,6 @@ module rv32_core #(
   logic prfSrc1ReadyInner, prfSrc2ReadyInner, prfCommitReadyInner;
   logic [31:0] prfSrc1ValueInner, prfSrc2ValueInner, prfCommitValueInner;
   logic [PRF_ENTRIES-1:0] prfReadyVectorInner;
-  logic [5:0] prfFreeCountInner;
   rv32_pkg::cdb_result_t [3:0] writebackInputInner;
   rv32_pkg::prf_read_input_t [2:0] prfReadInputInner;
   rv32_pkg::prf_read_output_t [2:0] prfReadOutputInner;
@@ -137,7 +137,6 @@ module rv32_core #(
   logic [31:0] intIssuePcInner, intIssuePredInner;
   logic intIssueUseImmInner;
   logic [0:0] intIssueAuxInner;
-  logic [2:0] intOccupancyInner;
   rs_allocation_input_t rsAllocBaseInner;
   rs_allocation_input_t intRsAllocInputInner, mulRsAllocInputInner;
   rs_allocation_input_t divRsAllocInputInner, branchRsAllocInputInner;
@@ -154,7 +153,6 @@ module rv32_core #(
   logic [31:0] mulIssuePcInner, mulIssuePredInner;
   logic mulIssueUseImmInner;
   logic [0:0] mulIssueAuxInner;
-  logic [1:0] mulOccupancyInner;
 
   logic divAllocReadyInner, divIssueValidInner, divIssueReadyInner;
   operation_e divIssueOpInner;
@@ -164,7 +162,6 @@ module rv32_core #(
   logic [31:0] divIssuePcInner, divIssuePredInner;
   logic divIssueUseImmInner;
   logic [0:0] divIssueAuxInner;
-  logic [0:0] divOccupancyInner;
 
   logic branchAllocReadyInner, branchIssueValidInner, branchIssueReadyInner;
   operation_e branchIssueOpInner;
@@ -174,14 +171,24 @@ module rv32_core #(
   logic [31:0] branchIssuePcInner, branchIssuePredInner;
   logic branchIssueUseImmInner;
   logic [2:0] branchIssueAuxInner;
-  logic [2:0] branchOccupancyInner;
 
-  logic memAllocReadyInner, memIssueValidInner, memIssueReadyInner;
-  logic [31:0] memIssueS1Inner, memIssueImmInner;
+  logic memIssueReadyInner;
   logic [3:0] memIssueAuxInner;
-  logic [2:0] memOccupancyInner;
-  logic [31:0] memAddressInner;
-  rv32_pkg::address_generation_output_t aguOutputInner;
+  rs_allocation_input_t loadRsAllocInputInner, saRsAllocInputInner, svRsAllocInputInner;
+  rs_issue_output_t loadRsIssueOutputInner, saRsIssueOutputInner, svRsIssueOutputInner;
+  logic loadRsAllocReadyInner, saRsAllocReadyInner, svRsAllocReadyInner;
+  // storeValue presents one lane per RS slot; the store queue takes all of them
+  // in the same cycle, so a burst of stores whose data resolves together no
+  // longer drains one per cycle.
+  logic [STORE_VALUE_RS_ENTRIES-1:0] svRsIssueLaneValidInner;
+  rs_issue_output_t svRsIssueLaneInner [STORE_VALUE_RS_ENTRIES];
+  logic [2:0] svRsIssueLaneAuxInner [STORE_VALUE_RS_ENTRIES];
+  store_data_input_t svRsStoreDataInner [STORE_VALUE_RS_ENTRIES];
+  logic [2:0] svRsStoreDataIndexInner [STORE_VALUE_RS_ENTRIES];
+  logic chooseLoadInner, loadRsIssueReadyInner, saRsIssueReadyInner;
+  logic [3:0] loadAuxInner, saAuxInner;
+  logic [2:0] svAuxInner;
+  logic [3:0] aguResultAuxInner;
 
   logic bruValidInner, bruTakenInner, bruConditionalInner, bruMispredictInner;
   logic bruMisalignedInner;
@@ -196,8 +203,6 @@ module rv32_core #(
 
   logic lqAllocReadyInner, sqAllocReadyInner;
   logic [2:0] lqAllocIndexInner, sqAllocIndexInner;
-  logic storeCompleteValidInner;
-  rob_tag_t storeCompleteTagInner;
   logic lsuStoreCommitReadyInner;
   rv32_pkg::load_allocation_input_t lsuLoadAllocationInputInner;
   rv32_pkg::store_allocation_input_t lsuStoreAllocationInputInner;
@@ -206,13 +211,20 @@ module rv32_core #(
   rv32_pkg::load_result_output_t lsuLoadResultOutputInner;
   rv32_pkg::store_completion_output_t lsuStoreCompleteOutputInner;
   rv32_pkg::data_memory_request_output_t lsuDmemRequestOutputInner;
+  rv32_pkg::data_memory_request_output_t lsuStoreRetirementOutputInner;
   rv32_pkg::data_memory_response_input_t lsuDmemResponseInputInner;
-  logic [3:0] lqCountInner, sqCountInner;
+  logic [3:0] sqCountInner;
 
   logic haltedInner, trapInner;
+  logic bootDoneInner;
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) bootDoneInner <= 1'b0;
+    else bootDoneInner <= 1'b1;
+  end
   logic [31:0] issueLinkValueInner;
   logic unusedCoutLinkInner;
   integer robInputIndexInner;
+  integer storeLaneInner;
 
   assign aluRobLiveInner = jumpRobLiveInner;
   assign aluResultLiveInner = aluCdbValidInner && aluRobLiveInner &&
@@ -256,10 +268,8 @@ module rv32_core #(
   assign robCommitIsRetInner =
     (robCommitInstrInner[6:0] == OPCODE_JALR) &&
     (robCommitInstrInner[14:12] == 3'b000) &&
-    ((robCommitInstrInner[19:15] == 5'd1) ||
-     (robCommitInstrInner[19:15] == 5'd5)) &&
-    (robCommitInstrInner[11:7] != 5'd1) &&
-    (robCommitInstrInner[11:7] != 5'd5);
+     ((robCommitInstrInner[19:15] == 5'd1) ||
+      (robCommitInstrInner[19:15] == 5'd5));
   always_comb begin
     predictorRobInputInner = '0;
     predictorRobInputInner.willCommit = robCommitFireInner;
@@ -347,9 +357,8 @@ module rv32_core #(
   assign prfSrc2ValueInner = prfReadOutputInner[1].value;
   assign prfCommitReadyInner = prfReadOutputInner[2].ready;
   assign prfCommitValueInner = prfReadOutputInner[2].value;
-  assign ratReadInputInner = '{source1Arch: decodedInner.rs1,
-                               source2Arch: decodedInner.rs2,
-                               debugArch: 5'd0};
+   assign ratReadInputInner = '{source1Arch: decodedInner.rs1,
+                               source2Arch: decodedInner.rs2};
   assign ratRenameInputInner = '{valid: issueFireInner && decodedInner.writesRd,
                                  architecturalRegister: decodedInner.rd,
                                  physicalRegister: prfAllocPhyInner};
@@ -361,7 +370,6 @@ module rv32_core #(
                                 physicalRegister: robCommitNewPhyInner};
   assign ratRs1PhyInner = ratReadOutputInner.source1Phy;
   assign ratRs2PhyInner = ratReadOutputInner.source2Phy;
-  assign ratDebugPhyInner = ratReadOutputInner.debugPhy;
   assign ratOldPhyInner = ratRenameOutputInner.previousPhysicalRegister;
   assign lsuLoadAllocationInputInner = '{
     valid: issueFireInner && (decodedInner.uopClass == rv32_pkg::UOP_LOAD),
@@ -374,14 +382,9 @@ module rv32_core #(
     valid: issueFireInner && (decodedInner.uopClass == rv32_pkg::UOP_STORE),
     robTag: robAllocTagInner,
     size: decodedInner.memorySize,
-    dataReady: issueSrc2ReadyInner,
-    dataTag: ratRs2PhyInner,
-    dataValue: issueSrc2ValueInner
-  };
-  assign lsuAddressInputInner = '{
-    valid: memIssueValidInner && memIssueReadyInner,
-    isStore: memIssueAuxInner[3],
-    address: memAddressInner
+    dataReady: 1'b0,
+    dataTag: phy_tag_t'(0),
+    dataValue: 32'b0
   };
   assign lsuStoreCommitInputInner = '{
     valid: robCommitValidInner && robCommitStoreInner,
@@ -392,8 +395,6 @@ module rv32_core #(
   assign wbLoadTagInner = lsuLoadResultOutputInner.robTag;
   assign wbLoadPhyInner = lsuLoadResultOutputInner.destinationPhy;
   assign wbLoadValueInner = lsuLoadResultOutputInner.value;
-  assign storeCompleteValidInner = lsuStoreCompleteOutputInner.valid;
-  assign storeCompleteTagInner = lsuStoreCompleteOutputInner.robTag;
   assign dmemReqValidOutput = lsuDmemRequestOutputInner.valid;
   assign dmemReqWriteOutput = lsuDmemRequestOutputInner.write;
   assign dmemReqAddrOutput = lsuDmemRequestOutputInner.address;
@@ -432,9 +433,7 @@ module rv32_core #(
   assign robCompletionInputInner[4] = '{valid: branchResultLiveInner,
                                         robTag: bruTagInner,
                                         exception: bruMisalignedInner};
-  assign robCompletionInputInner[5] = '{valid: storeCompleteValidInner,
-                                        robTag: storeCompleteTagInner,
-                                        exception: 1'b0};
+  assign robCompletionInputInner[5] = '0;
   assign robLookupInputInner[0] = '{robTag: bruTagInner};
   assign robLookupInputInner[1] = '{robTag: wbAluTagInner};
   assign robLookupInputInner[2] = '{robTag: wbLoadTagInner};
@@ -468,10 +467,13 @@ module rv32_core #(
   assign loadRobLiveInner = robLookupOutputInner[2].valid;
   assign mulRobLiveInner = robLookupOutputInner[3].valid;
   assign divRobLiveInner = robLookupOutputInner[4].valid;
-  assign predictorPcInner = predictorQueryOutputInner.programCounter;
   assign predictorFetchAcceptInner = predictorQueryOutputInner.accepted;
-  assign imemReqValidOutput = frontendImemRequestOutputInner.valid;
-  assign imemReqAddrOutput = frontendImemRequestOutputInner.address;
+  assign imemReqValidOutput = frontendImemRequestOutputInner.valid && bootDoneInner;
+  assign imemCacheRequestOutput = '{valid:frontendImemRequestOutputInner.valid && bootDoneInner,
+    address:predictorPcInner,
+    predictedProgramCounter:frontendImemRequestOutputInner.predictedProgramCounter,
+    predictorCheckpointId:frontendImemRequestOutputInner.predictorCheckpointId};
+  assign imemReqAddrOutput = predictorPcInner;
   assign frontendImemResponseInputInner = '{valid: imemRspValidInput,
                                             instruction: imemRspDataInput};
   assign frontendRedirectInputInner = '{valid: globalFlushInner,
@@ -498,15 +500,17 @@ module rv32_core #(
   rv32_frontend #(.RESET_PC(RESET_PC)) u_frontend (
     .clkInput(clkInput), .rstNInput(rstNInput),
     .predictorQueryOutput(predictorQueryOutputInner),
+    .fetchProgramCounterOutput(predictorPcInner),
     .predictionInput(predictorOutputInner),
     .imemRequestOutput(frontendImemRequestOutputInner),
-    .imemReqReadyInput(imemReqReadyInput),
+    .imemReqReadyInput(imemReqReadyInput && bootDoneInner),
     .imemResponseInput(frontendImemResponseInputInner),
+    .imemRspReadyOutput(imemRspReadyOutput), .imemFlushOutput(imemFlushOutput),
     .redirectInput(frontendRedirectInputInner),
     .instructionOutput(frontendInstructionOutputInner),
     .iqReadyInput(frontendIqReadyInner),
     .fetchInfoOutput(fetchInfoOutputInner),
-    .fqCountOutput(fqCountInner), .iqCountOutput(iqCountInner)
+    .fqCountOutput(), .iqCountOutput()
   );
 
   rv32_predictor u_predictor (
@@ -551,7 +555,7 @@ module rv32_core #(
     .replayInput(robReplayOutputInner),
     .readInput(prfReadInputInner), .readOutput(prfReadOutputInner),
     .writebackInput(writebackInputInner),
-    .readyVectorOutput(prfReadyVectorInner), .freeCountOutput(prfFreeCountInner)
+    .readyVectorOutput(prfReadyVectorInner), .freeCountOutput()
   );
 
   rv32_rob u_rob (
@@ -559,6 +563,7 @@ module rv32_core #(
     .allocInput(robAllocInputInner), .allocReadyOutput(robAllocReadyInner),
     .allocTagOutput(robAllocTagInner),
     .completionInput(robCompletionInputInner),
+    .storeReadyInput(lsuStoreCompleteOutputInner),
     .flushInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .lookupInput(robLookupInputInner), .lookupOutput(robLookupOutputInner),
     .commitOutput(robCommitOutputInner), .commitStoreOutput(robCommitStoreInner),
@@ -572,8 +577,7 @@ module rv32_core #(
     issueIsCallInner = issueIsJumpInner &&
                      ((decodedInner.rd == 5'd1) || (decodedInner.rd == 5'd5));
     issueIsReturnInner = (decodedInner.operation == OP_JALR) &&
-                       ((decodedInner.rs1 == 5'd1) || (decodedInner.rs1 == 5'd5)) &&
-                       (decodedInner.rd != 5'd1) && (decodedInner.rd != 5'd5);
+                        ((decodedInner.rs1 == 5'd1) || (decodedInner.rs1 == 5'd5));
     issueDestPhyInner = decodedInner.writesRd ? prfAllocPhyInner : '0;
     issueSrc1ReadyInner = !decodedInner.usesRs1 || prfSrc1ReadyInner;
     issueSrc1ValueInner = decodedInner.usesRs1 ? prfSrc1ValueInner : 32'b0;
@@ -586,13 +590,13 @@ module rv32_core #(
       rv32_pkg::UOP_MUL:    targetRsReadyInner = mulAllocReadyInner;
       rv32_pkg::UOP_DIV:    targetRsReadyInner = divAllocReadyInner;
       rv32_pkg::UOP_BRANCH: targetRsReadyInner = branchAllocReadyInner;
-      rv32_pkg::UOP_LOAD:   targetRsReadyInner = memAllocReadyInner && lqAllocReadyInner;
-      rv32_pkg::UOP_STORE:  targetRsReadyInner = memAllocReadyInner && sqAllocReadyInner;
+      rv32_pkg::UOP_LOAD:   targetRsReadyInner = loadRsAllocReadyInner && lqAllocReadyInner;
+      rv32_pkg::UOP_STORE:  targetRsReadyInner = saRsAllocReadyInner && svRsAllocReadyInner && sqAllocReadyInner;
       default:    targetRsReadyInner = 1'b1;
     endcase
     issueResourcesReadyInner = robAllocReadyInner && targetRsReadyInner &&
                              (!decodedInner.writesRd || prfAllocReadyInner);
-    issueFireInner = frontendIqValidInner && issueResourcesReadyInner &&
+    issueFireInner = bootDoneInner && frontendIqValidInner && issueResourcesReadyInner &&
                  !globalFlushInner && !haltedInner && !trapInner;
     frontendIqReadyInner = issueFireInner;
 
@@ -605,10 +609,12 @@ module rv32_core #(
     commitRdOutput = robCommitRdInner;
     commitRdValueOutput = prfCommitValueInner;
     commitMemValidOutput = robCommitFireInner && robCommitStoreInner;
-    commitMemAddrOutput = dmemReqAddrOutput;
-    commitMemDataOutput = dmemReqWdataOutput;
-    commitMemWstrbOutput = dmemReqWstrbOutput;
-    haltedOutput = haltedInner;
+    commitMemAddrOutput = lsuStoreRetirementOutputInner.address;
+    commitMemDataOutput = lsuStoreRetirementOutputInner.writeData;
+    commitMemWstrbOutput = lsuStoreRetirementOutputInner.writeStrobe;
+    // Retirement stops issue immediately; expose HALT after posted SQ writes
+    // have all been accepted. An outer cache/memory owns its subsequent drain.
+    haltedOutput = haltedInner && sqCountInner == 0;
     trapOutput = trapInner;
   end
 
@@ -651,9 +657,29 @@ module rv32_core #(
     memRsAllocInputInner.source2Tag = '0;
     memRsAllocInputInner.source2Value = '0;
     memRsAllocInputInner.useImmediate = 1'b1;
+    loadRsAllocInputInner = memRsAllocInputInner;
+    loadRsAllocInputInner.valid = issueFireInner && decodedInner.uopClass == rv32_pkg::UOP_LOAD;
+    saRsAllocInputInner = memRsAllocInputInner;
+    saRsAllocInputInner.valid = issueFireInner && decodedInner.uopClass == rv32_pkg::UOP_STORE;
+    svRsAllocInputInner = rsAllocBaseInner;
+    svRsAllocInputInner.valid = saRsAllocInputInner.valid;
+    svRsAllocInputInner.source1Ready = issueSrc2ReadyInner;
+    svRsAllocInputInner.source1Tag = ratRs2PhyInner;
+    svRsAllocInputInner.source1Value = issueSrc2ValueInner;
+    svRsAllocInputInner.source2Ready = 1'b1;
+    svRsAllocInputInner.source2Tag = '0;
+    svRsAllocInputInner.source2Value = '0;
+    svRsAllocInputInner.useImmediate = 1'b0;
+
+    for (storeLaneInner = 0; storeLaneInner < STORE_VALUE_RS_ENTRIES; storeLaneInner = storeLaneInner + 1) begin
+      svRsStoreDataInner[storeLaneInner].valid = svRsIssueLaneValidInner[storeLaneInner];
+      svRsStoreDataInner[storeLaneInner].robTag = svRsIssueLaneInner[storeLaneInner].robTag;
+      svRsStoreDataInner[storeLaneInner].value = svRsIssueLaneInner[storeLaneInner].source1Value;
+      svRsStoreDataIndexInner[storeLaneInner] = svRsIssueLaneAuxInner[storeLaneInner];
+    end
   end
 
-  rv32_rs #(.DEPTH(4), .AUX_W(1)) u_int_rs (
+  rv32_rs #(.DEPTH(INT_RS_ENTRIES), .AUX_W(1)) u_int_rs (
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(intRsAllocInputInner),
@@ -661,7 +687,7 @@ module rv32_core #(
     .writebackInput(writebackInputInner),
     .issueOutput(intRsIssueOutputInner), .issueReadyInput(intIssueReadyInner),
     .issueAuxOutput(intIssueAuxInner),
-    .occupancyOutput(intOccupancyInner)
+    .occupancyOutput(), .issueLaneValidOutput(), .issueLaneOutput(), .issueLaneAuxOutput()
   );
   assign intIssueValidInner = intRsIssueOutputInner.valid;
   assign intIssueOpInner = intRsIssueOutputInner.operation;
@@ -674,14 +700,14 @@ module rv32_core #(
   assign intIssuePredInner = intRsIssueOutputInner.predictedProgramCounter;
   assign intIssueUseImmInner = intRsIssueOutputInner.useImmediate;
 
-  rv32_rs #(.DEPTH(2), .AUX_W(1)) u_mul_rs (
+  rv32_rs #(.DEPTH(MUL_RS_ENTRIES), .AUX_W(1)) u_mul_rs (
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(mulRsAllocInputInner), .allocReadyOutput(mulAllocReadyInner),
     .allocAuxInput(1'b0),
     .writebackInput(writebackInputInner),
     .issueOutput(mulRsIssueOutputInner), .issueReadyInput(mulIssueReadyInner),
-    .issueAuxOutput(mulIssueAuxInner), .occupancyOutput(mulOccupancyInner)
+    .issueAuxOutput(mulIssueAuxInner), .occupancyOutput(), .issueLaneValidOutput(), .issueLaneOutput(), .issueLaneAuxOutput()
   );
   assign mulIssueValidInner = mulRsIssueOutputInner.valid;
   assign mulIssueOpInner = mulRsIssueOutputInner.operation;
@@ -694,14 +720,14 @@ module rv32_core #(
   assign mulIssuePredInner = mulRsIssueOutputInner.predictedProgramCounter;
   assign mulIssueUseImmInner = mulRsIssueOutputInner.useImmediate;
 
-  rv32_rs #(.DEPTH(1), .AUX_W(1)) u_div_rs (
+  rv32_rs #(.DEPTH(DIV_RS_ENTRIES), .AUX_W(1)) u_div_rs (
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(divRsAllocInputInner), .allocReadyOutput(divAllocReadyInner),
     .allocAuxInput(1'b0),
     .writebackInput(writebackInputInner),
     .issueOutput(divRsIssueOutputInner), .issueReadyInput(divIssueReadyInner),
-    .issueAuxOutput(divIssueAuxInner), .occupancyOutput(divOccupancyInner)
+    .issueAuxOutput(divIssueAuxInner), .occupancyOutput(), .issueLaneValidOutput(), .issueLaneOutput(), .issueLaneAuxOutput()
   );
   assign divIssueValidInner = divRsIssueOutputInner.valid;
   assign divIssueOpInner = divRsIssueOutputInner.operation;
@@ -714,14 +740,14 @@ module rv32_core #(
   assign divIssuePredInner = divRsIssueOutputInner.predictedProgramCounter;
   assign divIssueUseImmInner = divRsIssueOutputInner.useImmediate;
 
-  rv32_rs #(.DEPTH(4), .AUX_W(3)) u_branch_rs (
+  rv32_rs #(.DEPTH(BRANCH_RS_ENTRIES), .AUX_W(3)) u_branch_rs (
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(branchRsAllocInputInner), .allocReadyOutput(branchAllocReadyInner),
     .allocAuxInput({1'b0, issueIsReturnInner, issueIsCallInner}),
     .writebackInput(writebackInputInner),
     .issueOutput(branchRsIssueOutputInner), .issueReadyInput(branchIssueReadyInner),
-    .issueAuxOutput(branchIssueAuxInner), .occupancyOutput(branchOccupancyInner)
+    .issueAuxOutput(branchIssueAuxInner), .occupancyOutput(), .issueLaneValidOutput(), .issueLaneOutput(), .issueLaneAuxOutput()
   );
   assign branchIssueValidInner = branchRsIssueOutputInner.valid;
   assign branchIssueOpInner = branchRsIssueOutputInner.operation;
@@ -734,22 +760,45 @@ module rv32_core #(
   assign branchIssuePredInner = branchRsIssueOutputInner.predictedProgramCounter;
   assign branchIssueUseImmInner = branchRsIssueOutputInner.useImmediate;
 
-  rv32_rs #(.DEPTH(4), .AUX_W(4)) u_mem_rs (
+  rv32_rs #(.DEPTH(LOAD_RS_ENTRIES), .AUX_W(4)) u_load_rs (
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
-    .allocInput(memRsAllocInputInner), .allocReadyOutput(memAllocReadyInner),
-    .allocAuxInput({decodedInner.uopClass == rv32_pkg::UOP_STORE,
-                    (decodedInner.uopClass == rv32_pkg::UOP_STORE) ?
-                      sqAllocIndexInner : lqAllocIndexInner}),
+    .allocInput(loadRsAllocInputInner), .allocReadyOutput(loadRsAllocReadyInner),
+    .allocAuxInput({1'b0, lqAllocIndexInner}),
     .writebackInput(writebackInputInner),
-    .issueOutput(memRsIssueOutputInner), .issueReadyInput(memIssueReadyInner),
-    .issueAuxOutput(memIssueAuxInner), .occupancyOutput(memOccupancyInner)
+    .issueOutput(loadRsIssueOutputInner), .issueReadyInput(loadRsIssueReadyInner),
+    .issueAuxOutput(loadAuxInner), .occupancyOutput(), .issueLaneValidOutput(), .issueLaneOutput(), .issueLaneAuxOutput()
   );
-  assign memIssueValidInner = memRsIssueOutputInner.valid;
-  assign memIssueS1Inner = memRsIssueOutputInner.source1Value;
-  assign memIssueImmInner = memRsIssueOutputInner.immediate;
+  rv32_rs #(.DEPTH(STORE_ADDR_RS_ENTRIES), .AUX_W(4)) u_store_addr_rs (
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
+    .allocInput(saRsAllocInputInner), .allocReadyOutput(saRsAllocReadyInner),
+    .allocAuxInput({1'b1, sqAllocIndexInner}), .writebackInput(writebackInputInner),
+    .issueOutput(saRsIssueOutputInner), .issueReadyInput(saRsIssueReadyInner),
+    .issueAuxOutput(saAuxInner), .occupancyOutput(), .issueLaneValidOutput(), .issueLaneOutput(), .issueLaneAuxOutput()
+  );
+  rv32_rs #(.DEPTH(STORE_VALUE_RS_ENTRIES), .AUX_W(3),
+            .ISSUE_WIDTH(STORE_VALUE_RS_ENTRIES)) u_store_value_rs (
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
+    .allocInput(svRsAllocInputInner), .allocReadyOutput(svRsAllocReadyInner),
+    .allocAuxInput(sqAllocIndexInner), .writebackInput(writebackInputInner),
+    .issueOutput(svRsIssueOutputInner), .issueReadyInput(!globalFlushInner ||
+        rob_is_older(svRsIssueOutputInner.robTag, globalFlushTagInner)),
+    .issueAuxOutput(svAuxInner), .occupancyOutput(),
+    .issueLaneValidOutput(svRsIssueLaneValidInner),
+    .issueLaneOutput(svRsIssueLaneInner),
+    .issueLaneAuxOutput(svRsIssueLaneAuxInner)
+  );
+  assign chooseLoadInner = loadRsIssueOutputInner.valid &&
+      (!saRsIssueOutputInner.valid ||
+       rob_is_older(loadRsIssueOutputInner.robTag, saRsIssueOutputInner.robTag));
+  assign memRsIssueOutputInner = chooseLoadInner ? loadRsIssueOutputInner : saRsIssueOutputInner;
+  assign memIssueAuxInner = chooseLoadInner ? loadAuxInner : saAuxInner;
+  assign loadRsIssueReadyInner = memIssueReadyInner && chooseLoadInner;
+  assign saRsIssueReadyInner = memIssueReadyInner && !chooseLoadInner;
 
-  rv32_alu_unit u_alu_unit (
+  rv32_alu_unit #(.DEPTH(rv32_pkg::ALU_RESULT_ENTRIES)) u_alu_unit (
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .executeInput('{valid: intIssueValidInner,
@@ -766,7 +815,7 @@ module rv32_core #(
                    isCall: 1'b0,
                    isReturn: 1'b0}),
     .inReadyOutput(intIssueReadyInner), .outReadyInput(1'b1),
-    .executeOutput(aluExecuteOutputInner)
+    .executeOutput(aluExecuteOutputInner), .occupancyOutput()
   );
 
   rv32_mul u_mul_unit (
@@ -789,54 +838,29 @@ module rv32_core #(
     .executeOutput(mulExecuteOutputInner)
   );
 
-  // Use literal child parameters so sv2v/Yosys can elaborate either whole-core
-  // variant without a dynamic defparam on the divider wrapper.
-  generate
-    if (DIV_USE_SRT4) begin : g_div_srt4
-      rv32_div_srt4 u_div_unit (
-        .clkInput(clkInput), .rstNInput(rstNInput),
-        .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
-        .executeInput('{valid: divIssueValidInner,
-                       operation: divIssueOpInner,
-                       source1: divIssueS1Inner,
-                       source2: divIssueS2Inner,
-                       immediate: divIssueImmInner,
-                       programCounter: divIssuePcInner,
-                       predictedNextProgramCounter: divIssuePredInner,
-                       useImmediate: 1'b0,
-                       robTag: divIssueTagInner,
-                       destinationPhy: divIssuePhyInner,
-                       isControl: 1'b0,
-                       isCall: 1'b0,
-                       isReturn: 1'b0}),
-        .inReadyOutput(divIssueReadyInner), .outReadyInput(1'b1),
-        .executeOutput(divExecuteOutputInner)
-      );
-    end else begin : g_div_radix2
-      rv32_div_radix2 u_div_unit (
-        .clkInput(clkInput), .rstNInput(rstNInput),
-        .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
-        .executeInput('{valid: divIssueValidInner,
-                       operation: divIssueOpInner,
-                       source1: divIssueS1Inner,
-                       source2: divIssueS2Inner,
-                       immediate: divIssueImmInner,
-                       programCounter: divIssuePcInner,
-                       predictedNextProgramCounter: divIssuePredInner,
-                       useImmediate: 1'b0,
-                       robTag: divIssueTagInner,
-                       destinationPhy: divIssuePhyInner,
-                       isControl: 1'b0,
-                       isCall: 1'b0,
-                       isReturn: 1'b0}),
-        .inReadyOutput(divIssueReadyInner), .outReadyInput(1'b1),
-        .executeOutput(divExecuteOutputInner)
-      );
-    end
-  endgenerate
+  rv32_div u_div_unit (
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
+    .executeInput('{valid: divIssueValidInner,
+                   operation: divIssueOpInner,
+                   source1: divIssueS1Inner,
+                   source2: divIssueS2Inner,
+                   immediate: divIssueImmInner,
+                   programCounter: divIssuePcInner,
+                   predictedNextProgramCounter: divIssuePredInner,
+                   useImmediate: 1'b0,
+                   robTag: divIssueTagInner,
+                   destinationPhy: divIssuePhyInner,
+                   isControl: 1'b0,
+                   isCall: 1'b0,
+                   isReturn: 1'b0}),
+    .inReadyOutput(divIssueReadyInner), .outReadyInput(1'b1),
+    .executeOutput(divExecuteOutputInner)
+  );
 
   rv32_bru_unit u_bru_unit (
     .clkInput(clkInput), .rstNInput(rstNInput), .flushInput(globalFlushInner),
+    .flushTagInput(globalFlushTagInner),
     .executeInput('{valid: branchIssueValidInner,
                    operation: branchIssueOpInner,
                    source1: branchIssueS1Inner,
@@ -853,30 +877,35 @@ module rv32_core #(
     .inReadyOutput(branchIssueReadyInner), .executeOutput(bruExecuteOutputInner)
   );
 
-  rv32_agu u_agu (
-    .addressInput('{baseAddress: memIssueS1Inner, offset: memIssueImmInner}),
-    .addressOutput(aguOutputInner)
+  rv32_agu_unit u_agu_unit (
+    .clkInput(clkInput), .rstNInput(rstNInput),
+    .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
+    .executeInput(memRsIssueOutputInner), .auxiliaryInput(memIssueAuxInner),
+    .inReadyOutput(memIssueReadyInner), .addressOutput(lsuAddressInputInner),
+    .auxiliaryOutput(aguResultAuxInner), .robTagOutput(), .resultValidOutput()
   );
-  assign memAddressInner = aguOutputInner.address;
-  assign memIssueReadyInner = !globalFlushInner;
 
-  rv32_lsu u_lsu (
+  rv32_lsu #(.STORE_DATA_LANES(STORE_VALUE_RS_ENTRIES)) u_lsu (
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .loadAllocationInput(lsuLoadAllocationInputInner),
     .loadAllocReadyOutput(lqAllocReadyInner), .loadAllocIndexOutput(lqAllocIndexInner),
     .storeAllocationInput(lsuStoreAllocationInputInner),
     .storeAllocReadyOutput(sqAllocReadyInner), .storeAllocIndexOutput(sqAllocIndexInner),
-    .addressInput(lsuAddressInputInner), .addressIndexInput(memIssueAuxInner[2:0]),
+    .storeDataInput(svRsStoreDataInner),
+    .storeDataIndexInput(svRsStoreDataIndexInner),
+    .addressInput(lsuAddressInputInner), .addressIndexInput(aguResultAuxInner[2:0]),
     .writebackInput(writebackInputInner),
     .loadResultOutput(lsuLoadResultOutputInner), .loadResultReadyInput(1'b1),
+    .robRetireInput('{valid: robCommitFireOutputInner, robTag: robCommitOutputInner.robTag}),
     .storeCompleteOutput(lsuStoreCompleteOutputInner),
     .storeCommitInput(lsuStoreCommitInputInner),
     .storeCommitIndexInput(robCommitSqIndexInner),
     .storeCommitReadyOutput(lsuStoreCommitReadyInner),
+    .storeRetirementOutput(lsuStoreRetirementOutputInner),
     .dmemRequestOutput(lsuDmemRequestOutputInner), .dmemReqReadyInput(dmemReqReadyInput),
     .dmemResponseInput(lsuDmemResponseInputInner),
-    .lqCountOutput(lqCountInner), .sqCountOutput(sqCountInner)
+    .lqCountOutput(), .sqCountOutput(sqCountInner)
   );
 
   always_ff @(posedge clkInput or negedge rstNInput) begin

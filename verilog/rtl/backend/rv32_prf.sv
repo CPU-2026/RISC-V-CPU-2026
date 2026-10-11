@@ -32,27 +32,44 @@ module rv32_prf #(
 
   localparam rob_tag_t ROB_AGE_MASK = '1;
   localparam rob_tag_t ROB_AGE_LIMIT = rob_tag_t'(1 << (ROB_TAG_W-1));
+  localparam int unsigned SLOT_W = $clog2(PRF_DEPTH);
+  localparam int unsigned SEQ_W = SLOT_W + 1;
+  localparam int unsigned COUNT_W = $clog2(PRF_DEPTH+1);
+  localparam int unsigned RECYCLE_W = $clog2(ROB_DEPTH+2);
+  typedef logic [SEQ_W-1:0] free_seq_t;
 
   logic [31:0] valueInner [PRF_DEPTH];
   logic [PRF_DEPTH-1:0] readyInner;
-  logic [PRF_DEPTH-1:0] freeInner;
-  logic [PRF_DEPTH-1:0] freeAfterEventsInner;
-  logic [PRF_DEPTH-1:0] restoreYoungMaskInner;
+  phy_tag_t freeListInner [PRF_DEPTH];
+  free_seq_t freeHeadInner, freeTailInner, recycleTailInner;
+  logic [SLOT_W-1:0] freeHeadSlotInner, freeTailSlotInner;
+  phy_tag_t recyclePhyInner [ROB_DEPTH+1];
+  logic [SLOT_W-1:0] recycleSlotInner [ROB_DEPTH+1];
+  logic [RECYCLE_W-1:0] recycleCountInner;
   phy_tag_t selectedPhyInner;
   logic selectedValidInner;
-  integer combIndexInner;
-  integer combJInner;
+  logic allocationFireInner;
   integer seqIndexInner;
 
+  function automatic free_seq_t free_seq_next(input free_seq_t seq);
+    if (seq[SLOT_W-1:0] == SLOT_W'(PRF_DEPTH-1))
+      free_seq_next = {~seq[SEQ_W-1], {SLOT_W{1'b0}}};
+    else
+      free_seq_next = seq + free_seq_t'(1);
+  endfunction
+
+  assign freeHeadSlotInner = freeHeadInner[SLOT_W-1:0];
+  assign freeTailSlotInner = freeTailInner[SLOT_W-1:0];
+  assign allocationFireInner = allocationInput.valid && allocReadyOutput;
+
   always_comb begin
-    selectedPhyInner = '0;
-    selectedValidInner = 1'b0;
-    for (combIndexInner = 1; combIndexInner < PRF_DEPTH; combIndexInner = combIndexInner + 1) begin
-      if (!selectedValidInner && freeInner[combIndexInner]) begin
-        selectedPhyInner = phy_tag_t'(combIndexInner);
-        selectedValidInner = 1'b1;
-      end
-    end
+    // Non-power-of-two ring: slots 48..63 are skipped at depth48. The epoch
+    // contributes PRF_DEPTH, not 2**SLOT_W, to the occupied distance.
+    freeCountOutput = COUNT_W'(freeTailSlotInner) - COUNT_W'(freeHeadSlotInner);
+    if (freeHeadInner[SEQ_W-1] != freeTailInner[SEQ_W-1])
+      freeCountOutput = freeCountOutput + COUNT_W'(PRF_DEPTH);
+    selectedValidInner = freeHeadInner != freeTailInner;
+    selectedPhyInner = selectedValidInner ? freeListInner[freeHeadSlotInner] : '0;
     // Squash owns recovery: only a non-squash cycle may pop. issue_fire already
     // excludes global_flush upstream, so this is a local invariant guard.
     allocReadyOutput = !restoreInput.valid && selectedValidInner;
@@ -66,64 +83,62 @@ module rv32_prf #(
     readOutput[2].value = (readInput[2].physicalRegister == '0) ? 32'b0 : valueInner[readInput[2].physicalRegister];
     readyVectorOutput = readyInner;
 
-    freeCountOutput = '0;
-    for (combIndexInner = 1; combIndexInner < PRF_DEPTH; combIndexInner = combIndexInner + 1)
-      if (freeInner[combIndexInner])
-        freeCountOutput = freeCountOutput + 1'b1;
   end
 
-  // A squashed instruction cannot have released a register yet: commits run in
-  // order at the head and the head is strictly older than the boundaryInput. So
-  // freeInner already covers every release that happened since the boundaryInput was
-  // renamed, and recovery is a plain set-union of the window's new physical
-  // tags. That is exactly what the referenceInput tree does by pushing each
-  // robNewPhy of (SquashTag, next-free) back onto its free ring.
-  //
-  // The age test is written out instead of calling rv32_pkg::rob_is_younger:
-  // iverilog stalls forever when that function (which contains variable-index
-  // writes) is inlined into an always_comb that reads the replay window, while
-  // the same predicate as arithmetic is fine. The two agree on all 1024 tag
-  // pairs once the limit is exclusive -- rob_is_younger is false at age 16,
-  // which no live lane can reach anyway (a window holds at most ROB_DEPTH
-  // entries).
+  // Replay is ordered oldest->youngest. Match the software: append younger
+  // newPhy first, then this cycle's committed oldPhy. Selection above uses
+  // ONLY the old FIFO; newly returned registers are available next cycle.
   always_comb begin
-    restoreYoungMaskInner = '0;
+    recycleCountInner = '0;
+    recycleTailInner = freeTailInner;
+    for (int k = 0; k < ROB_DEPTH+1; k++) begin
+      recyclePhyInner[k] = '0;
+      recycleSlotInner[k] = '0;
+    end
     if (restoreInput.valid) begin
-      for (combJInner = 0; combJInner < ROB_DEPTH; combJInner = combJInner + 1) begin
-        if ((combJInner < restoreCountInput) &&
-            (((replayInput[combJInner].robTag - restoreInput.squashTag) & ROB_AGE_MASK) != '0) &&
-            (((replayInput[combJInner].robTag - restoreInput.squashTag) & ROB_AGE_MASK) <
-             ROB_AGE_LIMIT) &&
-            (replayInput[combJInner].newPhy != '0))
-          restoreYoungMaskInner[replayInput[combJInner].newPhy] = 1'b1;
+      for (int age = 0; age < ROB_DEPTH; age++) begin
+        if ((age < int'(restoreCountInput)) &&
+            (((replayInput[age].robTag - restoreInput.squashTag) & ROB_AGE_MASK) != '0) &&
+            (((replayInput[age].robTag - restoreInput.squashTag) & ROB_AGE_MASK) <
+              ROB_AGE_LIMIT) &&
+            (replayInput[age].newPhy != '0)) begin
+          recyclePhyInner[recycleCountInner] = replayInput[age].newPhy;
+          recycleSlotInner[recycleCountInner] = recycleTailInner[SLOT_W-1:0];
+          recycleTailInner = free_seq_next(recycleTailInner);
+          recycleCountInner = recycleCountInner + RECYCLE_W'(1);
+        end
       end
     end
-  end
-
-  always_comb begin
-    freeAfterEventsInner = freeInner;
-    if (freeInput.valid && (freeInput.physicalRegister != '0))
-      freeAfterEventsInner[freeInput.physicalRegister] = 1'b1;
-    if (restoreInput.valid)
-      freeAfterEventsInner = freeAfterEventsInner | restoreYoungMaskInner;
-    if (allocationInput.valid && selectedValidInner)
-      freeAfterEventsInner[selectedPhyInner] = 1'b0;
+    if (freeInput.valid && freeInput.physicalRegister != '0) begin
+      recyclePhyInner[recycleCountInner] = freeInput.physicalRegister;
+      recycleSlotInner[recycleCountInner] = recycleTailInner[SLOT_W-1:0];
+      recycleTailInner = free_seq_next(recycleTailInner);
+      recycleCountInner = recycleCountInner + RECYCLE_W'(1);
+    end
   end
 
   always_ff @(posedge clkInput or negedge rstNInput) begin
     if (!rstNInput) begin
       readyInner <= '0;
-      freeInner <= '0;
+      freeHeadInner <= '0;
+      freeTailInner <= free_seq_t'(PRF_DEPTH-ARCH_REGS);
       for (seqIndexInner = 0; seqIndexInner < PRF_DEPTH; seqIndexInner = seqIndexInner + 1)
         valueInner[seqIndexInner] <= 32'b0;
       for (seqIndexInner = 0; seqIndexInner < ARCH_REGS; seqIndexInner = seqIndexInner + 1)
         readyInner[seqIndexInner] <= 1'b1;
-      for (seqIndexInner = ARCH_REGS; seqIndexInner < PRF_DEPTH; seqIndexInner = seqIndexInner + 1)
-        freeInner[seqIndexInner] <= 1'b1;
+      for (seqIndexInner = 0; seqIndexInner < PRF_DEPTH; seqIndexInner = seqIndexInner + 1)
+        freeListInner[seqIndexInner] <= seqIndexInner < PRF_DEPTH-ARCH_REGS ?
+            phy_tag_t'(ARCH_REGS+seqIndexInner) : phy_tag_t'(0);
     end else begin
-      freeInner <= freeAfterEventsInner;
+      if (allocationFireInner)
+        freeHeadInner <= free_seq_next(freeHeadInner);
+      if (recycleCountInner != 0)
+        freeTailInner <= recycleTailInner;
+      for (int k = 0; k < ROB_DEPTH+1; k++)
+        if (k < int'(recycleCountInner))
+          freeListInner[recycleSlotInner[k]] <= recyclePhyInner[k];
 
-      if (allocationInput.valid && selectedValidInner) begin
+      if (allocationFireInner) begin
         valueInner[selectedPhyInner] <= allocationInput.value;
         readyInner[selectedPhyInner] <= allocationInput.valueValid;
       end
@@ -147,7 +162,35 @@ module rv32_prf #(
 
       valueInner[0] <= 32'b0;
       readyInner[0] <= 1'b1;
-      freeInner[0] <= 1'b0;
     end
   end
+`ifndef SYNTHESIS
+  always @(posedge clkInput) if (rstNInput) begin
+    // Local assertion scratch only; no observation bitmap in the datapath.
+    logic [PRF_DEPTH-1:0] freeMembership;
+    free_seq_t scanSeq;
+    freeMembership = '0;
+    scanSeq = freeHeadInner;
+    for (int age = 0; age < PRF_DEPTH; age++) begin
+      if (age < int'(freeCountOutput)) begin
+        freeMembership[freeListInner[scanSeq[SLOT_W-1:0]]] = 1'b1;
+        scanSeq = free_seq_next(scanSeq);
+      end
+    end
+    assert (int'(freeHeadSlotInner) < PRF_DEPTH && int'(freeTailSlotInner) < PRF_DEPTH)
+      else $fatal(1, "PRF FIFO entered a padded slot");
+    assert (!freeMembership[0] && $countones(freeMembership) == int'(freeCountOutput))
+      else $fatal(1, "PRF FIFO contains P0 or duplicate registers");
+    assert (int'(freeCountOutput) - int'(allocationFireInner) +
+            int'(recycleCountInner) <= PRF_DEPTH)
+      else $fatal(1, "PRF FIFO overflow");
+    for (int k = 0; k < ROB_DEPTH+1; k++) if (k < int'(recycleCountInner)) begin
+      assert (recyclePhyInner[k] != 0 && int'(recyclePhyInner[k]) < PRF_DEPTH &&
+              !freeMembership[recyclePhyInner[k]]) else $fatal(1, "PRF duplicate/invalid release");
+      for (int j = 0; j < k; j++)
+        assert (recyclePhyInner[k] != recyclePhyInner[j])
+          else $fatal(1, "PRF duplicate batch release");
+    end
+  end
+`endif
 endmodule

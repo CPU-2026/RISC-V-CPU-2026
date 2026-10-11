@@ -8,6 +8,7 @@ module rv32_rob #(
   output logic                   allocReadyOutput,
   output rv32_pkg::rob_tag_t     allocTagOutput,
   input  rv32_pkg::rob_completion_t [5:0] completionInput,
+  input  rv32_pkg::store_completion_output_t storeReadyInput,
   input  rv32_pkg::rob_flush_input_t flushInput,
   input  rv32_pkg::rob_lookup_input_t [4:0] lookupInput,
   output rv32_pkg::rob_lookup_output_t [4:0] lookupOutput,
@@ -57,6 +58,51 @@ module rv32_rob #(
   logic unusedCoutHeadInner, unusedCoutTailInner;
   logic unusedCoutCountUpInner, unusedBorrowCountDownInner;
   logic unusedBorrowFlushCommitInner;
+  logic [DEPTH-1:0] readySetInner, exceptionSetInner;
+  logic [DEPTH-1:0] storeBitmapReadyInner;
+
+  // Merge completion intents per physical row. The bitmap uses the FULL
+  // package slot index, not SLOT_W: reduced DEPTH must retain all tag bits.
+  always_comb begin
+    readySetInner = '0;
+    exceptionSetInner = '0;
+    for (int row = 0; row < DEPTH; row = row + 1) begin
+      if (validInner[row] &&
+          (!flushInput.valid || rob_is_older(tagInner[row], flushInput.robTag))) begin
+        if (storeInner[row] && storeBitmapReadyInner[row])
+          readySetInner[row] = 1'b1;
+        for (int portIndex = 0; portIndex < 6; portIndex = portIndex + 1) begin
+          if (completionInput[portIndex].valid && completionInput[portIndex].robTag == tagInner[row]) begin
+            readySetInner[row] = 1'b1;
+            if ((portIndex == 0 || portIndex == 4) && completionInput[portIndex].exception)
+              exceptionSetInner[row] = 1'b1;
+          end
+        end
+      end
+    end
+  end
+
+  // Exactly one ready write per row; allocation initialization wins. Retirement
+  // still observes the old ready bit and remains at most one instruction/cycle.
+  generate
+    for (genvar row = 0; row < DEPTH; row = row + 1) begin : gen_ready_write
+      if (DEPTH == ROB_ENTRIES) begin : gen_constant_bitmap_slot
+        // Normal core: literal per-slot wires, no mask-selection crossbar.
+        assign storeBitmapReadyInner[row] = storeReadyInput.readyMask[row] &&
+          storeReadyInput.epochMask[row] == tagInner[row][ROB_TAG_W-1];
+      end else begin : gen_full_tag_bitmap_slot
+        // Reduced DEPTH retains the full package tag's slot identity.
+        assign storeBitmapReadyInner[row] = storeReadyInput.readyMask[tagInner[row][ROB_TAG_W-2:0]] &&
+          storeReadyInput.epochMask[tagInner[row][ROB_TAG_W-2:0]] == tagInner[row][ROB_TAG_W-1];
+      end
+      always_ff @(posedge clkInput or negedge rstNInput) begin
+        if (!rstNInput) readyInner[row] <= 1'b0;
+        else if (allocInput.valid && allocReadyOutput && tailSlotInner == SLOT_W'(row))
+          readyInner[row] <= allocInput.ready || allocInput.isHalt || allocInput.hasException;
+        else if (readySetInner[row]) readyInner[row] <= 1'b1;
+      end
+    end
+  endgenerate
 
   genvar replayIndexInner;
   generate
@@ -170,7 +216,6 @@ module rv32_rob #(
       for (iInner = 0; iInner < DEPTH; iInner = iInner + 1) begin
         validInner[iInner] <= 1'b0;
         tagInner[iInner] <= '0;
-        readyInner[iInner] <= 1'b0;
         pcInner[iInner] <= '0;
         instrInner[iInner] <= '0;
         writesRdInner[iInner] <= 1'b0;
@@ -194,66 +239,16 @@ module rv32_rob #(
           validInner[iInner] <= 1'b0;
       end
 
-      if (completionInput[0].valid && rob_is_older(completionInput[0].robTag, flushInput.robTag) &&
-          validInner[completionInput[0].robTag[SLOT_W-1:0]] &&
-          (tagInner[completionInput[0].robTag[SLOT_W-1:0]] == completionInput[0].robTag)) begin
-        readyInner[completionInput[0].robTag[SLOT_W-1:0]] <= 1'b1;
-        if (completionInput[0].exception)
-          exceptionInner[completionInput[0].robTag[SLOT_W-1:0]] <= 1'b1;
-      end
-      if (completionInput[1].valid && rob_is_older(completionInput[1].robTag, flushInput.robTag) &&
-          validInner[completionInput[1].robTag[SLOT_W-1:0]] &&
-          (tagInner[completionInput[1].robTag[SLOT_W-1:0]] == completionInput[1].robTag))
-        readyInner[completionInput[1].robTag[SLOT_W-1:0]] <= 1'b1;
-      if (completionInput[2].valid && rob_is_older(completionInput[2].robTag, flushInput.robTag) &&
-          validInner[completionInput[2].robTag[SLOT_W-1:0]] &&
-          (tagInner[completionInput[2].robTag[SLOT_W-1:0]] == completionInput[2].robTag))
-        readyInner[completionInput[2].robTag[SLOT_W-1:0]] <= 1'b1;
-      if (completionInput[3].valid && rob_is_older(completionInput[3].robTag, flushInput.robTag) &&
-          validInner[completionInput[3].robTag[SLOT_W-1:0]] &&
-          (tagInner[completionInput[3].robTag[SLOT_W-1:0]] == completionInput[3].robTag))
-        readyInner[completionInput[3].robTag[SLOT_W-1:0]] <= 1'b1;
-      if (completionInput[4].valid && rob_is_older(completionInput[4].robTag, flushInput.robTag) &&
-          validInner[completionInput[4].robTag[SLOT_W-1:0]] &&
-          (tagInner[completionInput[4].robTag[SLOT_W-1:0]] == completionInput[4].robTag)) begin
-        readyInner[completionInput[4].robTag[SLOT_W-1:0]] <= 1'b1;
-        if (completionInput[4].exception)
-          exceptionInner[completionInput[4].robTag[SLOT_W-1:0]] <= 1'b1;
-      end
-      if (completionInput[5].valid && rob_is_older(completionInput[5].robTag, flushInput.robTag) &&
-          validInner[completionInput[5].robTag[SLOT_W-1:0]] &&
-          (tagInner[completionInput[5].robTag[SLOT_W-1:0]] == completionInput[5].robTag))
-        readyInner[completionInput[5].robTag[SLOT_W-1:0]] <= 1'b1;
+      for (iInner = 0; iInner < DEPTH; iInner = iInner + 1)
+        if (exceptionSetInner[iInner]) exceptionInner[iInner] <= 1'b1;
 
       if (commitFireOutput) begin
         validInner[headSlotInner] <= 1'b0;
         headInner <= headNext;
       end
     end else begin
-      if (completionInput[0].valid && validInner[completionInput[0].robTag[SLOT_W-1:0]] &&
-          (tagInner[completionInput[0].robTag[SLOT_W-1:0]] == completionInput[0].robTag)) begin
-        readyInner[completionInput[0].robTag[SLOT_W-1:0]] <= 1'b1;
-        if (completionInput[0].exception)
-          exceptionInner[completionInput[0].robTag[SLOT_W-1:0]] <= 1'b1;
-      end
-      if (completionInput[1].valid && validInner[completionInput[1].robTag[SLOT_W-1:0]] &&
-          (tagInner[completionInput[1].robTag[SLOT_W-1:0]] == completionInput[1].robTag))
-        readyInner[completionInput[1].robTag[SLOT_W-1:0]] <= 1'b1;
-      if (completionInput[2].valid && validInner[completionInput[2].robTag[SLOT_W-1:0]] &&
-          (tagInner[completionInput[2].robTag[SLOT_W-1:0]] == completionInput[2].robTag))
-        readyInner[completionInput[2].robTag[SLOT_W-1:0]] <= 1'b1;
-      if (completionInput[3].valid && validInner[completionInput[3].robTag[SLOT_W-1:0]] &&
-          (tagInner[completionInput[3].robTag[SLOT_W-1:0]] == completionInput[3].robTag))
-        readyInner[completionInput[3].robTag[SLOT_W-1:0]] <= 1'b1;
-      if (completionInput[4].valid && validInner[completionInput[4].robTag[SLOT_W-1:0]] &&
-          (tagInner[completionInput[4].robTag[SLOT_W-1:0]] == completionInput[4].robTag)) begin
-        readyInner[completionInput[4].robTag[SLOT_W-1:0]] <= 1'b1;
-        if (completionInput[4].exception)
-          exceptionInner[completionInput[4].robTag[SLOT_W-1:0]] <= 1'b1;
-      end
-      if (completionInput[5].valid && validInner[completionInput[5].robTag[SLOT_W-1:0]] &&
-          (tagInner[completionInput[5].robTag[SLOT_W-1:0]] == completionInput[5].robTag))
-        readyInner[completionInput[5].robTag[SLOT_W-1:0]] <= 1'b1;
+      for (iInner = 0; iInner < DEPTH; iInner = iInner + 1)
+        if (exceptionSetInner[iInner]) exceptionInner[iInner] <= 1'b1;
 
       if (commitFireOutput) begin
         validInner[headSlotInner] <= 1'b0;
@@ -263,8 +258,6 @@ module rv32_rob #(
       if (allocInput.valid && allocReadyOutput) begin
         validInner[tailSlotInner] <= 1'b1;
         tagInner[tailSlotInner] <= tailInner;
-        readyInner[tailSlotInner] <= allocInput.ready || allocInput.isHalt ||
-                              allocInput.hasException;
         pcInner[tailSlotInner] <= allocInput.programCounter;
         instrInner[tailSlotInner] <= allocInput.instruction;
         writesRdInner[tailSlotInner] <= allocInput.writesArchitecturalRegister;

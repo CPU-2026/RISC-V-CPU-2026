@@ -1,1049 +1,261 @@
-# 后端子系统：发射 · 乱序执行 · 写回 · 提交 · squash 恢复
+# RTL 后端：重命名、保留站、执行、写回与提交
 
-> 负责乱序核心本体：从 IQ 发射（rename）→ 保留站就绪乱序执行 → 结果总线写回 →
-> ROB 按序提交；误预测的排队与整窗恢复也在这里仲裁并触发。
-> 保留站/标签广播源自 Tomasulo 算法，ROB 精确提交与物理寄存器重命名属于后续
-> 现代化扩展 [[1]](#back-ref-1)[[2]](#back-ref-2)[[3]](#back-ref-3)。
-> 相关实现：
-> `StaticArbiter`（组合逻辑的静态仲裁器）、
-> `RS`（去中心化保留站）、
-> `PRF`（中心化物理寄存器堆）、
-> `RAT`（基于物理寄存器实现的寄存器重命名表）、
-> `ROB`（重排序缓冲队列）、
-> `ALU`（基础运算单元）、
-> `MUL`（3-cycle乘法器）、
-> `DIV`（SRT-4除法器）、
-> `AGU`（专供地址计算的运算单元）、
-> `BRU`（专供分支运算的运算单元）、
-> `CDB`（写回总线）、
-> `DynamicArbiter`（时序逻辑的动态仲裁器）。
+当前SPEC §63/64：七池实际消费/FU预算与SV目标补验通过；完整24镜像12667040
+拍2872word三端無损逐拍/退休/内存全等。软件RV_INVALID按现有RTL真实元数据/
+exception ready合同同步，正常周期golden保持；完整异常全域不据此宣称，README §56。
 
-取指与译码在前端完成；访存队列（LQ/SQ）与缓存/主存在
-[访存](memory.md) / [缓存](cache.md) 中描述。后端需要掌握"程序序边界"，因此
-ROB 条目同时是前端预测 checkpoint 与 LQ/SQ 尾快照的宿主。
+当前SPEC §62：冷复位boot1拍无正常事件；HALT提交/core停止与外层dirty drain DONE
+分别观察。core不新增FU流水级，外层用既有dmem_backend。16程序9629/2872全等，
+7源码负向及DONE保持16拍通过；计时从实际事件边界采样，入口sync/README §54。
 
-M 扩展的两个执行单元（**乘法**、**除法**）在 §4.3 / §4.4 给出实现细节
-（乘法：Booth 编码部分积 + CSA 压缩树；除法：SRT radix-4）。
+当前SPEC §61：实际BRU/ALU请求n+1入队、n+2旧队列选最老广播；67真实三CPU
+程序9001/2872严格一致，11实际源码负向有效。ROB/RAT/PRF/七RS与全部FU/LSQ
+恢复同链，MUL三阶段/DIV四阶段及四路WB年轻过滤/更老保留均有实际覆盖。
+raw观察读寄存valid而非已过滤输出。第18当前域完成，第19计时继续；README §53。
 
-> 实现词汇：主树以周期初快照、组合总线和 `tick()` 表达时序更新；模板树以
-> `Wire`、`Register` 和 `work()/sync()` 表达同一硬件语义。下文统一使用
-> “组合选择”和“周期更新”，只在源码映射处标出两者的表示差异。
+当前SPEC §60：真实jump CDB/BRU/早训练BTB竞争26程序6690/1848严格三端全等，
+七软件/RTL功能负向有效。RAS13041/1848、控制1518/2230、访存4803/764与RTL16
+回归通过。第17当前BPU域完成，下一第18多恢复请求/所有FU及LSQ全流水联动，
+实际源码默认训练/退休/恢复行为保持。入口sync/README §52。
 
----
+当前SPEC §59：JALR push/pop由rd/rs1是否link独立决定，双link含同寄存器先pop再push。
+Issue保存pop元数据，提交/重放按raw指令同规则，实际JALR仍取旧rs1计算target及PC+4
+link写回。33实际三CPU程序13041/1848严格同值，7实际软件/RTL功能负向有效，
+提交/恢复同拍不重放两次，HALT pc元数据与软件对齐。当前报告README §51。
 
-## 1. 边界与职责
+当前SPEC §58：core输出完整`imemCacheRequestOutput`及`imemRspReadyOutput/imemFlushOutput`，
+可接真实公共SRAM I$，前端返回由FQ实际接受才释放，恢复逻辑取消。I$/IMEM2324/160、
+真实前端2259/216四方全等，真实core/SRAM I$ Store/Load/branch/HALT与RTL16项通过。
+旧PC与旧checkpoint-id独立连线，无新增流水级。后端4803/764严格回归保持，README §50。
 
-```
- IQ（前端）─► IssueArbiter ─ rename ─► RS 占槽 / ROB push / PRF alloc / RAT 改名
-                                      │    （含 LQ/SQ push，见 memory.md）
-              ┌───────────────────────▼───────────────────────┐
-              │ RS ──DispatchArbiter──► ALU · MUL · DIV · AGU · BRU │
-              │        （乱序派发，就绪即发）                   │
-              └───────────────────────┬──────────────────────┘
-                                      ▼
-     aluCDB / mulCDB / divCDB / lqCDB ──► PRF 完成写口 / ROB 置位 / 训练
-                                      ▼
-               ROB 按序提交 ──► FlushArbiter（误测排队、最老优先）
-```
+当前SPEC §57：Store通过专用slot/epoch位图批量完成，ROB按旧有效Store/epoch及
+恢复年龄核验，和普通完成汇总为每槽单点ready写入；下一拍才可退休。§56的Store
+完成时刻差屏蔽已取消，当前764字段严格门禁和关联回归结果见sync/README §49。
+默认ROB16采用常量逐槽mask位选，XML展开确认32个常量单bit选择；DEPTH8探针
+保留公共tag高slot身份位。最终全链764严格/六负向、标准RTL15/15及core12/真Cache4通过。
 
-| 结构/模块 | 职责 |
-|------|------|
-| `IssueArbiter`（StaticArbiter） | 组合构建每周期至多 1 个发射包（rename 决策） |
-| `DispatchArbiter`（StaticArbiter） | 保留站 → 执行单元的乱序派发（五独立通道） |
-| `RS` | 七个物理池：Integer 4 / Multiply 2 / **Divide 1** / Load 4 / StoreAddr 4 / StoreValue 4 / Branch 4 |
-| `PRF` | 物理寄存器堆 64：循环序号自由表、完成写口、checkpoint 恢复 |
-| `RAT` | 架构寄存器 → 物理寄存器映射 |
-| `ROB` | 重排序缓冲 16：按序提交、checkpoint 快照宿主、squash 边界 |
-| `ALU` | 算术/逻辑/移位 + JALR 目标（`isControl` 载荷） |
-| `MUL` | M 扩展乘法单元（Booth → CSA → 最终加，3 级流水）——见 §4.3 |
-| `DIV` | M 扩展除法单元（SRT radix-4，单实例迭代，非流水）——见 §4.4 |
-| `AGU` | 访存地址计算（load/store；最老有效地址结果若为 store 则广播给 SQ） |
-| `BRU` | 条件分支执行 |
-| `CDB` | 四路结果总线载荷与门控（aluCDB/lqCDB/mulCDB/**divCDB**） |
-| `FlushArbiter`（DynamicArbiter） | squash 请求队列：检测 BRU/CDB 误测、最老优先 |
+最新SPEC §56：同一套RAT/PRF/ROB接实际四RS/ALU/AGU/LSU/D$，返回经过真实CDB
+至退休，4803步28组763语义字段三端一致，420 rename状态交叉核验，独立参考343
+语义字段。软件批量Store完成位/RTL单项报告原始差异另记诊断，实际SQ/退休严格比较。
+遗漏Load PRF写口和错误owner实际负向造成架构失败；完整前端/所有FU联动另验，README §48。
 
-> `RS` 的类别计数在 `RS.hpp` 中为 `integerRS[INTEGERRS_CAP]`、`multiplyRS[MULTIPLYRS_CAP]`、
-> `divideRS[DIVIDERS_CAP]`、`loadRS`、`storeAddressRS`、`storeValueRS`；
-> `Operation` 枚举含 `MUL/MULH/MULHU/MULHSU/DIV/DIVU/REM/REMU`；
-> `RSType` 含 `Integer/Multiply/Divide/Branch/Load/StoreAddr` 六种**执行派发类型**；
-> `StoreValue` 是第七个物理 RS 池，但数据就绪后直接广播给 SQ，不占执行通道；
-> 逻辑派发总线含 `alu/bru/mul/div` 四个普通载荷，以及额外携带 `rsType` 的
-> `agu` 载荷。
+最新SPEC §55：寄存器D$ READY/WAIT按软件逐拍实现，独立读/写及写完成端口，6378/
+14真实Cache/DMEM三端全等。LSU单pending允许旧响应与新读同拍替换，仍按旧身份
+处理返回并保留新owner；不增加当拍CDB依赖派发。真Cache4、标准RTL14及LSU/四路/
+生命周期回归通过，完整整核共同轨迹另验，命令见sync/README §47。
 
-ROB 身份采用 packed `{epoch, slot}`：slot 宽度为 `bit_width(ROB_CAP-1)`，总
-`ROB_TAG_WIDTH` 再加 1 个 epoch bit。`robNextTag()` 在 slot 到达 `ROB_CAP-1`
-后翻转 epoch 并跳回 slot 0，因此 `ROB_CAP` 无需是 2 的幂；slot 字段中的空洞编码
-永不分配。模板仓库所有 RobTag `Wire/Register` 均使用该参数宽度（ROB16 为 5 bit），
-phy tag 使用派生 `PHY_TAG_WIDTH`（当前 P48 为 6 bit），`memIndex` 保持 7-bit 编码。
-任何外部完成或恢复请求在按 `robSlot(tag)`
-访问条目前都校验条目保存的完整 tag，避免复用槽被旧身份写入。
+最新SPEC §54：LSU(A)/事件资格及未知地址支配按软件统一，候选比最后未知项年轻
+且完整覆盖、数据就绪才转发；未知项在候选之后仍阻塞。22 suite三端严格全等、架构
+全正确，独立4993/323共30 suite、core12/12、五实际负向及四路/生命周期/RTL14通过。
+此前§53残余组已闭合，完整Cache/前端整核另验；命令和报告见sync/README §46。
 
----
+最新SPEC §53：LSU按(A)单源完整覆盖，旧多源拼接/部分返回合并删除。Load地址交付
+当拍查询旧SQ、拍末写LQ/下一拍CDB；StoreValue/Address通知同起点同宽度，批量
+更新全部匹配LQ。准入独立检查更老未提交Store未知地址或任何重叠。22 suite21/22
+三端逐拍一致、架构全正确，仅点②未知阻塞未统一。独立4818/323、core12/12、真
+Cache4/4、四路3648/590、生命周期及RTL14/14通过；软件/golden保持，README §45。
 
-## 2. 发射（Issue / Rename）
+最新§50把真实DCache/同步SRAM/行内存接入core整链，4正常程序和2真实负向通过。
+core.haltedOutput只完成HALT及SQ接受排空，接rv32_dmem_backend.drainInput，外层
+结束条件使用drainDoneOutput，确保最后已接受Store及dirty writeback真正完成。
+LSU冻结读token后原4499事件整链、四路3648及RTL14项保持。软件源码只读。
 
-`IssueArbiter` 的组合逻辑从 **IQ 头**解析一条指令，构造本周期发射决策：
+RTL来源/转发后端已按软件事件发生拍验收（SPEC §47）：Store两RS和Load RS经实际
+PRF唤醒、共享AGU交付，合格LQ项同拍末批量写结果、下一拍CDB；本拍CDB不会提前
+唤醒本拍依赖，新RS仍下拍参与。4031步323字段22 suite独立时钟参考一致，正常
+core四字节/偏移覆盖镜像、原14项和四路3648步三端回归通过。当前软件修复仍未闭合，
+不把RTL后端通过称为完整三端Cache/课程整核周期一致；入口sync/README §39。
 
-- **容量门控**：ROB/PRF 自由表/对应 RS 类别/LQ/SQ 同时有空位才发射；
-- **rename**：`allocDest` 时 PRF 分配新物理寄存器（`phy`），RAT 建立新映射，
-  旧映射记入 ROB 条目（`oldPhy`）供提交释放；
-- **操作数解析**：`Operand{tag, imm}`——立即数用 `tag == InvalidPhy` 编码，
-  寄存器操作数记录其当前物理标签；
-- **哨兵域**：`InvalidPhy = 0` 为全物理域唯一哨兵（P0 永不分配、永不映射）；
-  真实物理标签恒在 `1..PRF_CAP-1`；`x0` 恒 0、不参与 rename。
+SQ已按软件统一Store退休/缓冲/发送（SPEC §45）。LSU ready不等内存接受，实际ROB
+退休置committed，原SQ按独立FIFO发送、下游接受才释放；跨ROB回绕/恢复保留。
+commitMem载荷读取ROB目标SQ项，与发送更老Store独立；HALT提交停issue、SQ接受
+排空后才输出halted。SQ872步340字段三端/oracle一致，RTL14/14含真实整核来源/转发/
+恢复/HALT；两软件18＋6严格基线保持。下面阶段记录以§45更新为准。
 
-发射决策由各状态模块在周期边界**各自 apply**（写自有纪律）：RAT 改名 / PRF `pop`+LINK /
-ROB push / RS 占槽 / LQ/SQ push（访存指令）/ IQ pop。每周期**至多发射 1 条**
-（单口 rename + 单口 ROB push 的硬件约束）。
+LQ回收已统一实际ROB提交同拍（SPEC §44）。core把真实commitFireOutput/commit tag
+广播给LSU，LQ结果消费只置lqBroadcasted，提交才清valid；1432步816字段及RTL13项通过，
+非队首写回保留/旧提交恢复并发正确。Store提交接收耦合仍待共同定版。
 
-**M 扩展的分类落点**（`decodeOp`，`StaticArbiter.cpp`）：`funct3` **0..3** 归乘法族
-（`mul/mulh/mulhsu/mulhu`）→ 专用 `multiplyRS`；`funct3` **4..7** 归除法族
-（`div/divu/rem/remu`）→ 专用 `divideRS`。`tryAllocDivide()` 分配槽位，
-`p.divideRS.{op,src1,src2,robTag}` 填包。**两个单元各有一个专用保留站类别**，
-因此 M 扩展的发射不占用 Integer RS 的槽位。指令语义与除零/溢出规则以 RISC-V
-“M”扩展规范为准 [[4]](#back-ref-4)。
+第11步四路实际生产者联合写回已验收（SPEC §41）：实际ALU/MUL/DIV、Load RS/AGU/LSU
+返回共用PRF/ROB，3648步590字段四方一致，16种WB掩码覆盖；step162四WB/提交/issue、
+step163依赖。正常JALR解析后的给定恢复广播覆盖更老3路写回和四路年轻raw全部过滤。
+生产RTL未改，真实单PRF口负向仅在sync夹具。LSU消费释放与软件退休后释放差异由第12步定版。
 
----
+第10步DIV合同及返回后端已验收（公共SPEC §40）：三端结果消费同拍接收、flush仅取消
+严格年轻，边界及更老工作保留。边界结果flush无授权时保持，结果释放用实际输出握手或
+严格年轻取消；不能仅由raw outReady释放。模块55256步28字段及真实返回链5000步500字段
+四方一致。快速n+1 CDB，一般n+L+3/拍差3..19；RTL13/13通过，完整多生产者/整核联动另验。
 
-## 3. 物理寄存器与就绪模型
+第9步已统一三端MUL三级弹性合同（2026-10-08，公共SPEC §38）：软件MUL_CAP=1，
+partial/CSA/result均按有效位、flush年龄及真实下游消费递推准入，关闭级整体保持。
+RTL原弹性行为保持，内部组合信号统一为partialCanAcceptInner/CSACanAcceptInner/
+resultCanAcceptInner。模块2207步21字段全suite、真实返回链2302步508字段四方一致；
+n+3 CDB/n+4依赖派发。夹具可变outReady及给定合法ADD恢复边界，正式core专用MUL输出恒授权。
 
-- PRF 以**packed 循环序号**（`headSeq`/`tailSeq`）管理自由表，条目 `{value, ready}`。
-  序号为 `{1-bit epoch, bit_width(PRF_CAP-1)-bit index}`，槽位由
-  `prfSlot(seq) = seq & PRF_INDEX_MASK` 投影；index 仅使用 `0..PRF_CAP-1`，字段内更高编码
-  是永不分配的空洞。`prfSeqNext()` 在末槽翻转 epoch 并归零 index，2 的幂容量时精确
-  退化为 masked `seq+1`。`prfSeqDistance()` 以 index 差和 epoch 差对应的
-  `±PRF_CAP` 重建模 `2*PRF_CAP` 逻辑距离，避免空洞污染 checkpoint 过期检测；全程只有
-  移位/掩码/加减。checkpoint 保存**分配后的 canonical head**
-  （`allocDest ? prfSeqNext(head) : head`），恢复守卫为
-  `prfSeqDistance(ckptHead, tailSeq) <= PRF_CAP`。参数约束为 `PRF_CAP>REGISTER_CAP`、
-  `ROB_CAP<2*PRF_CAP` 且 `PRF_SEQ_WIDTH<=8`；
-- **保留站不缓存值**：就绪判定 `isOperandReady` 与取值 `getOperandValue` 直接
-  查询 PRF（或返回立即数）。依赖唤醒的延迟表现为：结果经 CDB 写入 PRF 的下一
-  拍，依赖它的保留站自然就绪——**总线数量不再是依赖链长度的上限**；
-- 提交时释放 `oldPhy` 回自由表（squash 时按 ROB 窗口重放，把未提交的分配重新推回环尾）。
-
----
-
-## 4. 派发与执行
-
-### 4.1 派发（Dispatch）
-
-`DispatchArbiter` 每个周期给每个执行单元**独立**选一个就绪候选
-（容量/接收门控 + 就绪 + 过 squash 门），五通道互不阻塞：ALU / MUL / DIV / AGU / BRU
-各一个派发载荷。访存指令的地址就绪由 AGU 执行，store 数据就绪由
-StoreValue RS 提供（见 [访存](memory.md) §2）。
-
-**DIV 通道的背压**（`StaticArbiter.cpp` 的 DIV 分支）：先问 `div.canAccept()`，
-再在 `divideRS` 里扫**最老**的就绪条目，选出后置 `dispatch.div.{rsIndex,robTag,rsType=Divide,valid}`；
-命中 squash 窗口则撤销。因为除法器是**单实例迭代单元**，`canAccept()` 为假时整条
-DIV 通道停发；MUL 则只检查自己的输出缓冲是否已满（见 §4.3）。
-
-### 4.2 执行单元总表
-
-| 单元 | 输入候选 | 结果保持 | 行为 |
-|------|----------|----------|------|
-| `ALU` | Integer RS 4 | 4 槽输出缓冲 | 算术/逻辑/移位；**JALR** 目标计算（`isControl` 载荷，经 aluCDB 供 FlushArbiter/BPU 消费） |
-| `MUL` | Multiply RS 2 | 3 级流水 + 4 槽输出缓冲 | RV32M 乘法族：radix-4 **Booth** 19 行部分积 → **3:2 CSA 压缩树**（17 cell）→ 最终全宽加法 [[5]](#back-ref-5)[[6]](#back-ref-6)[[7]](#back-ref-7)。**详见 §4.3** |
-| `DIV` | Divide RS 1 | 单个 `resultValid` 结果寄存器 | RV32M 除法族（`div/divu/rem/remu`）：**SRT radix-4** 数字递推，carry-save 冗余表示 + 常数法 QDS + on-the-fly 商转换 [[9]](#back-ref-9)[[10]](#back-ref-10)[[12]](#back-ref-12)[[13]](#back-ref-13)；**单实例、非流水**（三阶段 valid 归约拒绝新指令）。**详见 §4.4** |
-| `AGU` | Load RS 4 + StoreAddr RS 4 | 4 槽输出缓冲 | load/store 地址 = base+offset；最老有效结果为 store 时组合广播地址事件 |
-| `BRU` | Branch RS 4 | 4 槽输出缓冲 | 条件分支：最老有效 `BranchResult{pcFrom, pcResult, robTag}` 供误预测检测 |
-
-派发不是 FIFO：每个通道扫描相应 RS，按 `robTag` 选择**最老的就绪项**；AGU
-在 Load 与 StoreAddr 两池之间统一比较年龄。ALU/MUL/AGU/BRU 的 4 槽输出缓冲
-同样按 `robTag` 选最老有效结果，而不是按插入槽位或固定队首；DIV 只有一个结果
-寄存器。四路结果总线据此保证“每源每周期至多一个结果”。
-
-### 4.3 MUL 实现：radix-4 Booth + CSA pseudo-Wallace Tree
-
-本节的编码基础是 Booth 有符号乘法与 MacSorley 的 modified/radix-4 Booth
-重编码 [[5]](#back-ref-5)[[6]](#back-ref-6)；固定的 3:2 压缩网络属于
-Wallace-style CSA 树 [[7]](#back-ref-7)[[8]](#back-ref-8)，本文的 19→2 拓扑与流水级
-划分是项目实现，不宣称复现某一篇论文的门级树形。
-
-采用一条**三级流水线**实现 3-cycle 乘法：
+接口事实来源：[`verilog/rtl/core/`](../verilog/rtl/core/)、[`backend/`](../verilog/rtl/backend/) 与 [`execute/`](../verilog/rtl/execute/)。本文讨论现有 SystemVerilog 实现，结构体逐字段定义见 [package.md](package.md)；取指、访存队列和缓存分别见 [frontend.md](frontend.md)、[memory.md](memory.md)、[cache.md](cache.md)。
 
 ```
-第 1 级  calculateBooth(dispatch)      → 19 行部分积
-第 2 级  calculateSC(partialRes)       → (S, C)
-第 3 级  calculateMulRes(scRes)        → outputBuffer[slot]（结果 + robTag）
+IQ ──译码/单发射──► RAT + PRF + ROB + 七个 RS 池
+                     │              │
+                     └──► ALU / MUL / DIV / BRU / AGU──► 4 路写回及 BRU 完成
+                                     │                         │
+            按序 ROB 提交 ◄───────────┘        flush arbiter ──► ROB/RS/LSU/BPU 恢复
 ```
 
-周期更新只读各级的旧状态并同时前推。主树在 `tick()` 内逆序调用
-`calculateMulRes` → `calculateSC` → `calculateBooth`；模板树在 `work()` 中读取
-`Register` 旧值达到同样效果。空级会清 valid，避免气泡被误当作结果。
-`flush(tag)` 同时清 `partialRes/scRes` 的 valid 与 `outputBuffer` 中不早于 tag 的槽位。
+默认 ROB16/PRF48，RS七池：整数4、乘法2、除法1、分支4、Load4、StoreAddr4、StoreValue4，
+共23槽。Load/StoreAddr竞争一个AGU，StoreValue独立向LSU交付数据。输入按valid/ready
+握手，内部时钟上升沿、低有效复位；ROB tag5位、phy tag6位，保留恢复边界及更老项。
 
-**(a) 部分积的 19 行**（`PartialProductResult::partialProduct[19]`，全部 64 bit 全宽）：
+## 1. 集成边界：`rv32_core`
 
-| 行 | 内容 |
-|---|---|
-| `[0..15]` | `op2` 的 16 个 radix-4 Booth 数字行。3 bit 窗口 `y[2i+1],y[2i],y[2i-1]`，row 0 补 `y[-1]=0`；数字 `+1/+2/-1/-2/0` 分别取 `A` / `A<<1` / `~A` / `~(A<<1)` / 0，行内**左移 `2i`** 落位 |
-| `[16]` | `MULHU && signA` 时的无符号修正：`(uint32)op2 << 32` |
-| `[17]` | `(MULHU ‖ MULHSU) && signB` 时的修正：`(int64)op1 << 32` |
-| `[18]` | **稀疏 +1 补位行**：每个负数字行在列 `2i` 置 `1`，把该行的反码补成补码（经典 Booth neg bit） |
+`rv32_core`连接前端/预测器、RAT/PRF/ROB、七池RS、执行单元及LSU，参数RESET_PC=0。
+以下端口表适用于core；原cpu_top/cpu_cached_top已删除，student_top课程封装尚待实现。
+imem/dmem为32位处理器端口，Cache独立模块的512位行接口见缓存文档。
 
-> **全 64 bit 域运行 ⟹ 不需要"截断字段还款行"**：反码本身自带符号扩展，
-> `partialProduct[18]` 承担的那个 `+1` 就足以完成二补数转换。
-
-**(b) 3:2 CSA 与压缩树**（`csa3`）：
-
-```cpp
-// 3:2 compressor: sum = a^b^c, carry = majority(a,b,c) << 1
-r.sum = a ^ b ^ c;
-r.carry = ((a & b) | (a & c) | (b & c)) << 1;   // ← 括号必需：`|` 优先级低于 `<<`
-```
-
-压缩树 `19 → 13 → 9 → 6 → 4 → 3 → 2`，共 **17 个 `csa3`**（源码里命名为 a0–a5 / b0–b3 /
-c0–c2 / d0–d1 / e0 / f0），末级输出 `scRes.S / scRes.C`。
-
-**(c) 结果截断与写回**：`res = sc.S + sc.C`（全 64 bit 乘积，模 $2^{64}$）。
-- `MUL` → `(int32_t)res`（低 32 位）；
-- `MULH / MULHSU / MULHU` → `(int32_t)(res >> 32)`（高 32 位）。
-
-结果写入任一空闲 `outputBuffer` 槽（`slotValid[]` 标位），输出选择逻辑按
-**最老** robTag 取唯一的 mulCDB 写回候选；槽位本身没有 FIFO 次序。
-
-**(d) 为什么 MUL 不需要背压门控**：`MUL_CAP=4` $>$ 在飞指令数（3 级流水 $\le3$），
-且 `cdbOfMul` 每拍排空最老结果（被 squash 清掉的结果除外），故槽位永远够用 ——
-派发通道只需 `!mul.isFull()` 这一道门（`StaticArbiter.cpp` 的 MUL 分支），
-MUL 侧**不提供 `canAccept()`**。`calculateMulRes` 里那个
-`assert(best != -1 && "MUL slot overflow: MUL_CAP must exceed in-flight stages")`
-就是这条不变量的运行时守护：缓冲满了即代表派发跑得比总线排空快。
-**任何可能破坏该不变量的改动（缩 `MUL_CAP`、给流水加级），都必须先保留这条断言。**
-
-### 4.4 DIV 实现：SRT radix-4
-
-> **SSOT 边界**：本节与 §4.5 是 SRT 算法、位宽和参数的设计 SSOT；各树的
-> `src/DIV/DIV.cpp` 与 `src/include/DIV.hpp` 是可执行实现的源码 SSOT。主树用
-> `uint64_t` 保存 35/36-bit 中间量并在 `tick()` 更新，模板树受 32-bit `Register`
-> 上限约束而拆成 lo/hi 寄存器并在 `work()/sync()` 更新；两者实现同一递推和周期接口。
-
-#### 4.4.1 几何与参数
-
-SRT 数字递推、冗余商数字集与收敛区间的经典来源见 Robertson、Tocher 以及
-Ercegovac/Lang [[9]](#back-ref-9)[[10]](#back-ref-10)[[12]](#back-ref-12)；以下位宽、
-首拍奇偶处理、共享 ulp 判据与常数配置均是本项目针对 RV32M 的具体推导。
-
-递推 $W[j+1]=4\,W[j]-q_{j+1}D$，数字集 $q\in\{-2..2\}$，冗余因子
-
-$$\rho=\frac{a}{r-1}\Big|_{a=2,\,r=4}=\frac23,\qquad
-\text{不变式 } \lvert W[j]\rvert\le\rho D$$
-
-**重叠区 $(2\rho-1)D=D/3$ 是整个截断方案的容错预算**——落进去取哪个数字都对，
-这是"常数法 QDS 可行"的唯一来源。商数字数 $k=\lceil align/2\rceil+1$，满宽
-$align=31$ → **17 个商数字**。`prepare` 已产生 $q_1$，所以同构 `loop` 迭代次数是
-$k-1=\lceil align/2\rceil$；当 $align=0$ 时该次数确实为 0，但仍要经过前置、收尾
-和结果广播，不能把“0 次迭代”写成“0 周期延迟”。
-
-| 项 | 取值 |
-|---|---|
-| 基数 / 数字集 | $r=4$（每拍 2 bit），$q\in\{-2..2\}$，$a=2$ |
-| 冗余因子 / 重叠 | $\rho=2/3$；重叠宽 $D/3$ |
-| 拍数 | $k=\lceil align/2\rceil+1$；$align=\mathrm{clz}(d)-\mathrm{clz}(x)$ |
-| 首拍输入 | $P_1=X\cdot2^{-shiftD}$（$shiftD=align\&1$），由 $D_{\text{dp}}=D\ll shiftD$ 无损实现 |
-| 截断对象 | 只截 QDS 的**输入**（$P$、$D$）；$q$ 不截；**$W$ 递推通路绝不截** |
-| QDS 硬件 | 4 次 $\le9$ bit 比较，**无 ROM、无乘法、无除法** |
-| 全长进位传播 | **迭代环路 0 次**；后处理 1～2 次 |
-
-#### 4.4.2 三类位宽的辨析：$B_d$、$SW$、$PW$
-
-$$\boxed{B_d=\text{位宽}(D_{\text{dp}})=32+shiftD}\qquad SW=B_d+1\qquad PW=SW+2=B_d+3$$
-
-| 量 | 位宽 | 说明 |
+| 方向 | 端口 | 硬件意义 |
 |---|---|---|
-| $D=d\ll clzD$ | 恒 32 | 归一化后 bit31=1 |
-| $D_{\text{dp}}=D\ll shiftD$ | $\mathbf{B_d}$（32/33） | 数据通路实际使用的除数 |
-| $W=S+C$（**只在 $W$ 域，不进寄存器**） | $SW=B_d+1$ | $W$ 域的补码宽度，**不是任何寄存器的位宽** |
-| $P=4W$（**$(S,C)$ 实际持有的值**） | $\mathbf{PW=SW+2=B_d+3}$（35/36） | $P$ 域：左移 2 位 ⟹ 位宽 $+2$ |
+| 输入 | `clkInput`, `rstNInput` | 时钟、异步低有效复位；取指 PC 初始化为 `RESET_PC`。 |
+| 输出 / 输入 | `imemReqValidOutput`, `imemReqReadyInput` | 指令请求握手；同时成立时接受 `imemReqAddrOutput[31:0]` 的字节 PC。 |
+| 输出 | `imemReqAddrOutput[31:0]` | 本次取指的 PC。 |
+| 输入 / 输出 | `imemRspValidInput`, `imemRspDataInput[31:0]`, `imemRspReadyOutput` | 按接受顺序返回32位指令，ready表示真实FQ接收；受阻返回保持。 |
+| 输出 | `imemCacheRequestOutput: icache_cpu_request_input_t`, `imemFlushOutput` | 完整PC/预测PC/checkpoint请求直接接I$，逻辑取消接I$/IMEM；旧运输响应由适配器丢弃/排空。 |
+| 输出 / 输入 | `dmemReqValidOutput`, `dmemReqReadyInput` | load 或已提交 store 请求握手。 |
+| 输出 | `dmemReqWriteOutput`, `dmemReqAddrOutput[31:0]` | 读/写选择（1=store）与字节地址。 |
+| 输出 | `dmemReqWdataOutput[31:0]`, `dmemReqWstrbOutput[3:0]`, `dmemReqSizeOutput[1:0]` | store 数据、按地址起始字节排序的使能位、访问大小编码 `0/1/2=1/2/4B`。 |
+| 输入 | `dmemRspValidInput`, `dmemRspRdataInput[31:0]` | Load读取响应；Store退休只等地址/数据，不等待请求接受或写响应。 |
+| 输出 | `commitValidOutput`, `commitPcOutput[31:0]`, `commitInstrOutput[31:0]` | ROB 头**实际提交**的单条指令及其 PC/原始机器码。 |
+| 输出 | `commitRdValidOutput`, `commitRdOutput[4:0]`, `commitRdValueOutput[31:0]` | 本次提交是否更新非零架构寄存器；目的寄存器号和来自 PRF 的值。 |
+| 输出 | `commitMemValidOutput`, `commitMemAddrOutput[31:0]`, `commitMemDataOutput[31:0]`, `commitMemWstrbOutput[3:0]` | 本次实际退休Store的SQ目标载荷，来自storeRetirementOutput；不取同拍发送旧Store的内存请求。 |
+| 输出 | `haltedOutput`, `trapOutput` | HALT提交闩锁停issue，SQ写请求全部接受后输出halted；异常提交闩锁trap。复位清除。外层Cache另负责其排空。 |
 
-⚠️ $B_d$（数据通路除数位宽，整数）与 on-the-fly 的 $B$ 寄存器（商的第二副本）**撞名**，
-靠上下文区分。
+发射只有在IQ有效、ROB/目标RS/LSQ可分配且需要时PRF有空闲才发生。四路写回对应
+ALU/Load/MUL/DIV，BRU和SQ就绪只占ROB完成口。Store的commitReady受LSU目标就绪
+门控，不再受dmemReady门控；提交和发送可同拍，也可在背压下先提交后发送。
 
-$dSlice$ 取 $D_{\text{dp}}$ 的前导 1 及其后 4 位：$dSlice=(D_{\text{dp}}\gg(B_d-5))\ \&\ 31$，
-**恒在 $[16,31]$**（5 bit 最高位必为 1），整次除法不变。相对误差 $<1/16$。
+## 2. 重命名状态：`rv32_rat` / `rv32_prf`
 
-> 🟢 **移位量其实可以写死**：恒等式 $(D\ll shiftD)\gg(27+shiftD)=D\gg27$（低 $shiftD$ 位恒 0，
-> 右移无损），故**在归一化 $D$ 上取 $dSlice$ 时移位量恒为 27**，与 $shiftD$ 无关（实测
-> 156,513 组逐组一致）。必须随 $shiftD$ 变的是 $estP$ 的 ulp 与切片位置，不是 $dSlice$。
-> 但若把 $D_{\text{dp}}$ 上的移位量写死 27（`Ddp >> 27`）则错 76,828 组。
+第4步基础重命名/提交/恢复域已与两软件树按FIFO策略对齐：三端与独立oracle
+1293步/2586点、420字段全部一致，包含48项自由队列顺序和全部32个ROB tag查询。
+RTL容量/集成10/10通过；STORE/LINK/HALT及异常的专门三端刺激按后续步骤扩展。
 
-> 🔴 **常见错误：把 $B_d$ 写死成 32**。$shiftD=1$ 时判据整体偏移一位 = 把除数看小一半，
-> **结构性后果 = $shiftD{=}1$ 档必错**：最小反例 $7\div2$ 的 $dSlice$ 由 16 塌成 **0**，
-> 判据退化成"永远选 $+2$"。
+### `rv32_rat`
 
-#### 4.4.3 首拍奇偶：$2^{-shiftD}$ 往哪放
+源码：[`rv32_rat.sv`](../verilog/rtl/backend/rv32_rat.sv)。组合读映射；有投机映射 `mapInner` 和提交映射 `archInner`。
 
-数字权重是 **4 的幂**，而商的二进制标度 $2^{align}$ **只有 $align$ 偶时才是 4 的幂**；
-$align$ 奇时必然多出一个因子 $2^{-1}$，总得落到别处——**这不是精度问题，是整除对齐问题**
-（实测 $align=0..31$ 逐个核对 $2^{align+shiftD}=4^{k-1}$，**32/32 成立**）。
-
-$$\frac{2^{align}}{4^{k-1}}=2^{-shiftD}\quad\Longrightarrow\quad \boxed{P_1=X\cdot2^{-shiftD}}$$
-
-三个可落位置（同一套 CSA/截断 QDS/on-the-fly，只改这一个变量）：
-
-| 变体 | 落点 | 实现 | 位宽 | 实测 |
-|---|---|---|---|---|
-| **V0（定稿）** | **分母** | $D_{\text{dp}}=D\ll shiftD$，$P_1=X$ | $B_d=33$，$PW=36$ | ✅ **0 错**（仅 +1 bit 宽度，零额外逻辑） |
-| V1 | 分子 | $P_1=X\gg shiftD$ | $B_d=32$ | ✗ 只错在"$shiftD{=}1$ 且 $X$ 为奇"档（偶 $X$ 时逐拍同构） |
-| V2 | 输出（裸） | 照 $shiftD=0$ 走，末了 $\gg shiftD$ | $B_d=32$ | ✗ 商 0 错、余数在"绕圈"档必错 |
-| V2b | 输出（补救） | 再把 $(R\&1)\cdot D$ 补进余数 | 同上 | ✅ 0 错，但多一个 32 bit 加法 |
-| V3 | 都不放 | 数据通路照 $shiftD=0$ | $B_d=32$ | ✗ $shiftD{=}1$ 档 **100%** 错 |
-
-> V0 是**唯一"零额外硬件"的精确解**——代价只有 $B_d=32+shiftD$ 这 1 bit 位宽。
-
-**"都不放 + 末了把商 >>1"行不行？商行、余数不行。** 都不放 ≠ 结果整体 ×2，而是
-**被除数被换成了 $2x$**：整条通路实际在做 $2^{shiftD}x/d$（实测恒等式 156,513 组 0 例外）。
-余数是**取模**，翻倍之后会**绕圈**：$(2x)\bmod d=2\,\mathrm{rem}-d\cdot[2\,\mathrm{rem}\ge d]$
-⟹ $2\mathrm{rem}<d$ 档 `R>>1` 恰好还原（0 错），$2\mathrm{rem}\ge d$ 档**必错**（偏差恒 $\lceil d/2\rceil$）。
-最小反例 **$5\div2$**：通路算 $10\div2$ → 商 5、**余数 0**（翻倍把余数"吃"掉了）；
-`>>1` 后商 $2$ ✓、余数 $0$ ✗（真余数 1）。补救 = $\mathrm{rem}=(R_{\text{naive}}+[Q_{\text{naive}}\&1]\cdot d)\gg1$，
-实测 0 错，但那是**一个 32 bit 条件加法器**，比 V0 的 1 bit 位宽贵得多。
-
-**首拍不左移**（先减后移）：两种奇偶下 $P_1/D\subset(-8/3,8/3)$，**同一套判据直接吃下**。
-
-#### 4.4.4 QDS：常数法 + 共享 ulp
-
-截断部分余数/除数进行高基数商数字选择的理论背景见 Atkins 与
-Ercegovac/Lang [[11]](#back-ref-11)[[12]](#back-ref-12)。本节的 5-bit `dSlice`、
-9-bit `estBits` 和四比较器常数法是项目穷举后冻结的实例。
-
-不想比较 $P$ 与 $(q-\rho)D$（ρ 是分数，要乘法器），改为判 $P$ vs $mid_kD$，窗口
-$mid_k\in[k-\rho,\ k-1+\rho]$，**窗口宽 = 重叠宽**。取中点 $mid_k=k-\frac12$（与 $\rho$ 无关、
-离两端最远、唯一最优），判据退化为四舍五入：
-
-$$q_{j+1}=\mathrm{clamp}\big(\mathrm{round}_{\frac12}(P/D),-a,+a\big)\iff 2P\ \text{vs}\ (2k-1)D$$
-
-radix-4 只需 $D,3D$ 两个奇倍数 ⟹ **4 次比较**。
-
-**共享 ulp 判据**：让 $estP$ 与 $dSlice$ 共用同一个 ulp $=2^{\,B_d-5}$，判据**恒为**
-$2\,estP$ vs $\pm dSlice,\pm3\,dSlice$：
-
-| 条件 | $q$ |
-|---|---|
-| $2\,estP\ge\ \ 3\,dSlice$ | $+2$ |
-| $2\,estP\ge\ \ \ \ dSlice$ | $+1$ |
-| $2\,estP\ge-dSlice$ | $0$ |
-| $2\,estP\ge-3\,dSlice$ | $-1$ |
-| else | $-2$ |
-
-```cpp
-// DIV 单元内部 —— 不得出现 * / %
-const int  Bd = 32 + shiftD;                      // 运行时决定（每条指令不同）
-constexpr int bitsD = 5;                          // D 参与 QDS 的位宽（设计常量）
-constexpr int estBits = 9;                        // 估计保留位数（定稿 9；穷举下界 8）
-constexpr int estPShift = estBits - bitsD - 3;    // 定稿 = +1，即 estP = slice >> 1
-u32 dSlice = (Ddp >> (Bd - 5)) & 0x1Fu;           // 5 bit，第 0 拍算一次，整次除法不变
-
-// 每拍（寄存器装的是 P=4W：恒按 P 域 PW-estBits 切，没有首拍例外、没有域切换）
-u32 Ah = (S >> (PW - estBits)) & ((1u << estBits) - 1);
-u32 Bh = (C >> (PW - estBits)) & ((1u << estBits) - 1);
-i32 estP  = (estPShift >= 0) ? (i32)(fold(Ah + Bh, estBits) >> estPShift)
-                             : (i32)(fold(Ah + Bh, estBits) << (-estPShift));
-i32 L  = estP << 1, T3 = dSlice + (dSlice << 1);
-int q  = (L >= T3) ? 2 : (L >= (i32)dSlice) ? 1
-       : (L >= -(i32)dSlice) ? 0 : (L >= -T3) ? -1 : -2;
-```
-
-**为什么"共享"是正确性而非余量**：$2P\gtrless(2k-1)D$ 是**比值**判据，两端必须同除
-**同一个**数。若刻度差 $\lambda$，整条判据的阈值被乘 $\lambda$，等效于把除数读成 $D/\lambda$
-——实测 $\lambda=2$ 时 $q$ 非法占比 **49.3%**、$\lambda=4$ 时 75.2%，只有 $\lambda=1$ 是 **0%**。
-（结构性结论：非法 $v=P/D$ 区间在 $\lambda=2$ 时是 $\pm(\frac23,1)\cup\pm(\frac53,\frac83]$；
-百分比是分布相关的，引用必须带采样描述。）
-
-**为什么刻度挂在 $B_d$ 上**：归一化保证 $D_{\text{dp}}$ 的 MSB 恒在 bit $B_d-1$，右移 $B_d-5$
-恰好剩 5 位且 MSB=1 ⟹ $dSlice\in[16,31]$ **与 $shiftD$ 无关**。只共享、不挂 $B_d$
-（两边都钉 $2^{27}$）判据仍精确，但 $shiftD{=}1$ 档量程整体翻倍 ⟹ 比较器要写两套系数，
-正是"Pentium 类漏格"的温床。
-
-**一次拿三样**：判据一套（与首拍奇偶解耦）、位宽一套（$dSlice$ 恒 5 bit、$3dSlice$ 恒 6 bit、
-$estP$ 恒 8 bit signed、4 次 $\le9$ bit 比较）、余量分析一次。**代价 0 条额外的线**
-（随 $shiftD$ 动的只有切片位置，一根 1 bit 选择线，而 $shiftD$ 本来就要算）。
-
-#### 4.4.5 每拍成本
-
-| 项 | 结论 |
-|---|---|
-| **加法** | 必有——$estBits+1$ 位估计加法器，是 CSA 的伴随成本。实测约 **42% 的迭代真的溢出 $estBits$ 位**，那个 `& ((1<<estBits)-1)` 不是摆设 |
-| **可变移位** | **不存在**。$shiftD$ 进循环前算一次、迭代里只读不写 ⟹ 一次性 MUX（随 $shiftD$ 变的只有切片起始位，差 1 位） |
-| **$estP$ 的右移** | **可以完全消掉**。$2\lfloor slice/2^{estPShift}\rfloor\ge T\iff slice\ge2^{estPShift}\lceil T/2\rceil$，右边全是编译期常量 ⟹ 阈值预乘即可（端到端 0/20,408 差异） |
-
-> ⚠️ $\lceil T/2\rceil$ 对 $\pm T$ **不对称**（$dSlice=31$ 时 $\lceil31/2\rceil=16$ 而
-> $\lceil-31/2\rceil=-15$），负阈值必须单独算；写成 $-2^{estPShift}\lceil|T|/2\rceil$ 会系统性错一格。
->
-> ⚠️ $shiftD$ **不能每拍重算**：迭代中 $|P|\le\frac83D_{\text{dp}}>D_{\text{dp}}$，$\mathrm{clz}(P)$ 会漂，
-> 重算等于丢归一化 —— 这正是它必须锁存的原因。
->
-> ⚠️ **切片必须两套**。把切片位置写死成 $shiftD=0$ 那套：$shiftD=1$ 档 7,697/10,038 组
-> （76.7%）端到端错，而 $shiftD=0$ 档 0/10,241。
-
-**每拍关键路径** = 9 bit 估计加法器 + 9 bit 比较 + MUX + 1 级 CSA，**$O(1)$，与操作数位宽无关**。
-
-#### 4.4.6 迭代体：自足伪代码（口径 = 实现）
-
-命名规则：**代码名照搬公式符号**（$B_d\to$`Bd`、$D_{\text{dp}}\to$`Ddp`、$P_1\to$`P1`）。
-`DIV.cpp` 的 `prepare + loopTimes=(align+1)>>1` 即此口径。
-
-```cpp
-// ── 阶段 0：算法前置（每条除法一次；实现中由 receive/prepare 锁存）────
-x = |x0|;  d = |d0|                          // 取幅值；符号留到阶段 2
-clzX = clz(x);  clzD = clz(d);  align = clzD - clzX;  shiftD = align & 1
-k   = ((align + 1) >> 1) + 1                     // 总拍数 = ⌈align/2⌉+1
-Bd  = 32 + shiftD;  PW = Bd + 3                   // 位宽；SW 仅文档标签，不进代码
-D   = d << clzD                                 // 归一化除数（恒有 D[31] = 1）
-Ddp = D << shiftD                                 // 数据通路除数 = 2^shiftD·D
-P1  = x << clzX                                 // 首拍入口 = X，**不右移**（先减后移）
-dSlice   = (Ddp >> (Bd - 5)) & 31                 // 5 bit ∈[16,31]，整条除法不变
-MASK  = (1ull << PW) - 1                     // CSA 回卷掩码（PW 位，硬下界）
-fold(value, width) = ((value >> (width-1)) & 1) ? (value & ((1ull<<width)-1)) - (1ull<<width)
-                                        : (value & ((1ull<<width)-1))
-                                             // **先取模、再折叠**（width 位补码 → 有符号）
-
-// ── 阶段 0 尾：吃掉 q₁，并把 (S,C) 种成 P₂（寄存器持 P = 4W）──────────
-slice = fold(P1 >> (PW - estBits), estBits);  estP = slice >> 1     // 切片位与迭代拍**同一个**
-L  = estP << 1;  T3 = dSlice + (dSlice << 1)     // 2·estP 与 3·dSlice，纯移位
-q = (L >= T3) ? +2 : (L >= dSlice) ? +1 : (L >= -dSlice) ? 0 : (L >= -T3) ? -1 : -2
-qd = |q| * Ddp                               // q₁·Ddp ∈ {0, Ddp, 2Ddp}
-S  = (q == 0) ? (P1 << 2) & MASK
-              : ((P1 ^ ~qd ^ 1) << 2) & MASK // a-b = a + ~b + 1；+1 折在移位**之前**
-C  = (q == 0) ? 0
-              : (((P1 & ~qd) | (P1 & 1) | (~qd & 1)) << 3) & MASK
-q > 0 : A = q     ;  B = q - 1               // on-the-fly 自 q₁ 起步
-q = 0 : A = 0     ;  B = 3
-q < 0 : A = 4 + q ;  B = 3 + q               // 本方案 q₁ ≥ 0，此行不可达
-// 至此 S + C = 4(P₁ − q₁·D_dp) = P₂ —— 那个 ×4 就是"寄存器持 P"的全部后果
-
-// ── 阶段 1：迭代（k-1 = ⌈align/2⌉ 拍；**每拍完全同构，没有首拍特例**）──────
-for j = 2 .. k:
-  // ① 估计：寄存器本来就是 P，切片恒取 PW-estBits —— **全流程不存在域切换**
-  slice = fold((S >> (PW - estBits)) + (C >> (PW - estBits)), estBits)   // 兼做进位丢弃
-  estP = slice >> 1                                       // estPShift = estBits-bitsD-3 = 1
-  // ② 判决：4 次 ≤9 bit 比较，无 ROM、无乘法
-  L  = estP << 1;  T3 = dSlice + (dSlice << 1)
-  q = (L >= T3) ? +2 : (L >= dSlice) ? +1 : (L >= -dSlice) ? 0 : (L >= -T3) ? -1 : -2
-  // ③ 递推：一级 3:2 CSA；**减数带全局 4 倍**（P = 4W 的直接后果）
-  qd = |q| * (Ddp << 2)                            // {0, 4D_dp, 8D_dp}：纯移位 + MUX
-  S4 = (S << 2) & MASK;  C4 = (C << 2) & MASK      // 每拍都左移 2 位（首拍也不例外）
-  T  = (q > 0) ? (MASK ^ qd) : qd                  // 负数取补；+1 走 C 的 bit0
-  S  = (S4 ^ C4 ^ T) & MASK
-  C  = (((S4 & C4) | (S4 & T) | (C4 & T)) << 1 | (q > 0)) & MASK
-  // ④ 转换（与 ③ 并行）：三段拼接，字段恒 ∈[0,3]
-  q > 0 : A' = (A<<2) + q      ;  B' = (A<<2) + (q-1)
-  q = 0 : A' = (A<<2)          ;  B' = (B<<2) + 3     // 双特殊：源换 B、字段取 3
-  q < 0 : A' = (B<<2) + (4+q)  ;  B' = (B<<2) + (3+q)
-
-// ── 阶段 2：收尾（迭代环路 0 次全长 CPA；本阶段 1～2 次）────────────
-Pk = fold(S + C, PW)                             // = 4·W[k]；第 1 次全长进位传播
-(Q, R) = (Pk >= 0) ? (A, Pk) : (B, Pk + (Ddp << 2))   // 商余必须配套修正
-rem = ((R >> 2) >> shiftD) >> clzD                       // 先把 P 域的 /4 折回来，再对阶
-```
-
-**位宽与类型速查**（照抄用；两个掩码职责不同，见 §4.6 陷阱二）：
-
-| 代号 | 位宽 · 类型 | 纪律 |
+| 方向 | 端口 | 含义 |
 |---|---|---|
-| `S, C, S4, C4, T` | $PW$（35/36）· `u64`（**须 $\ge PW$**） | **寄存器持 $P=4W$**；每拍 `& MASK` 回卷；$(S,C)$ 只在模 $2^{PW}$ 下有定义 |
-| `MASK`（回卷） | $PW$ 位，$2^{PW}-1$ | **硬下界 = $PW$，一位不能少**（临界值恰为 $PW$，与 $SW$ 无关） |
-| `slice` | $estBits$ · `u32` | `fold(slice, estBits)` **内含取模** ⟹ 进位自然丢弃（陷阱二） |
-| `estP` | 8 有符号 · `i32` | 域内 $\lvert estP\rvert\le86$；定稿 `estP = slice >> 1` |
-| `q` | 3 有符号 | $\{+2,+1,0,-1,-2\}$ |
-| `dSlice` / `3dSlice` | 5 / 6 · `u32` | 与有符号的 $2\,estP$ 比较前须显式同号 |
-| `A, B` | $\le32$ · `u32` | on-the-fly 从高位往低位构造，中间值不超最终商 |
-| `S` 的切片 | — | **在 P 域切**：恒取 $S\gg(PW-estBits)$；按 $SW-estBits$ 切则 $slice$ 读数整体 ×4（陷阱一） |
-| `qd` | $PW{+}2$ · `u64` | 迭代拍 $\lvert q\rvert\cdot4D_{\text{dp}}\in\{0,4D_{\text{dp}},8D_{\text{dp}}\}$；$q>0$ 时取 `MASK ^ qd` |
+| 输入 | `clkInput`, `rstNInput` | 状态时钟/复位；复位后架构号映射到相同物理号。 |
+| 输入 / 输出 | `readInput: rat_read_input_t`, `readOutput: rat_read_output_t` | 两个源架构寄存器 → 对应物理标签；`x0` 强制返回 0。额外debug读口已清理。 |
+| 输入 / 输出 | `renameInput: rat_rename_input_t`, `renameOutput: rat_rename_output_t` | `valid` 时为 `architecturalRegister` 建立 `physicalRegister` 映射；组合返回被覆盖的旧物理标签供 ROB 记录。 |
+| 输入 | `restoreInput: rat_restore_input_t`, `replayInput[ROB_ENTRIES]: rob_replay_entry_t` | `squashTag/headTag` 指定存活窗口；以提交映射为起点重放 ROB 中到边界为止的改名。 |
+| 输入 | `commitInput: rat_commit_input_t` | 提交时更新架构态映射。 |
 
-**CSA 的两处实现要点**：
+### `rv32_prf`
 
-- **负号的 `+1` 由 `cin` 承担，不需要减法器**：硬件做 $S_4+C_4+(\overline{qd}+1)$，$qd$ 全是
-  移位 + MUX（$q<0$ 直接给正的 $qd$，**不取反**）。那个 $+1$ 写成 **`cin` 塞进 $C$ 的 bit0**
-  最省：进位项左移一位后 $C[0]$ 恒为 0，往 bit0 写 1 就是精确 $+1$；`cin = [q>0]` 顺带
-  把正负两分支合成一条通路。
-- ⚠️ **阶段 0 的种子走另一条等价路径，别把两处 `+1` 互换**：种子把 $+1$ 折在**移位之前**
-  （`(P1 ^ ~qd ^ 1) << 2`，因为 $P_1=X$ 本身可以是奇数）；迭代拍才用 `cin` 写法。
-  两条路径实测逐组一致（0/20,279 差异）。
-- $q=0$ 时喂真 0；喂 $\overline{0}$ 在模 $2^{PW}$ 下同样等价，只是白走一趟巨量抵消，**无收益**。
+源码：[`rv32_prf.sv`](../verilog/rtl/backend/rv32_prf.sv)。参数 `PRF_DEPTH=48`、`ROB_DEPTH=16`；从**FIFO自由队列队首**选物理号，0不分配，三组合读口、四写回口。
 
-#### 4.4.7 on-the-fly 商转换（`A`/`B` 双寄存器）
+复位时队列为P32..P47；7-bit epoch+slot序号在物理槽47后翻转epoch并回到槽0，
+跳过48..63的填充编码。freeCount由实际48槽环的距离派生。成员集合仅在非综合
+时钟断言内局部推导，不保留组合观察bitmap。分配读取旧队首，本拍新回收项
+下一拍参与分配。squash阻止分配，并按ROB年龄从旧到新追加边界之后的newPhy；
+同拍提交释放的oldPhy最后追加。P0、重复释放、越界及队列溢出由仿真断言检查。
 
-on-the-fly 冗余商转换的通用方法见 Ercegovac/Lang [[13]](#back-ref-13)。本实现维护
-$A[j]=Q[j]$、$B[j]=Q[j]-1\,\mathrm{ulp}$，避免末拍全长减法（radix-4 每拍拼 2 bit）：
-
-$$A[j{+}1]=\begin{cases}(A[j],\,q) & q\ge0\\ (B[j],\,r-|q|) & q<0\end{cases}\qquad
-B[j+1]=\begin{cases}(A[j],\,q-1) & q>0\\ (B[j],\,r-1-|q|) & q\le0\end{cases}$$
-
-- **初值 $A[0]=B[0]=0$ 合法**：归一化后 $x,d>0\Rightarrow q_1\ge0$，故 $A$ 的推进在首拍不依赖 $B$。
-  ⚠️ **但不变式 $A=B+1$ 并非从 $j=1$ 起成立**：$align$ 奇且 $X<D$ 时 $q_1=0$
-  （均匀 32 bit 下约占 $shiftD{=}1$ 样本的一半），此时 $A=0,\ B=(B_0\ll2)+3=3$，$A-B=-3$。
-  该无效 $B$ 不会被读——**首零之后的首个非零数字必为正**，由 $q>0$ 分支从 $A$ 重建 $B$。
-  正确表述是"**从首个非零商数字之后**成立"；**不能每拍断言 $A=B+1$**。
-- **末拍判一次符号即可**：$|Q-Q[k]|=|W[k]|/D\le\rho<1$，故只有取 $A$ 或 $B=A-1$ 两种可能。
-- **拼接的安全边界**：正确表的字段恒在 $[0,3]$（此时位拼 `|` 与算术 `+` 逐位等价），
-  会炸的只有"把 $q=0$ 并进 $q>0$ 分支"那种写法。
-
-**正确的 5 行 (源, 字段) 表**：
-
-| $q$ | A 的源 | A 字段 | B 的源 | B 字段 |
-|---|---|---|---|---|
-| $+2$ | A | 2 | A | 1 |
-| $+1$ | A | 1 | A | 0 |
-| $\mathbf{0}$ | A | 0 | **B** | **3** |
-| $-1$ | B | 3 | B | 2 |
-| $-2$ | B | 2 | B | 1 |
-
-表内负字段数 = **0**。"源 MUX"（A 侧 $q\ge0$ 用 A、$q<0$ 用 B；B 侧分界是 $q>0$）与
-"字段"两件事各自独立；$q=0$ 那行是"双特殊"，也正是"$B=A-1$"这条**算术**恒等式
-不能当**位操作**用的地方。
-
-**推荐写法（分支自由，逐位恒等，状态级穷举 24,500 状态不等 = 0）**：
-
-```c
-u32 oldA = A, oldB = B;                     // 两条并行读旧值
-A = ((q >= 0 ? oldA : oldB) << 2) | (q & 3);
-B = ((q >  0 ? oldA : oldB) << 2) | ((q - 1) & 3);
-```
-
-**这不是"碰巧对"**：① 源选择是阶跃函数；② 字段也是函数——表内 `4+q`/`3+q` 两列与
-`q&3`/`(q-1)&3` **逐行相同（5/5）**，`&3` 不是给负字段打的补丁，而是把三个分支里手算的
-规约统一写成 `mod 4`；③ 字段 $\in[0,3]\Rightarrow$ `|` ≡ `+`。再抽象一层只有一句话：
-
-$$\boxed{A' = 4A + q\ (\text{数字串拼接}),\qquad B' = A'-1\ (\text{悲观候选})}$$
-
-**10 种写法的对拍**（11,911 组）：
-
-| 写法 | 错例 | 首个反例 |
+| 方向 | 端口 | 含义 |
 |---|---|---|
-| 3 分支 + `+` / 3 分支 + `\|` / **分支自由 + `&3`（推荐）** / A 走带符号加 | **0** | — |
-| 同样合并但用 `+` | 0 | 靠恒等式侥幸（首拍无效 $B$ 无人读），**不要依赖** |
-| $q{=}0$ 并进 $q{\ge}0$ 分支 + `\|`($q{-}1$) | **5,252** | $1000\div7$ → `0xFFFFFFFE` |
-| 只省 A 侧 MUX / 只省 B 侧 MUX / 两侧都省 | **9,502 / 7,081 / 10,093** | $1000\div7$ |
-| 把 $B$ **寄存器**当字段拼进 A | **11,623** | $1000\div7$（97.6% 错） |
+| 输入 | `clkInput`, `rstNInput` | 值/就绪/FIFO自由队列的时钟和异步复位。 |
+| 输入 / 输出 | `allocationInput: prf_allocation_input_t`, `allocReadyOutput`, `allocPhyOutput: phy_tag_t` | `valid` 消耗当前可分配物理号；`valueValid/value` 允许跳转链接值在分配时即就绪；恢复时 `allocReady=0`。 |
+| 输入 | `freeInput: prf_free_input_t` | ROB 提交后释放旧物理标签（0 不释放）。 |
+| 输入 | `restoreInput: prf_restore_input_t`, `restoreCountInput[$clog2(ROB_DEPTH+1)-1:0]`, `replayInput[ROB_DEPTH]: rob_replay_entry_t` | 冲刷时从有界存活 ROB 窗口找出年轻项的新物理号回收，不回收边界本身。 |
+| 输入 / 输出 | `readInput[3]: prf_read_input_t`, `readOutput[3]: prf_read_output_t` | 每个端口给物理号、组合返回 `ready/value`；物理 0 恒就绪且值为零。 |
+| 输入 | `writebackInput[4]: cdb_result_t` | 4 路有效广播写入数据并置就绪；core 对失效/错路结果先做认证与门控。 |
+| 输出 | `readyVectorOutput[PRF_DEPTH-1:0]`, `freeCountOutput[$clog2(PRF_DEPTH+1)-1:0]` | 每个物理寄存器就绪位及当前空闲数。 |
 
-> **两道 source MUX 都不冗余**：$q=0$ 是唯一"两个源不同"的行，占全部商数字的 **23.4%**。
-> 另：$A$、$B$ 全程最小值均为 **0**（无需符号处理）；"首个非零商数字之后 $B=A-1$"
-> 11,911/11,911 成立。
-> 最小复现是 **$11\div3$**（数字 $[+1,0]$）：第 2 拍 $B$ 被写成 `0xFFFFFFFF`，末拍取 $B$
-> ⇒ 商 $-1$。**不是 $7\div2$**——后者的数字序列 $[+1,-1]$ 不含 $q=0$，对该陷阱免疫。
+## 3. ROB：`rv32_rob`
 
-#### 4.4.8 非流水模型与延迟
+源码：[`rv32_rob.sv`](../verilog/rtl/backend/rv32_rob.sv)，参数 `DEPTH=16`。按序提交的持久条目保存原始指令、PC、新旧物理目的、store 槽、异常、预测 PC 和检查点等；只有头项完成才能提交。下表 `数组[数量]` 表示该模块端口一次接收/输出的 packed 数组元素数。
 
-| 层次 | 能否流水 | 原因 |
+| 方向 | 端口 | 含义 |
 |---|---|---|
-| 单条除法内部 | 不能按普通前馈流水重叠 | $W[j+1]$ 依赖 $W[j]$，存在环路携带依赖；可用展开、重定时或切分 QDS/CSA 提频 |
-| 多条除法之间 | 可交错或复制上下文 | 需要保存每条指令私有的余数、`dSlice` 与迭代状态；本项目未实现 |
-| 除法 vs 乘法 | 乘法天然可流水 | 乘法是单向 DAG，除法是反馈环 |
+| 输入 | `clkInput`, `rstNInput` | 状态时钟和异步低有效复位。 |
+| 输入 / 输出 | `allocInput: rob_allocation_input_t`, `allocReadyOutput`, `allocTagOutput: rob_tag_t` | 分配整条 ROB 元数据，`valid && allocReady` 写入尾项；输出将分配的完整循环标签。 |
+| 输入 | `completionInput[6]: rob_completion_t` | 普通完整tag完成事件；core依次为ALU、load、MUL、DIV、BRU、零。异常仍只接受0/4号口。 |
+| 输入 | `storeReadyInput: store_completion_output_t` | `readyMask/epochMask`批量Store完成；按公共tag完整slot索引，验证旧有效Store和epoch，flush仅严格更老。 |
+| 输入 | `flushInput: rob_flush_input_t` | 清除严格年轻条目，尾指针回到边界后一项；边界保留，同时更老头项可提交。 |
+| 输入 / 输出 | `lookupInput[5]: rob_lookup_input_t`, `lookupOutput[5]: rob_lookup_output_t` | 根据完整 tag 查存活身份；前两路还输出 PC、预测 PC、checkpoint、return 标记用于控制流解析，所有路的 `valid` 均做完整 tag 匹配。 |
+| 输出 | `commitOutput: rob_commit_output_t`, `commitStoreOutput` | 就绪的 ROB 头元数据、是否 store；头项未完成时 `commitOutput.valid=0`。 |
+| 输入 / 输出 | `commitReadyInput`, `commitFireOutput` | 提交握手 `commitOutput.valid && commitReadyInput`；store 由 LSU 请求 ready 门控。 |
+| 输出 | `statusOutput: rob_status_output_t`, `countOutput[$clog2(DEPTH+1)-1:0]` | 空/满/头标签和有效条目数。 |
+| 输出 | `replayOutput[DEPTH]: rob_replay_entry_t` | 按当前 head 顺序读取整个窗口，供 RAT/PRF/RAS 恢复；消费侧须按存活计数和 tag 验证。 |
 
-- `canAccept(){return !(prepareValid || loopValid || fullAdderValid) && !resultValid;}`——三个阶段任一在算、或结果还没广播出去，都得拒；独立 `busy` 状态已由三阶段 valid 的 OR 精确替代；
-- 一般路径从派发到 divCDB 的延迟为 $3+k$；满宽 $k=17$ → **20 周期**。
-  其中 `prepare` 产生 $q_1$，`loop()` 只运行 $k-1$ 次；$align=0$ 的一般路径因此
-  是 **0 次 `loop()`**，但不是 0-cycle；
-- RISC-V 特判路径在 `receive()` 直接锁存 `resultValid`，绕过 `prepare/loop/calculateResult`，
-  即 **0 次 SRT 迭代**；结果仍须跨周期变为可见并经 divCDB 广播，也不是组合零延迟；
-- 对照 MUL：乘法器是流水线 + 4 槽输出缓冲，派发只需 `!isFull()` 一道门，
-  **MUL 侧无 `canAccept()`**（§4.3(d)）；DIV 则必须反过来用三阶段 valid 归约与 `resultValid`
-  双门控——这是两者在派发准入上的差异，也是 `DispatchArbiter` 里 MUL 走 `isFull()`、
-  DIV 走 `canAccept()` 的原因；
-- 无输出缓冲（不像 MUL 有 `outputBuffer[MUL_CAP]`），结果靠 `resultValid` 单发。
+## 4. 保留站：`rv32_rs`
 
-SRT 可把 QDS 与 CSA 切级、展开多拍或交错多条指令；是否值得取决于综合关键路径、面积和
-目标负载的动态除法占比。本项目选择最小面积的单上下文迭代实现，不把该取舍泛化为通用结论。
+第5步flush策略已按用户决定统一：严格更老且已就绪者在执行端ready时可派发，
+边界保留但不派发、年轻者取消，新分配禁止；flush时接受的槽同样释放。1131步/
+2262点Integer三端正常操作数/flush域通过。执行端ALU/MUL/DIV/BRU同时捕获更老
+输入，受阻更老输出保留；core AGU/StoreValue按年龄放行，LSU接收更老地址/数据。
+真实RS→ALU及执行端/LSU恢复接收测试、RTL11/11通过，见sync/README.md第17节。
 
-#### 4.4.9 定稿配置卡
+源码：[`rv32_rs.sv`](../verilog/rtl/backend/rv32_rs.sv)。core实例化七份并按公共包容量配置。
+RTL保存源值/ready；写回拍捕获、下一拍可派发，不提供广播拍依赖派发。最老ready按ROB年龄选择。
 
-| 量 | 值 | 说明 |
+| 方向 | 端口 | 含义 |
 |---|---|---|
-| $bitsD$ | **5** | $dSlice=(D_{\text{dp}}\gg(B_d-5))\ \&\ 31\in[16,31]$；4 无解，5 是必需不是保守 |
-| $estBits$ | **9** | 估计器 9 bit 加法器（精确下界 8，取 9 为模型外误差留 1 bit） |
-| `estPShift` | **+1** | $=estBits-bitsD-3$ ⟹ `estP = slice >> 1`（省掉这次右移即为 bug） |
-| 比较器 | **9 bit** | $\lvert2\,estP\rvert\le172$（$\lvert estP\rvert\le86$，负端因 floor 多 1） |
-| 单拍关键路径 | **9 bit 加法 + 9 bit 比较** | $O(1)$，与操作数位宽无关 |
-| 误差窗口 | $[0,+2]$ ulp | $2^{\,4+bitsD-estBits}+1$，**单侧** |
-| 违例 | **0** | 穷举 + 698,280 组端到端，双重确认 |
+| 输入 | `clkInput`, `rstNInput`, `flushInfoInput: rob_flush_input_t` | 时钟/复位，冲刷时删除年轻项并停发新项。 |
+| 输入 / 输出 | `allocInput: rs_allocation_input_t`, `allocReadyOutput`, `allocAuxInput[AUX_W-1:0]` | 发射时携带操作、两个源 `Ready/Tag/Value`、目的标签及 PC；`valid && allocReady` 占槽，辅助位保存控制流类型或访存槽号。 |
+| 输入 | `writebackInput[4]: cdb_result_t` | 用有效写回的物理标签/值旁路并唤醒源操作数。 |
+| 输出 / 输入 | `issueOutput: rs_issue_output_t`, `issueReadyInput` | 最老的源就绪项及实际操作数；`valid && ready` 出槽。 |
+| 输出 | `issueAuxOutput[AUX_W-1:0]`, `occupancyOutput[$clog2(DEPTH+1)-1:0]` | 被选项附加位和当前占槽数。 |
 
-**下界为什么是 8 而不是 9**：误差是**单侧**的（两次算术右移只减不增，$t-estP\in[0,2^{4+bitsD-estBits}+1)$，
-实测 951,898 次迭代中 $t-estP<0$ 共 **0** 次）。$bitsD{=}5$ 下精确穷举（$dSlice$/$wLow$/可达边界
-有限枚举）得 $estBits\ge8$ 违例 **0**、$estBits{=}7$ 违例 11；而 $bitsD{=}4$ **无论 $estBits$ 多大
-都不可行**（违例随 $estBits$ 增多 ⟹ $D$ 至少 5 bit）。旧文报的下界 9 是**双侧误差模型**的产物
-——"保守模型会多要 1 bit"。
+Load/StoreAddr的aux保存类别与LSQ槽号；StoreValue的aux保存SQ槽号，其就绪数据通过
+`storeDataInput/storeDataIndexInput`送LSU，按完整ROB tag认证。SQ直接CDB路径仅供独立
+LSU接口使用，core的StoreValue路径以dataTag=0禁用该直接唤醒。
 
-**端到端交叉验证**：$estBits{=}7$ 有真违例（首反例 $x=\text{0xf83bc957},d=\text{0xaf}$，商少 47,934）；
-$estBits{=}8/9/10$ 在小操作数全域（523,776）+ 定向 213 + 随机 32 位（174,291）共 698,280 组上全 0 错。
+## 5. 执行模块接口
 
-> **为什么穷举是证明而非抽样**：整数离散，"寄存器取高 $estBits$ 位能否无错选商"可**判定**。
-> 固定 $(dSlice,A,\delta)$ 后 $s(V,D)=2D-3|V-qD|$ 是**凹**函数、可达域是**凸**多边形，
-> 故枚举"最小整数盒角点 ∪ 可达边界格点 ∪ 各自 $\pm1$ ulp 四邻域"即**完备**。
-> 最紧格永远是 $dSlice{=}16$（除数最小、重叠窗最薄），被推到 $|V|=\frac83D$ 的角点（零余量），
-> **每个 $estBits$ 都有**，$estBits$ 增大消不掉。
+第9步MUL现状模块对拍1919步/3838点19字段，正常恒授权核域1877步三端一致；三级
+对应n拍partial、n+1 CSA、n+2 CPA结果、n+3 CDB。软件4输出槽及等边界取消语义与RTL
+弹性保持不同，背压下软件有在途槽溢出；当前core outReady=1，不能把诊断当正常核错误。
+完整返回链/缓冲准入合同待定，见公共SPEC §37；本轮生产RTL未改。
 
-**Pentium FDIV 三条纪律**（本项目据其失效模式归纳）[[14]](#back-ref-14)：① don't-care 必须**证明**不可达（可达性分析 / 整数格点穷举）；
-② 生成脚本的输出必须与**独立实现**的参考逐格 diff，不能只抽样；③ 定向测试必须覆盖
-$\varepsilon_{\max}$ 最小的那一列。**结构性好处**：没有表，就没有"漏填的格"——比较网络从结构上
-**不可能漏格**，正确性退化为一个可穷举证明的整数不等式。
+第8步当前对齐控制链已验收：软件BRU结果显式actualTaken，RTL保留真实条件结果语义，
+真实RS/RAT/PRF/ROB/执行/BPU/提交恢复1518步2230字段一致；用户排除misAlign。当前无call/return
+RAS及前端Cache，边界见公共SPEC §35。仿真须展开256/512项NBA复位循环以获得正确PHT初值。
 
-#### 4.4.10 常量与源码落点
+第8步现状入口run_control_observe.py观察真实BRU/控制ALU/PRF/FlushArbiter，2374步/
+4748点56字段；对齐PC结果及n/n+1/n+2一致，PC+4分支训练方向与软件不同，未对齐目标
+恢复PC/资格也不同。目标草案见公共SPEC §34，单槽BRU与训练输入建议尚未改变生产实现。
 
-`src/include/DIV.hpp` 的 `constexpr`：
+AGU地址载荷已包含其寄存robTag，core直送LSU用于目标身份匹配；共享地址整链1195步/
+2390点200字段与两软件及独立参考一致。consumer提交、StoreValue生产及Cache返回按后续步骤验收。
 
-| 常量 | 值 | 含义 |
-|---|---|---|
-| `estBits` | 9 | 估计器位数 |
-| `ulpExpWithShiftD` | 28 | $shiftD{=}1$ 时 $dSlice$ 的移位量（$B_d-5=33-5$） |
-| `ulpExpNoShiftD` | 27 | $shiftD{=}0$ 时（$B_d-5=32-5$） |
-| `sliceShiftWithShiftD` | 27 | $shiftD{=}1$ 时切片起始位（$PW-estBits=36-9$） |
-| `sliceShiftNoShiftD` | 26 | $shiftD{=}0$ 时（$35-9$） |
+`execute_request_input_t` 携带 `valid/operation/source1/source2/immediate/programCounter/predictedNextProgramCounter/useImmediate/robTag/destinationPhy/isControl/isCall/isReturn`。单元以 `executeInput.valid && inReadyOutput` 接收；带 `outReadyInput` 的结果在 `executeOutput.valid && outReadyInput` 时被消费。core 当前把 ALU/MUL/DIV 的 `outReadyInput` 固定为 1，仍以完整 ROB 标签和 flush 年龄门控写回。组合原语没有 valid/ready；它们的结果只在外层单元请求有效时有事务意义。
 
-`DIV.cpp` 四段与公式的对应：
-
-| 函数 | 对应 | 要点 |
-|---|---|---|
-| `receive()` | §4.4.6 阶段 0 入口 | RISC-V 特判直接置 `resultValid`；一般路径取幅值并置 `prepareValid` |
-| `prepare()` | 阶段 0 尾 | clz / 对阶 / `loopTimes=(align+1)>>1` / `shiftD=align&1` / `unsignedDivisor <<= shiftD` / `dSlice` / 三分支种子（$q_1=2/1/0$，含 `regA/regB`）。**已吃掉 $q_1$，故 `loop()` 只跑 $k-1$ 拍** |
-| `loop()` | 阶段 1 迭代 | 9 bit 双切片相加 → `slice = (int32_t)(((sum9 & 0x1FFu) ^ 0x100u) - 0x100u) & ~1`（掩码 + 补码折叠 + `estPShift=1` 的 `>>1` **折进 `&~1`**）→ 五分支 $q$；`mask = shiftD ? (1ull<<36)-1 : (1ull<<35)-1` |
-| `calculateResult()` | 阶段 2 收尾 | `Pk = (oldRegS+oldRegC) & mask` → bit35/34 符号修正 → `(Pk>>63)==0 ? (A, (Pk>>2>>shiftD)>>clzD) : (B, ((Pk+(unsignedDivisor<<2))>>2>>shiftD)>>clzD)` |
-
-**RISC-V 特判表**（`receive()` 命中即绕过 SRT 前置/迭代/后处理；“0 次迭代”不等于“0 周期”）[[4]](#back-ref-4)：
-
-| 条件 | `div` | `divu` | `rem` | `remu` |
-|---|---|---|---|---|
-| $d=0$ | $-1$ | $2^{32}-1$ | $x$ | $x$ |
-| $x<d$ | $0$ | $0$ | $x$ | $x$ |
-| $x=d$ | $1$ | $1$ | $0$ | $0$ |
-| `INT_MIN / -1` | `INT_MIN`（不 trap） | — | $0$ | — |
-
-⚠️ **只截 QDS 输入，$W$ 通路一位都不能丢**——整数要求商与余数逐位精确；
-浮点除法通常按 IEEE 754 的正确舍入规则处理，不能把“允许 1 ulp”当作这里的
-正确性口径 [[16]](#back-ref-16)。
-
-#### 4.4.11 阶段 2：后处理
-
-1. 全长加法 $P_k=S+C$（$=4W[k]$）——**迭代环路内 0 次**进位传播，这是第 1 次；
-2. 判符号，**商与余数必须配套修正**：
-
-| $P_k=4W[k]$ | 商 | 余数 |
-|---|---|---|
-| $\ge 0$ | $Q=A$ | $R=P_k$ |
-| $<0$ | $Q=B=A-1$ | $R=P_k+4D_{\text{dp}}$ |
-
-3. 对阶还原：$rem=((R\gg2)\gg shiftD)\gg clzD$（**先把 $P$ 域的 $/4$ 折回来**，再对阶）。
-
-> 整个除法的全长进位传播 = 迭代环路 **0 次** + 后处理 **1～2 次**（$P_k\ge0$ 取 $A$：1 次；
-> $P_k<0$ 再要一次 $P_k+4D_{\text{dp}}$：2 次）。**别简写成"全程仅 1 次"**。
->
-> 右移 **$clzD$（除数的移位量）**，不是 $clzX$、不是 $align$：$X\cdot2^{align}=Q\cdot D+W[k]$，
-> $D=d\cdot2^{clzD}\Rightarrow x=Qd+W[k]/2^{clzD}$。**商不缩放、余数要缩放**——预移位是
-> "被除数除数同乘 $2^{clzD}$"，商在等比例缩放下不变，余数却被放大 $2^{clzD}$ 倍。
-
-**手算验证（$1000\div7$）**：$clzX{=}22,clzD{=}29,align{=}7$ 奇 ⟹ $k{=}5,shiftD{=}1$。
-单位 $u=2^{22}$，$X=P_1=1000u$、$D_{\text{dp}}=1792u$、$\rho D_{\text{dp}}\approx1194u$。
-逐拍 $|W|\le\rho D_{\text{dp}}$ ✓、$A=B+1$ ✓。末拍 $W_5=-256u<0$ → 取 $B=\mathbf{142}$：
-
-$$R=P_5+4D_{\text{dp}}=-1024u+7168u=6144u,\qquad rem=((6144u\gg2)\gg1)\gg29=\mathbf{6}\ \checkmark$$
-
-（若错取 $A=143$ 却不补 $D_{\text{dp}}$，余数变负——**取 B 与 $+D_{\text{dp}}$ 必须配套**）
-
-**重叠区任选演示（$1000\div3$）**：数字 $\{1,1,1,-1,\underline{q_5}\}$。路径 a：$q_5=1\to A=333$，
-$W>0$ 取 A，$rem=1$ ✓；路径 b：$q_5=2$（重叠区）$\to W<0$ 取 $B=333$，$rem=(W+D)\gg8=1$ ✓。殊途同归。
-
-### 4.5 除法参数速查（位宽两档）
-
-| $shiftD$ | $B_d$ | $SW$ | $PW$ | 切片：**P 域**右移 $PW-estBits$ | `estPShift` | $estP$ 的 ulp | $dSlice$ 值域 |
-|---|---|---|---|---|---|---|---|
-| 0 | 32 | 33 | 35 | **26** | **+1** | $2^{B_d-5}$ | $[16,31]$ |
-| 1 | 33 | 34 | 36 | **27** | **+1** | $2^{B_d-5}$ | $[16,31]$ |
-
-随 $shiftD$ 变的**只有切片起始位**（差 1 位）——即 §4.4.4 说的那根 1 bit 选择线；
-`estPShift` 与 $dSlice$ 值域两档完全相同 ⟹ **硬件是一次性 MUX，不存在每拍动态移位**。
-
-| 配置 | 估计器 | 比较器 | 合计 | 备注 |
-|---|---|---|---|---|
-| $bitsD{=}5,\ estBits{=}8$ | 8 bit | 9 bit | 17 bit | 可证 0 违例，但零冗余 |
-| **$bitsD{=}5,\ estBits{=}9$** | 9 bit | 9 bit | 18 bit | **定稿** |
-| $bitsD{=}5,\ estBits{=}10$ | 10 bit | 9 bit | 19 bit | 备选，无额外收益 |
-| $bitsD{=}6,\ estBits{=}8$ | 8 bit | 10 bit | 18 bit | 加法器最短（实测可行） |
-
-> "比较器"按 $estP=slice\cdot2^{\,bitsD+3-estBits}$ **折算后**的 $|2\,estP|$ 定宽。
-> 故 $estBits$ 越小**不代表** $estP$ 越窄——**折算后的位宽才是 $estBits$ 与 $bitsD$ 的共同结果**。
-
----
-
-### 4.6 三个实现陷阱（写 RTL / C++ 前必读）
-
-> 三者均为端到端调试实证，且**都不是理论问题，是位操作问题**——理论推导再正确，写错一行照样崩。
-
-#### 陷阱一：切片位宽用错——寄存器装的是 $P=4W$，却按 $W$ 域（$SW$ 位）切
-
-| 项 | 内容 |
-|---|---|
-| **定义** | 估计器取高位时按 $SW-estBits$ 右移 $S,C$，而不是 $PW-estBits$。**寄存器 $(S,C)$ 装的是 $P=4W$**（$PW=SW+2$），切片位**恒为 $PW-estBits$**。 |
-| **机理** | 多留 2 个低位 ⟹ 等价于**把读数整体 $\times4$**。$slice$、$estP$ 全部 $\times4$，五个阈值相对量程被压小 4 倍，$q$ 系统偏大（动辄选 $+2$）。 |
-| **症状** | $q$ 偏大 → $W$ 越界后**逐拍发散**，商/余数全错。**实测反例**（$1000/7$ 第 1 拍，$P_1=X$）：正解 $slice=X\gg(PW-estBits)=X\gg27=31\Rightarrow estP=15$，$2\,estP=30\ge dSlice=28\Rightarrow q_1=+1$ ✓；错法 $slice=X\gg25=125\Rightarrow estP=62$，$2\,estP=124\ge3dSlice=84\Rightarrow q_1=+2$ ✗——**第 1 拍就越界发散**。 |
-| **特征** | **无数据依赖性、首拍即现**。 |
-| **影响面** | 致命且系统：实测端到端 **18,465/20,279（91.1%）错**。最小复现 `7/2`：正解 $Q{=}3,rem{=}1$；错法 $Q{=}6,rem{=}3$。 |
-| **正解** | **切片位 = $PW-estBits$，每一拍都一样**（含阶段 0 尾的 $q_1$）。寄存器从头到尾都是 $P$ 域，**不存在"域切换"**。 |
-
-```c
-// ✗ 错：寄存器装的是 P=4W，却按 W 域（SW 位）切 —— 读数整体 ×4
-slice = ((S >> (SW-estBits)) + (C >> (SW-estBits))) & ((1<<estBits)-1);
-// ✓ 对：按 P 域（PW 位）切；阶段 0 尾的 q₁ 用的是同一个位
-slice = ((S >> (PW-estBits)) + (C >> (PW-estBits))) & ((1<<estBits)-1);
-```
-
-#### 陷阱二：$estBits$ bit 估计加法器的进位未丢弃
-
-| 项 | 内容 |
-|---|---|
-| **定义** | $slice$ 的真和落在 $[0,2^{estBits+1}-2]$（**$estBits+1$ bit**）。必须先 `& ((1<<estBits)-1)` 丢弃进位，**再**做补码折叠。只折叠不掩码会偏差整整 $2^{estBits}$。 |
-| **机理** | `& (2^{estBits}-1)` 就是 $\bmod 2^{estBits}$——把真和折回补码环上，**这一步做完折叠才有意义**。 |
-| **症状** | $slice$ 整跳 $\pm2^{estBits}$（被丢弃那一位的权重）→ 折算到 $estP$ 为 $\pm2^{\,bitsD+3}$ ulp（$\pm256$，而 $estP$ 只有 $\pm83$ 量程）→ QDS 必然饱和到 $\pm2$ → 发散。与陷阱一不同，**两个方向都可能**。 |
-| **特征** | **偶发跳变型**：只在 $S,C$ 高位之和 $\ge2^{estBits}$ 时触发（实测约 **42% 的迭代**真的溢出）。定向用例 `2/1` 是确定性触发的最小复现。 |
-| **隐蔽性** | **三者中最高**——样本量不足或高位分布偏小时"跑了几百万组没出问题"，上线后特定数据才炸。 |
-| **正解** | 先取 $estBits$ 位模、再折叠。折叠无歧义的前提 $\lvert P\rvert\le\frac83D_{\text{dp}}<2^{PW-1}$ 由收敛不变式保证，余量 $\frac13\cdot2^{PW-1}$。 |
-
-```c
-// ✗ 错：少了 estBits 位掩码，进位没丢
-slice = (S >> (PW-estBits)) + (C >> (PW-estBits));
-if (slice >= (1<<(estBits-1))) slice -= (1<<estBits);
-// ✓ 对：先取 estBits 位模，再折叠
-slice = ((S >> (PW-estBits)) + (C >> (PW-estBits))) & ((1<<estBits)-1);   // 进位自然丢弃
-if (slice >= (1<<(estBits-1))) slice -= (1<<estBits);                    // 补码折叠
-```
-
-> 🔍 **两个 MASK 别混**：
-> ① **`(1<<estBits)-1`（9 bit）**：**估计器**的进位丢弃，作用在 $estBits$ bit 加法器输出上（陷阱二）；
-> ② **`(1<<PW)-1`（35/36 bit）**：**CSA 递推**的回卷，作用是"把 `u32/u64` 伪装成 $PW$ 位寄存器"。
-> ②的位宽**一位都不能少**（硬下界 $PW$），①只要 $\ge estBits+1$ 即可。
-> **`MASK`（回卷）实测**（116,513 组 / 951,900 次迭代）：$\text{maskw}\ge PW$ → 0 错；
-> $35$ → 错 59,958（99.4%，**全在 $shiftD{=}1$ 半**）；$34$ → 113,323（97.3%）；$32$ → 115,060（98.8%）。
-> 临界值精确等于 $PW$ 本身，与 $SW$ 无关。回卷对 QDS **完全透明**（回卷位的位权 $2^{\text{maskw}}\ge2^{PW}$
-> 恒高于估计窗口最高位 $2^{PW-1}$）。
-
-> ⚠️ **类型陷阱：$S,C$ 装不进 `u32`**。$SW=33/34$、$PW=35/36$ **全部 $>32$**，
-> 承载 $S,C$ 及 CSA 三操作数 $S_4,C_4,T$ 的类型必须 $\ge PW$ 位（`u64`）。
-> 用 `u32` 等价于把回卷位宽压到 32——实测 116,513 组错 115,060（98.8%），且**第 1 拍就错**。
-> 反面：用 `u64` 而**完全不写 `& MASK`** 结果也对（$64\ge36$），但那不可移植到 RTL、
-> 高 $k$ 用例逼近 64 bit 边界——**照 $PW$ 回卷才是与 RTL 一一对应的写法**。
-> 另：$|S|,|C|$ 各自峰值 $=2^{PW-1}$（**两位都会吃满寄存器**），靠模 $2^{PW}$ 抵消才表达出
-> $|P|\le\frac83D_{\text{dp}}$ ⟹ **位宽不可缩，估计器必须按补码取高位**。
-
-> ⚙️ **C++ 语义三条（动 DIV 单元前先读）** [[15]](#back-ref-15)：
-> ① `fold(...) << (-estPShift)` 一支在定稿 $estBits{=}9$ 下是**死分支**，但 `estPShift` 是 constexpr，
-> 编译器仍会实例化该表达式——**有符号左移在 C++20 前是 UB**。本项目按 C++20 编译；移植回 C++17
-> 工具链时这一支必须先转 `u32` 再移位。
-> ② **有符号算术右移在 C++20 前是实现定义**，C++20 起才强制算术右移——"与 RTL 一一对应"的纪律
-> 依赖这条。
-> ③ `u32 dSlice` / `(i32)dSlice` 的 cast 不是洁癖：$dSlice\in[16,31]$ 无符号，而判据另一端
-> `estP << 1` 有符号，**混用会让整型提升把判据拖进无符号域**（`(estP << 1) >= -T3` 直接恒真）。
-> **规则：判据两侧必须同号**。
-> ④ **`S >> (PW-estBits)` 是"碰巧 robust"**：无论 $S$ 存成符号扩展的 `i64` 还是原始 pattern 的 `u64`
-> 结果都一样——因为紧随其后的 $estBits$ 位取模把差异全掩掉。**这依赖那个 mask 存在**。
-
-#### 陷阱三：on-the-fly 拼接用 `|` 而非 `+`
-
-| 项 | 内容 |
-|---|---|
-| **定义** | **只有"把 $q=0$ 并进 $q>0$ 分支"那种写法才会中招**：$B'$ 一律走 `(A<<2) \| (q-1)`，于是 $q=0$ 时低位字段是 **$-1$**（`0xFFFFFFFF`），`\|` 把**整个寄存器**写成全 1。**正确的 3 分支表里没有任何负字段**。 |
-| **机理** | $(A,q-1)=4A-1$ 在 $q=0$ 时确实等于 $(B,3)=4B+3$，但这是**算术恒等式，不是位拼接恒等式**：`-1` 的 2 补码全 1，`\|` 沿位或污染 $A$ 的全部高位。 |
-| **症状** | 商突然变成 $-1$ 或一个巨大负数；此后每拍继续被污染，**不会自愈**。最小复现 **$11\div3$**。 |
-| **特征** | **只在 $q=0$ 分支触发**，而 $q=0$ 恰是**最常见的商数字**（占全部数字的 **23.4%**）⟹ **命中率极高，几乎必现**，三者中最易暴露。 |
-| **正解** | 低位字段先规约到 $0..3$ 再拼，或整式用 `+`；**分支自由写法**见 §4.4.7。 |
-
-```c
-// ✗ 错：q=0 时 (q-1) = -1 = 0xFFFFFFFF，| 污染整个 A
-A = (A << 2) | (q - 1);
-// ✓ 对：低位先规约到 0..3 再拼；oldA/oldB 保证两条并行读旧值
-u32 oldA = A, oldB = B;
-A = (q >= 0) ? ((oldA << 2) + q        ) : ((oldB << 2) + (4 + q));
-B = (q >  0) ? ((oldA << 2) + (q - 1)  ) : ((oldB << 2) + (3 + q));
-```
-
-> ⚠️ **早期文档把规则简记为"$q\ge0\Rightarrow B=(A,q-1)$"——数值等价，但不能当位操作实现**。
-
-#### 4.6.1 三者对照速查
-
-| | 陷阱一（切片位宽错） | 陷阱二（进位未丢弃） | 陷阱三（`\|` 拼接） |
+| 模块 | 输入端口 | 输出端口 | 功能与时序 |
 |---|---|---|---|
-| **性质** | 切片位宽用错（$SW-estBits$ 而非 $PW-estBits$） | 溢出位未掩码 | 有符号字段当无符号位拼 |
-| **触发条件** | **每一拍**（读数整体 $\times4$） | $S,C$ 高位之和 $\ge2^{estBits}$ | 任何 $q=0$ 的拍 |
-| **触发频率** | **极高（首拍即错，实测 91.1%）** | **低（数据依赖，约 42% 迭代）** | **极高（$q=0$ 最常见）** |
-| **隐蔽性** | 中 | **最高** | 最低 |
-| **最小复现** | `7/2`（第 1 拍 $q_1$ 由 $+1$ 变 $+2$） | `2/1` | **`11/3`**（商 $-1$） |
-| **错误形态** | 单向越界发散（$q$ 偏大） | $slice$ 双向整跳 $\pm2^{estBits}$ | 商变 $-1$，持续污染 |
-| **检查点** | 切片是 $PW-estBits$ 还是 $SW-estBits$ | 有无 `& ((1<<estBits)-1)` | 拼接符是 `+` 还是 `\|`、字段是否 $\ge0$ |
+| [`rv32_alu`](../verilog/rtl/execute/rv32_alu.sv) | `aluInput: alu_operation_input_t` | `aluOutput: alu_operation_output_t` | 组合整数运算、移位、比较及 JAL/JALR 目标；JALR 清目标 bit0。加减法使用 `rv32_add`/`rv32_sub`；后者复用前者，底层逐级组合 `rv32_cla2`、`rv32_cla4`、`rv32_cla8`、`rv32_cla16`、`rv32_cla32`、`rv32_cla64`。 |
+| [`rv32_alu_unit`](../verilog/rtl/execute/rv32_alu_unit.sv) | `clkInput`, `rstNInput`, `flushInfoInput: rob_flush_input_t`, `executeInput: execute_request_input_t`, `outReadyInput` | `inReadyOutput`, `executeOutput: alu_execute_output_t`, `occupancyOutput` | 封装组合 ALU 的**单槽同拍腾位**结果寄存器：一次拍运算、次拍上 CDB，本拍被授权/冲刷释放的槽**当拍**即可复用（drain-and-refill），因此 `inReady = !valid || outReady || flushed`、一条/拍无需多槽。返回数值、ROB/物理目的标签、`isControl/controlMisaligned`。历史负向延迟释放开关已删除。 |
+| [`rv32_agu_unit`](../verilog/rtl/execute/rv32_agu_unit.sv) | `clkInput/rstNInput`, `flushInfoInput`, `executeInput: rs_issue_output_t`, `auxiliaryInput[3:0]` | `inReadyOutput`, `addressOutput`, `auxiliaryOutput`, `robTagOutput`, `resultValidOutput` | 单槽地址结果级：派发拍32-bit加法/拍末保存，次拍向LSU交付地址与寄存类型/槽号；已有LSQ槽的地址更新无容量背压，一条/拍。旧/新tag分别判断flush资格。 |
+| [`rv32_bru`](../verilog/rtl/execute/rv32_bru.sv) | `branchInput: branch_operation_input_t` | `branchOutput: branch_operation_output_t` | 组合条件比较、实际 nextPC、链接值、误预测/目标未对齐检测。 |
+| [`rv32_bru_unit`](../verilog/rtl/execute/rv32_bru_unit.sv) | `clkInput`, `rstNInput`, `flushInput`, `executeInput: execute_request_input_t` | `inReadyOutput`, `executeOutput: bru_execute_output_t` | 一拍登记 BRU 结果；`inReady=!flushInput`，输出含 PC/目标/taken/条件分支/预测错误/未对齐/call/return，无独立输出 ready。 |
+| [`rv32_mul`](../verilog/rtl/execute/rv32_mul.sv) | `clkInput`, `rstNInput`, `flushInfoInput: rob_flush_input_t`, `executeInput: execute_request_input_t`, `outReadyInput` | `inReadyOutput`, `executeOutput: execute_value_output_t` | radix-4 Booth + CSA + 最终加法，三级可背压流水；低 32 位给 `MUL`，高 32 位给 `MULH/MULHSU/MULHU`。`inReady` 由三级空闲/下游 ready 连锁决定。 |
+| [`rv32_div`](../verilog/rtl/execute/rv32_div.sv) | `clkInput`, `rstNInput`, `flushInfoInput: rob_flush_input_t`, `executeInput: execute_request_input_t`, `outReadyInput` | `inReadyOutput`, `executeOutput: execute_value_output_t` | 单上下文 radix-4 SRT 迭代除法；`PH_PREP/PH_LOOP/PH_FINISH`，busy 或未消费的结果阻止新请求；除零、溢出及简单比较走短路径。 |
 
-#### 4.6.2 通用防御
+`rv32_mul` 和 `rv32_div` 的结果都携带完整 `robTag/destinationPhy`；冲刷时年轻/边界指令的结果失效，存活老指令可继续完成。BRU 条件结果不直接写 PRF，而是供 ROB 完成、误预测仲裁和预测器训练；JAL/JALR 走 ALU 控制路径，PRF 在发射时可预置链接地址 `PC+4`。
 
-① 先跑定向小用例（`7/2`、`2/1`、`1/1`、`INT_MIN/-1`、**`5/3`**）再上随机；
-② 每拍断言 $|W|\le\rho D_{\text{dp}}$，越界即停——三个陷阱全部会在**第 1~2 拍**触发它；
-   $A=B+1$ **不能**每拍断言（$q_1=0$ 时首拍即为 $A-B=-3$，约 1/4 的除法会误报）；
-③ 随机对拍必须覆盖 $x<d$、$align$ 奇偶、负余数高频三类分布——`5/3` 是 $q_1=0$ 的最小复现
-   （$align=1$ 奇、$X<D$）。
+## 6. 恢复仲裁：`rv32_flush_arbiter`
 
----
+源码：[`rv32_flush_arbiter.sv`](../verilog/rtl/core/rv32_flush_arbiter.sv)，参数 `DEPTH=4`。记录分支与跳转误预测候选，按 ROB 年龄选最老请求广播。
 
-## 5. 写回：四路结果总线
-
-结果广播/标签唤醒的基本思想来自 Tomasulo 算法 [[1]](#back-ref-1)。本实现的结果总线
-载荷定义在 `CDB.hpp`：`aluCDB` / `lqCDB` / `mulCDB` / `divCDB`——ALU、Load(LQ)、
-MUL、DIV 各驱动一根，**源之间无跨单元仲裁**，每周期至多四个结果并行广播。
-重命名保证同时在飞的目的寄存器使用不同物理标签，消除同地址写冲突；PRF/ROB
-仍按四个逻辑写回端口消费这些并行结果：
-
-- 消费端：PRF 完成写口（置 ready + 写值）、ROB 完成置位（`isCommitReady`）、
-  LQ 完成口（`lqCDB` 带 `memIndex`，见 [访存](memory.md)）、BPU 训练
-  （CDB 侧只改表）；
-- 条件分支/间接跳转的结果载荷挂在 ALU 总线上（`isControl`）——FlushArbiter 在
-  该总线上检测 JALR 目标误预测；
-- **mulCDB 恒每拍可发**（MUL 有 4 槽输出缓冲，取最老 robTag）；
-  **divCDB 受 `resultValid` 门控**（DIV 无输出缓冲，单发），被消费后
-  周期更新清 `resultValid`；完成计算则在另一状态分支置位结果，单发不丢；
-- `VERBOSE=cdb` 输出争用统计（both / 仅单侧 / 若单总线谁胜出），用于量化
-  多总线 vs 单总线的收益边界。
-
-> 设计注记：同一指令只可能由一个执行源完成，"同周期两总线写同一物理寄存器"
-> 在源头上即被排除；保留站查 PRF 就绪的模型使总线数量不构成依赖链瓶颈。
-> **四路 vs 三路**：DIV 单独占一路是为了让它那条长延迟（最多 20 周期）不阻塞
-> MUL/LQ 的写回——若把 div 结果挤进 mulCDB，除法在飞时每次 MUL 完成都要与
-> 除法的单发结果抢同一根线。
-
----
-
-## 6. 提交与 squash 恢复
-
-### 6.1 按序提交
-
-ROB 头按序退休用于把乱序完成重新收敛为精确架构状态 [[2]](#back-ref-2)[[3]](#back-ref-3)。
-ROB 头就绪即提交（每周期至多 1 条）：`REGISTER` 类型释放 `oldPhy` 回 PRF
-自由表；`STORE` 类型在提交点经访存路径写缓存（见 [访存](memory.md)）；
-halt 条目（`0x0ff00513`）提交后 `haltCommitted`，停机条件 = halt 已提交 ∧
-FQ/IQ/ROB/SQ 全空 ∧ DCache 非 busy ∧ DMEM 读写双口均空闲。后三级 drain 条件
-保证 halt 前已提交的 store 真正进入缓存，且相关回填/脏写回不会被进程退出截断。
-进程输出停机时 `x10` 低 8 位。
-
-squash 回卷 `next`，提交推进 `head`，两者可同拍发生：若 ROB 头**严格早于**
-`SquashTag` 且已就绪，则该头项属于保留窗口，可以提交；`head == SquashTag` 时禁止
-提交，以保住误预测目标条目的重放边界。`ROB::willCommit` 是 ROB pop、PRF 释放
-`oldPhy` 与 SQ store committed 通知的共同谓词；PRF 同拍把窗口重放回收到的
-`newPhy` 与 commit 的 `oldPhy` 一起写回自由环尾，二者不互斥。
-
-### 6.2 FlushArbiter（squash 排队）
-
-有状态仲裁器，拥有 4 项 squash 请求队列，一个周期内按固定顺序检测：
-
-1. **BRU 分支误测**（BRU 最老有效结果 vs 预测）；
-2. **CDB JALR 误测**（ALU 总线上 `isControl` 载荷 vs 预测）；
-同一周期多源请求时按 ROB 年龄**最老优先**。
-
-`arbitResult()` 产出全局 `squashDetect{SquashTag, SquashPC, CkptId}`，随后每个
-模块在自己的周期更新内按该窗口恢复：
-
-| 模块 | 恢复动作 |
-|------|----------|
-| `RAT` | 从已提交的 `archRAT` 恢复，再按 `head..SquashTag`（含自身）重放存活 ROB 条目的 rename |
-| `PRF` | ROB 窗口重放：从 `robNextTag(SquashTag)` 扫到 ROB 尾，把窗口内各条的 `robNewPhy` push 回自由环（未提交的分配即被回收）；squash 拍**不** pop |
-| `BPU` | 按 `ckptId` 恢复 `BPUSnapshot`（8-bit GHR / AlignQueue tail / RAS_top）；无派生折叠视图需要重建（见 [frontend.md](frontend.md) §4.3） |
-| `FQ/IQ/RS/LQ/SQ` | 各按 ROB 条目记录的尾快照回卷（RS 释放槽位、LQ/SQ 按 `getTailSnapshot` 截断） |
-| `MUL` | `flush(tag)`：清 `partialRes/scRes` 的 valid + 清 `outputBuffer` 中不早于 tag 的槽位 |
-| `DIV` | `flush(tag)`：**整机清零**（`resultValid`/`regS`/`regC`/`regA`/`regB`/`dSlice`/`loopTimes`/`prepareValid`/`loopValid`/`fullAdderValid` 全归零）——单实例无缓冲，被 squash 即在算的那条已经作废 |
-| `FetchUnit` | 清 `haltFetched`（若被回卷）并从 `SquashPC` 重启取指 |
-
-RAT 不使用 `ckptId` 快照。提交时，ROB 头的 `newPhy` 写入 `archRAT`；squash 时，
-`SquashTag` 必须同时位于 `[head,next)` 存活窗口且匹配其 ROB 槽内的完整 tag，随后从
-`archRAT` 基线按 ROB 年龄重放到该 tag。目标控制指令本身仍留在 ROB 等待重执行，故其
-destination mapping 包含在重放范围内；squash 拍的 issue 已由 IssueArbiter 抑制。
-
-误预测惩罚 = squash 排队到前端重启取指之间的固定拍数 + 重执行时间；分支预测
-统计（`VERBOSE=branch`）在解析点记录正确/总数，含方向与目标两个维度。
-
-> `DIV` 的 flush 之所以比 `MUL` 更狠：`MUL` 是流水线，被 squash 的指令可能只在某一级，
-> 逐级清 valid 即可；`DIV` 是**单实例闭环**，在算的那条与寄存器状态一一对应，
-> 无法"部分保留"，只能整体作废——随后由重执行重新 `receive()`。
-
----
-
-## 7. 关键规格
-
-| 项 | 规格 |
-|----|------|
-| ROB / PRF / RAT | 16 / 64 / 32 |
-| 保留站 | Integer 4 · Multiply 2 · **Divide 1** · Load 4 · StoreAddr 4 · StoreValue 4 · Branch 4 |
-| 发射 | 每周期至多 1 条（IQ 头，单口 rename） |
-| 执行/写回 | ALU·AGU·BRU·MUL 各 4 槽；DIV 单实例（三阶段 valid 归约背压）；派发与多槽输出均按 ROB 年龄选最老就绪/有效项 |
-| 结果总线 | 4 根（aluCDB / lqCDB / mulCDB / **divCDB**），无跨单元仲裁 |
-| MUL | Booth radix-4 + 3:2 CSA 压缩树（19 行 → 17 cell → S+C），3 级流水；`mul/mulh/mulhu/mulhsu`；派发门控 = `isFull()`（4 槽 > 在飞 3，无需背压） |
-| DIV | SRT radix-4，$bitsD{=}5,\ estBits{=}9$，共享 ulp 常数法 QDS，on-the-fly 商转换；**单实例非流水** |
-| DIV 位宽 | $B_d=32/33$，$SW=33/34$，$PW=35/36$（寄存器持 $P=4W$）；`MASK` 硬下界 $=PW$ |
-| DIV 延迟 | $3+k$（满宽 17 拍 → **20 周期**）；迭代环路全长进位传播 0 次 |
-| DIV 特判 | $d{=}0$ / `INT_MIN÷-1` / $x<d$ / $x{=}d$ 均为 0 次 SRT 迭代；结果仍经寄存器与 divCDB 广播 |
-| FlushArbiter | 4 项请求队列；检测 BRU 误测 / CDB JALR 误测；最老优先 |
-| 停机 | halt 提交后继续 drain，直至 FQ/IQ/ROB/SQ 空、DCache 空闲、DMEM 双口空闲；出口 = `x10 & 0xFF` |
-
----
-
-## 附 A：SRT 符号映射
-
-下表用于把本文记号映射到 Parhami 的计算机算术教材 [[8]](#back-ref-8)；标为“—”的项
-是本项目数据通路派生量，不应理解为教材中的原始符号。
-
-| 本文件 | Parhami | 含义 |
+| 方向 | 端口 | 含义 |
 |---|---|---|
-| $r$ / $a$ | $r$ / $\alpha$ | 基数（固定 4）/ 数字集上界（=2） |
-| $\rho$ | $h$ | 冗余因子 $=a/(r-1)=2/3$ |
-| $D$ | $d$ | 除数（归一化后 $[2^{31},2^{32})$） |
-| $D_{\text{dp}}$ | — | 数据通路实际除数 $=D\ll shiftD$，位宽 $B_d$ |
-| $shiftD$ / $B_d$ | — | $align\&1$：首拍奇偶决定的除数额外左移量；**数据通路除数位宽** $=32+shiftD$。⚠️ 勿与 on-the-fly 的 $B$ 寄存器混淆 |
-| $SW$ / $PW$ | — | $W$ 域补码位宽 $=B_d+1$；$P=4W$ 域位宽 $=SW+2=B_d+3$。**寄存器 $(S,C)$ 装 $P$ 域** |
-| $W$ / $P$ | $align$ / $p$ | 部分余数（**只作说明**）/ **寄存器实际持有的量** $=4W$（carry-save 对 $S,C$） |
-| $dSlice$ / $estP$ | — | $D_{\text{dp}}$ 的 5 bit 截断 / $P$ 的估计值（共享 ulp；定稿下 $estP=slice\gg1$，8 bit 有符号，域内 $\lvert estP\rvert\le86$） |
-| $estBits$ / $bitsD$ | — | 估计器保留位数（**=9**）/ $D$ 参与 QDS 的位宽（=5）。**代码里一律小写 `estBits`** |
-| `estPShift` | — | $estP$ 的右移量 $=estBits-bitsD-3$（定稿 $=1$）。⚠️ 与 $clzD=\mathrm{clz}(d)$ **无关**，勿混 |
-| $A,B$ | — | on-the-fly 双寄存器；$A=B+1$ **仅在首个非零商数字之后**成立（$q_1{=}0$ 时首拍 $A-B=-3$） |
-| $clzX$ / $clzD$ / $align$ | — | $\mathrm{clz}(\lvert x\rvert)$ / $\mathrm{clz}(\lvert d\rvert)$ / $clzD-clzX$ |
-| $wLow$ / $r$ | — | **仅 §4.4.9 穷举局部**：$V$ 的窗内低位 / $D$ 的截断低位。$\lambda,\rho$ 是全文级符号，**禁止复用** |
-| $V$ / $q0$ | — | **仅 §4.4.9 穷举局部**：寄存器读数 $=P=4W$（$V=A\,q0+wLow$）/ 窗口步长 $=2^{PW-estBits}$ |
-| $W[j]$ | — | 第 $j$ 拍**出口**的部分余数，$W[j{+}1]=4W[j]-q_{j+1}D_{\text{dp}}$，故 $P_j=4W[j-1]$ |
+| 输入 | `clkInput`, `rstNInput` | 候选队列时钟和复位。 |
+| 输入 | `branchInput: flush_candidate_input_t`, `jumpInput: flush_candidate_input_t` | BRU/ALU 检出的误预测或未对齐候选，包含 `valid/robTag/programCounter/checkpointId`。 |
+| 输出 | `squashOutput: squash_input_t` | 已排队的最老候选：ROB 边界标签、重取 PC、预测检查点。 |
 
-> ⚠️ **撞名消歧**：① $B_d$（位宽）vs $B$（商寄存器）——靠上下文；
-> ② $align$（对阶移位量）vs $S$（carry-save 和）——**靠大小写**，全文严格遵守；
-> ③ $clzD$ vs `estPShift` —— 后者已改名带 `estP` 前缀。
-> **读法：带下标 = 局部/派生量；单个大写字母 = 寄存器/向量；单个小写字母 = 标量参数。**
-> 若再发现同形异义，**直接改名而不是加注**。
+仲裁器输出来自队列中的旧状态；新候选在时钟沿入队，不要把检测候选当拍误读为当拍立刻输出。广播恢复会丢弃边界及更年轻的待处理候选，同时各单元以自身的 flush 输入清理错路状态；前端根据 `programCounter` 重定向，预测器根据 `checkpointId` 恢复历史。
 
----
+## 7. 接口检查点
 
-## 附 B：调试断言清单
-
-**原则**：能**每拍**断言的只有"域"类不变量（它们是设计的数学前提）；
-"关系"类不变量只在特定窗口成立，每拍断言会误报。
-
-### B.1 每拍可断言（入口 / 出口各一次）
-
-| # | 断言 | 违反时的含义 |
-|---|---|---|
-| A1 | $\lvert P\rvert\cdot3\le8D_{\text{dp}}$（第 $j$ 拍**入口**） | QDS 域越界：切片位置或 $B_d$ 算错 |
-| A2 | $\lvert W\rvert\cdot3\le2D_{\text{dp}}$（第 $j$ 拍**出口**） | 商数字选错（最常见：`estPShift` 符号、MASK 位宽不足） |
-| A3 | $dSlice\in[16,31]$（整次除法一次，非每拍） | $B_d$ 或归一化错（写死 32 的典型症状） |
-| A4 | 回卷位宽 $\text{maskw}\ge PW$ | MASK 写窄；**临界值恰为 $PW$**，与 $SW$ 无关 |
-| A5 | 不得假设 $\lvert S\rvert,\lvert C\rvert$ 与 $\lvert W\rvert$ 同量级（峰值 $8/16\,D_{\text{dp}}$） | 把 $slice$ 当"$\lvert W\rvert$ 的高位切片"直接相加，未折叠/未丢进位 |
-
-### B.2 只在特定窗口成立（每拍断言会误报）
-
-| # | 断言 | 成立窗口 |
-|---|---|---|
-| B1 | $A=B+1$ | **首个非零商数字之后**；首拍 $q_1=0$ 时 $A=0,B=3$（差 $-3$），该 $B$ 无人读 |
-| B2 | $estP\le t$（误差单侧偏小） | 恒成立，但**前提是 $estBits$ 位切片且 mask 与 fold 成对** |
-| B3 | $q<0$ 不出现在首拍 | 本方案归一化保证（$q_1\in\{0,1,2\}$，且 $shiftD{=}0\Rightarrow\{1,2\}$） |
-| B4 | 首个非零数字停在 $[-3\,dSlice,3\,dSlice]$ 内 | QDS 常数法的定义域 |
-
-### B.3 收尾断言（必查）
-
-| # | 断言 |
-|---|---|
-| C1 | $Q=x/d$ 且 $R=x\bmod d$（与**真值**对拍，不与中间量比） |
-| C2 | $0\le R<d$ |
-| C3 | 末拍 $W[k]<0$ ⟺ 商取 $A$ / 余数 $+D_{\text{dp}}$ **成对**（只改一个必错） |
-| C4 | 端到端与**独立实现**逐用例 diff |
-
-### B.4 位级调试的黄金轨迹（dp 域逐拍 dump）
-
-调试的痛点不是"推不出来"，而是"**第 2 拍就分叉**"。下表是 **dp 域**的逐拍记录，
-可直接与实现在 $S,C,A,B,estP,q$ 上**逐列**对齐（$S,C$ 列给出该拍**入口**的两个寄存器
-全宽读数，$P$ 列 $=\texttt{fold}(S+C,PW)$）。下列两个用例**都落在 $shiftD{=}1$**。
-
-**(1) $1000\div7$**（$shiftD{=}1,\ B_d{=}33,\ k{=}5,\ dSlice{=}28$；单位 $u=2^{22}$，
-dp 域原值 $=\times u$；$X=P_1=1000u$，$D_{\text{dp}}=7\cdot2^{30}$）
-
-| 拍 $j$ | $q$ | $estP$ | $dSlice$ | $P$ | $W$ | $S$（该拍入口） | $C$（该拍入口） | 商寄存器 |
-|---|---|---|---|---|---|---|---|---|
-| 1 | $+1$ | $15$ | 28 | $1000u$ | $-792u$ | `0x0FA000000` | `0x000000000` | $A{=}1,\ B{=}0$ |
-| 2 | $-2$ | $-50$ | 28 | $-3168u$ | $416u$ | `0xB17FFFFF8` | `0x1D0000008` | — |
-| 3 | $+1$ | $25$ | 28 | $1664u$ | $-128u$ | `0x51FFFFFC0` | `0xC80000040` | — |
-| 4 | $0$ | $-9$ | 28 | $-512u$ | $-512u$ | `0xE800001FF` | `0x0FFFFFE01` | — |
-| 5 | $-1$ | $-33$ | 28 | $-2048u$ | $-256u$ | `0x9FFFFFFF8` | `0x400000008` | $A{=}143,\ B{=}142$ |
-
-末拍 $W_5=-256u<0$ ⟹ $P_5=4W_5=-1024u$，取 $B{=}142$ 且 $R=P_5+4D_{\text{dp}}=6144u$
-⟹ $rem=((6144u\gg2)\gg1)\gg29=\mathbf{6}$ ✓
-
-> **$estP$ 列是最易分叉处**：若切片位写错（陷阱一），$j{=}1$ 的 $estP$ 就由 $15$ 变 $62$、
-> $q_1$ 由 $+1$ 跳 $+2$，端到端 91.1% 错。
-
-**(2) $5\div2$**（$shiftD{=}1,\ B_d{=}33,\ k{=}2,\ dSlice{=}16,\ D_{\text{dp}}=2D=2^{32}=4294967296$；
-原值，不缩放）
-
-| 拍 $j$ | $q$ | $estP$ | $P$（= 寄存器入口读数） | $W$ | $A$ | $B$ |
-|---|---|---|---|---|---|---|
-| 1 | $+1$ | $10$ | $2684354560$ | $-1610612736$ | 1 | 0 |
-| 2 | $-2$ | $-25$ | $-6442450944$ | $2147483648$ | 2 | 1 |
-
-末拍 $P_2=4W_2=8589934592\ge0$ ⟹ 取 $A{=}2$、$R=P_2$，$rem=((R\gg2)\gg1)\gg30=\mathbf{1}$ ✓（商 2 余 1）。
-
-> 本表是 **V0（定稿口径，除数走 $D_{\text{dp}}=2D$）**的读数；同例在 **V3"都不放"**变体下读出的
-> "商 5、余 0"是 §4.4.3 的最小反例，**两者不是同一张表**。
-
-**(3) 其余建议用例**：$1000\div3$（$shiftD{=}0$ 一档对照）、$7\div2$、$11\div3$、
-$0\text{xFF000000}\div0\text{x01000000}$（$k{=}5$）、$0\text{xFFFFFFFF}\div1$（**满宽 $align{=}31\Rightarrow k{=}17$**）。
-
----
-
-## 相关文档
-
-- [`../README.md`](../README.md) — 数据通路图 / 周期模型
-- [`frontend.md`](frontend.md) — 预测 checkpoint 的语义与恢复（GHR/RAS）
-- [`memory.md`](memory.md) — LQ/SQ 尾快照、store→load 转发与保守 load 准入
-- [`cache.md`](cache.md) — store 提交落缓存 / load 回填的存储侧行为
-- 仓库根目录 `docs/benchmarks.md` — 各用例 x10/clock 参考值（golden 唯一来源）
-
-## 参考文献
-
-1. <a id="back-ref-1"></a>R. M. Tomasulo, “An Efficient Algorithm for
-   Exploiting Multiple Arithmetic Units,” *IBM Journal of Research and
-   Development*, vol. 11, no. 1, pp. 25–33, 1967.
-   https://doi.org/10.1147/rd.111.0025
-2. <a id="back-ref-2"></a>J. E. Smith and A. R. Pleszkun, “Implementation
-   of Precise Interrupts in Pipelined Processors,” in *Proceedings of ISCA ’85*,
-   pp. 36–44, 1985. https://doi.org/10.1145/327070.327125
-3. <a id="back-ref-3"></a>K. C. Yeager, “The MIPS R10000 Superscalar
-   Microprocessor,” *IEEE Micro*, vol. 16, no. 2, pp. 28–41, 1996.
-   https://doi.org/10.1109/40.491460
-4. <a id="back-ref-4"></a>RISC-V International, *The RISC-V Instruction Set
-   Manual, Volume I: Unprivileged Architecture*, “M” Extension Version 2.0,
-   2026. https://docs.riscv.org/reference/isa/v20260120/unpriv/m-st-ext.html
-5. <a id="back-ref-5"></a>A. D. Booth, “A Signed Binary Multiplication
-   Technique,” *The Quarterly Journal of Mechanics and Applied Mathematics*,
-   vol. 4, no. 2, pp. 236–240, 1951.
-   https://doi.org/10.1093/qjmam/4.2.236
-6. <a id="back-ref-6"></a>O. L. MacSorley, “High-Speed Arithmetic in Binary
-   Computers,” *Proceedings of the IRE*, vol. 49, no. 1, pp. 67–91, 1961.
-   https://doi.org/10.1109/JRPROC.1961.287779
-7. <a id="back-ref-7"></a>C. S. Wallace, “A Suggestion for a Fast
-   Multiplier,” *IEEE Transactions on Electronic Computers*, vol. EC-13,
-   no. 1, pp. 14–17, 1964. https://doi.org/10.1109/PGEC.1964.263830
-8. <a id="back-ref-8"></a>Behrooz Parhami, *Computer Arithmetic: Algorithms
-   and Hardware Designs*, 2nd ed., Oxford University Press, 2010.
-   https://www.ece.ucsb.edu/~parhami/text_comp_arit.htm
-9. <a id="back-ref-9"></a>J. E. Robertson, “A New Class of Digital Division
-   Methods,” *IRE Transactions on Electronic Computers*, vol. EC-7, no. 3,
-   pp. 218–222, 1958. https://doi.org/10.1109/TEC.1958.5222579
-10. <a id="back-ref-10"></a>K. D. Tocher, “Techniques of Multiplication and
-    Division for Automatic Binary Computers,” *The Quarterly Journal of
-    Mechanics and Applied Mathematics*, vol. 11, no. 3, pp. 364–384, 1958.
-    https://doi.org/10.1093/qjmam/11.3.364
-11. <a id="back-ref-11"></a>D. E. Atkins, “Higher-Radix Division Using
-    Estimates of the Divisor and Partial Remainders,” *IEEE Transactions on
-    Computers*, vol. C-17, no. 10, pp. 925–934, 1968.
-    https://doi.org/10.1109/TC.1968.226439
-12. <a id="back-ref-12"></a>M. D. Ercegovac and T. Lang, *Division and Square
-    Root: Digit-Recurrence Algorithms and Implementations*, Kluwer Academic
-    Publishers, 1994. https://link.springer.com/book/9780792394389
-13. <a id="back-ref-13"></a>M. D. Ercegovac and T. Lang, “On-the-Fly
-    Conversion of Redundant into Conventional Representations,” *IEEE
-    Transactions on Computers*, vol. C-36, no. 7, pp. 895–897, 1987.
-    https://doi.org/10.1109/TC.1987.1676986
-14. <a id="back-ref-14"></a>T. Coe, T. Mathisen, C. Moler, and V. Pratt,
-    “Computational Aspects of the Pentium Affair,” *IEEE Computational Science
-    & Engineering*, vol. 2, no. 1, pp. 18–30, 1995.
-    https://doi.org/10.1109/99.372929
-15. <a id="back-ref-15"></a>ISO/IEC 14882:2020, *Programming Languages — C++*,
-    §7.6.7 `[expr.shift]`, 2020. https://eel.is/c++draft/expr.shift
-16. <a id="back-ref-16"></a>IEEE, *IEEE Standard for Floating-Point
-    Arithmetic*, IEEE Std 754-2019, 2019.
-    https://doi.org/10.1109/IEEESTD.2019.8766229
-17. <a id="back-ref-17"></a>纸上谈芯, “基4 SRT除法器,” 知乎专栏, 2021.
-    https://zhuanlan.zhihu.com/p/397563781
+- 同一周期至多发射一条、ROB 至多提交一条；五类 RS 能各自寻找就绪执行项，执行完成可经多路总线并行写回。
+- 恢复、CDB 与 ROB 查询都要保留 **完整 tag 身份**；仅靠低位槽号可能误认复用槽的旧结果。
+- `rv32_agu` 的组合地址接口及 `rv32_lsu` 的 LQ/SQ、存储器握手在 [访存](memory.md) 说明；缓存命中和脏行写回在 [缓存](cache.md) 说明。

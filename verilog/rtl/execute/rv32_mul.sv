@@ -13,13 +13,15 @@ module rv32_mul (
   localparam int unsigned PRODUCT_W = 64;
 
   logic [2:0] validInner;
+  logic [2:0] keepValidInner;
+  logic inputLiveInner;
   logic [PRODUCT_W-1:0] boothRowsRegisteredInner [6];
   logic [PRODUCT_W-1:0] csaSumInner, csaCarryInner;
   logic [31:0] resultInner;
   logic highInner [2];
   rob_tag_t tagInner [3];
   phy_tag_t phyInner [3];
-  logic ready2Inner, ready1Inner, ready0Inner;
+  logic resultCanAcceptInner, CSACanAcceptInner, partialCanAcceptInner;
 
   logic lhsSignedInner, rhsSignedInner;
   logic [PRODUCT_W-1:0] boothMultiplicandInner;
@@ -40,6 +42,13 @@ module rv32_mul (
   integer compressIndexInner;
   integer csaIndexInner;
   integer seqIndexInner;
+
+  for (genvar stage = 0; stage < 3; stage++) begin : gen_live_stages
+    assign keepValidInner[stage] = validInner[stage] && (!flushInfoInput.valid ||
+        rob_is_older(tagInner[stage], flushInfoInput.robTag));
+  end
+  assign inputLiveInner = !executeInput.valid || !flushInfoInput.valid ||
+      rob_is_older(executeInput.robTag, flushInfoInput.robTag);
 
   // Stage 1: radix-4 Booth recoding followed by three CSA levels. Negative
   // digits use one's-complement rows plus a shared correction row, avoiding a
@@ -139,11 +148,11 @@ module rv32_mul (
   );
 
   always_comb begin
-    ready2Inner = !validInner[2] || outReadyInput;
-    ready1Inner = !validInner[1] || ready2Inner;
-    ready0Inner = !validInner[0] || ready1Inner;
-    inReadyOutput = ready0Inner;
-    executeOutput.valid = validInner[2];
+    resultCanAcceptInner = !keepValidInner[2] || outReadyInput;
+    CSACanAcceptInner = !keepValidInner[1] || resultCanAcceptInner;
+    partialCanAcceptInner = !keepValidInner[0] || CSACanAcceptInner;
+    inReadyOutput = partialCanAcceptInner && inputLiveInner;
+    executeOutput.valid = keepValidInner[2];
     executeOutput.value = resultInner;
     executeOutput.robTag = tagInner[2];
     executeOutput.destinationPhy = phyInner[2];
@@ -163,36 +172,18 @@ module rv32_mul (
         tagInner[seqIndexInner] <= '0;
         phyInner[seqIndexInner] <= '0;
       end
-    end else if (flushInfoInput.valid) begin
-      // The old output is consumed in the flush cycle. Older work advances
-      // while equal or younger operations are discarded.
-      validInner[2] <= validInner[1] && rob_is_older(tagInner[1], flushInfoInput.robTag);
-      if (validInner[1] && rob_is_older(tagInner[1], flushInfoInput.robTag)) begin
-        resultInner <= highInner[1] ? finalProductInner[63:32] : finalProductInner[31:0];
-        tagInner[2] <= tagInner[1];
-        phyInner[2] <= phyInner[1];
-      end
-      validInner[1] <= validInner[0] && rob_is_older(tagInner[0], flushInfoInput.robTag);
-      if (validInner[0] && rob_is_older(tagInner[0], flushInfoInput.robTag)) begin
-        csaSumInner <= csaSumDInner;
-        csaCarryInner <= csaCarryDInner;
-        highInner[1] <= highInner[0];
-        tagInner[1] <= tagInner[0];
-        phyInner[1] <= phyInner[0];
-      end
-      validInner[0] <= 1'b0;
     end else begin
-      if (ready2Inner) begin
-        validInner[2] <= validInner[1];
-        if (validInner[1]) begin
+      if (resultCanAcceptInner) begin
+        validInner[2] <= keepValidInner[1];
+        if (keepValidInner[1]) begin
           resultInner <= highInner[1] ? finalProductInner[63:32] : finalProductInner[31:0];
           tagInner[2] <= tagInner[1];
           phyInner[2] <= phyInner[1];
         end
       end
-      if (ready1Inner) begin
-        validInner[1] <= validInner[0];
-        if (validInner[0]) begin
+      if (CSACanAcceptInner) begin
+        validInner[1] <= keepValidInner[0];
+        if (keepValidInner[0]) begin
           csaSumInner <= csaSumDInner;
           csaCarryInner <= csaCarryDInner;
           highInner[1] <= highInner[0];
@@ -200,9 +191,9 @@ module rv32_mul (
           phyInner[1] <= phyInner[0];
         end
       end
-      if (ready0Inner) begin
-        validInner[0] <= executeInput.valid;
-        if (executeInput.valid) begin
+      if (partialCanAcceptInner) begin
+        validInner[0] <= executeInput.valid && inputLiveInner;
+        if (executeInput.valid && inputLiveInner) begin
           for (seqIndexInner = 0; seqIndexInner < 6; seqIndexInner = seqIndexInner + 1)
             boothRowsRegisteredInner[seqIndexInner] <= compressL3Inner[seqIndexInner];
           highInner[0] <= (executeInput.operation != OP_MUL);

@@ -2,6 +2,7 @@ module rv32_bru_unit (
   input  logic                   clkInput,
   input  logic                   rstNInput,
   input  logic                   flushInput,
+  input  rv32_pkg::rob_tag_t      flushTagInput,
 
   input  rv32_pkg::execute_request_input_t executeInput,
   output logic                   inReadyOutput,
@@ -36,8 +37,8 @@ module rv32_bru_unit (
   assign bruMisalignedInner = bruOperationOutputInner.targetMisaligned;
 
   always_comb begin
-    inReadyOutput = !flushInput;
-    executeOutput.valid = validInner;
+    inReadyOutput = !executeInput.valid || !flushInput || rob_is_older(executeInput.robTag, flushTagInput);
+    executeOutput.valid = validInner && (!flushInput || rob_is_older(tagInner, flushTagInput));
     executeOutput.robTag = tagInner;
     executeOutput.programCounter = pcInner;
     executeOutput.target = targetInner;
@@ -65,11 +66,9 @@ module rv32_bru_unit (
       misalignedInner <= 1'b0;
       callInner <= 1'b0;
       returnInner <= 1'b0;
-    end else if (flushInput) begin
-      validInner <= 1'b0;
     end else begin
-      validInner <= executeInput.valid;
-      if (executeInput.valid) begin
+      validInner <= executeInput.valid && inReadyOutput;
+      if (executeInput.valid && inReadyOutput) begin
         tagInner <= executeInput.robTag;
         pcInner <= executeInput.programCounter;
         targetInner <= bruTargetInner;

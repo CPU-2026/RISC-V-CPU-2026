@@ -1,7 +1,7 @@
 module rv32_predictor #(
   parameter int unsigned BHT_ENTRIES = 256,
   parameter int unsigned BTB_ENTRIES = 64,
-  parameter int unsigned RAS_ENTRIES = 8,
+  parameter int unsigned RAS_ENTRIES = rv32_pkg::RAS_ENTRIES,
   parameter int unsigned CONDSEEN_ENTRIES = 512,
   parameter int unsigned CKPT_ENTRIES = rv32_pkg::BPU_CKPT_ENTRIES
 ) (
@@ -112,11 +112,11 @@ module rv32_predictor #(
                       squash: squashInput,
                       branchCheckpointId: branchInput.checkpointId,
                       globalHistory: dirGhrInner}),
-    .checkpointOutput(checkpointOutputInner)
+    .checkpointOutput(checkpointOutputInner),
+    .nextCheckpointIdOutput(predictionOutput.checkpointId)
   );
   assign branchGhrInner = checkpointOutputInner.branchHistory;
   assign ckptSquashGhrInner = checkpointOutputInner.recoveryHistory;
-  assign predictionOutput.checkpointId = checkpointOutputInner.nextCheckpointId;
 
   // Unused direction confidence output is kept for observability only.
   logic unusedDirUseGlobalInner;

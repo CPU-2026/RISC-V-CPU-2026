@@ -24,7 +24,6 @@ module rv32_rat (
     readOutput.source2Phy = (readInput.source2Arch == 5'd0) ? '0 : mapInner[readInput.source2Arch];
     renameOutput.previousPhysicalRegister = (renameInput.architecturalRegister == 5'd0) ? '0 :
                        mapInner[renameInput.architecturalRegister];
-    readOutput.debugPhy = (readInput.debugArch == 5'd0) ? '0 : mapInner[readInput.debugArch];
   end
 
   always_comb begin : build_restore_map

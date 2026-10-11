@@ -1,5 +1,5 @@
 module rv32_bpu_ras #(
-  parameter int unsigned RAS_ENTRIES = 8
+  parameter int unsigned RAS_ENTRIES = rv32_pkg::RAS_ENTRIES
 ) (
   input logic clkInput,
   input logic rstNInput,
@@ -12,17 +12,18 @@ module rv32_bpu_ras #(
   output logic [31:0]            queryRetTargetOutput
 );
   import rv32_pkg::*;
-  localparam int unsigned RAS_PTR_W = $clog2(RAS_ENTRIES);
+  localparam int unsigned RAS_PTR_W = RAS_ENTRIES > 1 ? $clog2(RAS_ENTRIES) : 1;
+  localparam int unsigned RAS_STORAGE_ENTRIES = RAS_ENTRIES > 0 ? RAS_ENTRIES : 1;
 
-  logic [31:0] specRasPcInner [RAS_ENTRIES];
+  logic [31:0] specRasPcInner [RAS_STORAGE_ENTRIES];
   logic [15:0] specRasTopInner;  // TOS of spec RAS
-  logic [31:0] archRasPcInner [RAS_ENTRIES];
+  logic [31:0] archRasPcInner [RAS_STORAGE_ENTRIES];
   logic [15:0] archRasTopInner;  // TOS of arch RAS
 
   logic [15:0] specRasTopNext;
   logic [15:0] archRasTopNext;
-  logic [31:0] specRasPcNext [RAS_ENTRIES];
-  logic [31:0] archRasPcNext [RAS_ENTRIES];
+  logic [31:0] specRasPcNext [RAS_STORAGE_ENTRIES];
+  logic [31:0] archRasPcNext [RAS_STORAGE_ENTRIES];
   rob_tag_t replayCountInner;
   rob_tag_t replayTagInner;
   logic replayCallInner, replayRetInner;
@@ -48,17 +49,17 @@ module rv32_bpu_ras #(
     replayRetInner = 1'b0;
     replayRdLinkInner = 1'b0;
     replayRs1LinkInner = 1'b0;
-    for (combIndexInner = 0; combIndexInner < RAS_ENTRIES; combIndexInner = combIndexInner + 1) begin
+    for (combIndexInner = 0; combIndexInner < RAS_STORAGE_ENTRIES; combIndexInner = combIndexInner + 1) begin
       specRasPcNext[combIndexInner] = specRasPcInner[combIndexInner];
       archRasPcNext[combIndexInner] = archRasPcInner[combIndexInner];
     end
 
     if (robInput.willCommit) begin
-      if (robInput.isHeadCall) begin
+      if (robInput.isHeadReturn && (archRasTopNext != 16'd0))
+        archRasTopNext = archRasTopNext - 16'd1;
+      if (robInput.isHeadCall && archRasTopNext < 16'(RAS_STORAGE_ENTRIES)) begin
         archRasPcNext[archRasTopNext[RAS_PTR_W-1:0]] = robInput.headProgramCounter + 32'd4;
         archRasTopNext = archRasTopNext + 16'd1;
-      end else if (robInput.isHeadReturn && (archRasTopNext != 16'd0)) begin
-        archRasTopNext = archRasTopNext - 16'd1;
       end
     end
 
@@ -67,7 +68,7 @@ module rv32_bpu_ras #(
       // surviving ROB instruction (including the mispredicted boundaryInput).
       // Skipping a simultaneous commit avoids applying it twice.
       specRasTopNext = archRasTopNext;
-      for (combIndexInner = 0; combIndexInner < RAS_ENTRIES; combIndexInner = combIndexInner + 1)
+      for (combIndexInner = 0; combIndexInner < RAS_STORAGE_ENTRIES; combIndexInner = combIndexInner + 1)
         specRasPcNext[combIndexInner] = archRasPcNext[combIndexInner];
       for (combIndexInner = 0; combIndexInner < ROB_ENTRIES; combIndexInner = combIndexInner + 1) begin
         replayTagInner = robInput.headTag + rob_tag_t'(combIndexInner);
@@ -84,22 +85,22 @@ module rv32_bpu_ras #(
                         replayRdLinkInner;
           replayRetInner = (robInput.replayEntries[combIndexInner].instruction[6:0] == OPCODE_JALR) &&
                         (robInput.replayEntries[combIndexInner].instruction[14:12] == 3'b000) &&
-                       replayRs1LinkInner && !replayRdLinkInner;
-          if (replayCallInner) begin
+                        replayRs1LinkInner;
+          if (replayRetInner && (specRasTopNext != 16'd0))
+            specRasTopNext = specRasTopNext - 16'd1;
+          if (replayCallInner && specRasTopNext < 16'(RAS_STORAGE_ENTRIES)) begin
             specRasPcNext[specRasTopNext[RAS_PTR_W-1:0]] =
               robInput.replayEntries[combIndexInner].programCounter + 32'd4;
             specRasTopNext = specRasTopNext + 16'd1;
-          end else if (replayRetInner && (specRasTopNext != 16'd0)) begin
-            specRasTopNext = specRasTopNext - 16'd1;
           end
         end
       end
     end else if (fetchInfoInput.valid) begin
-      if (fetchInfoInput.isCall) begin
+      if (fetchInfoInput.isReturn && (specRasTopNext != 16'd0))
+        specRasTopNext = specRasTopNext - 16'd1;
+      if (fetchInfoInput.isCall && specRasTopNext < 16'(RAS_STORAGE_ENTRIES)) begin
         specRasPcNext[specRasTopNext[RAS_PTR_W-1:0]] = fetchInfoInput.programCounter + 32'd4;
         specRasTopNext = specRasTopNext + 16'd1;
-      end else if (fetchInfoInput.isReturn && (specRasTopNext != 16'd0)) begin
-        specRasTopNext = specRasTopNext - 16'd1;
       end
     end
   end
@@ -108,17 +109,23 @@ module rv32_bpu_ras #(
     if (!rstNInput) begin
       specRasTopInner <= '0;
       archRasTopInner <= '0;
-      for (seqIndexInner = 0; seqIndexInner < RAS_ENTRIES; seqIndexInner = seqIndexInner + 1) begin
+      for (seqIndexInner = 0; seqIndexInner < RAS_STORAGE_ENTRIES; seqIndexInner = seqIndexInner + 1) begin
         specRasPcInner[seqIndexInner] <= '0;
         archRasPcInner[seqIndexInner] <= '0;
       end
     end else begin
       specRasTopInner <= specRasTopNext;
       archRasTopInner <= archRasTopNext;
-      for (seqIndexInner = 0; seqIndexInner < RAS_ENTRIES; seqIndexInner = seqIndexInner + 1) begin
+      for (seqIndexInner = 0; seqIndexInner < RAS_STORAGE_ENTRIES; seqIndexInner = seqIndexInner + 1) begin
         specRasPcInner[seqIndexInner] <= specRasPcNext[seqIndexInner];
         archRasPcInner[seqIndexInner] <= archRasPcNext[seqIndexInner];
       end
     end
   end
+`ifndef SYNTHESIS
+  initial begin
+    assert (RAS_ENTRIES >= 1 && RAS_ENTRIES <= 255)
+      else $fatal(1, "BPU RAS parameter must be 1..255 (shared software depth carrier)");
+  end
+`endif
 endmodule

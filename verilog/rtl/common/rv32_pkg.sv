@@ -9,6 +9,25 @@ package rv32_pkg;
   parameter int unsigned SQ_ENTRIES   = 8;
   parameter int unsigned BPU_CKPT_ENTRIES = 32;
   parameter int unsigned BPU_CKPT_ID_W = $clog2(BPU_CKPT_ENTRIES);
+  parameter int unsigned FETCH_REQUEST_ENTRIES = 4;
+  parameter int unsigned INT_RS_ENTRIES = 4;
+  parameter int unsigned MUL_RS_ENTRIES = 2;
+  parameter int unsigned DIV_RS_ENTRIES = 1;
+  parameter int unsigned BRANCH_RS_ENTRIES = 4;
+  parameter int unsigned LOAD_RS_ENTRIES = 4;
+  parameter int unsigned STORE_ADDR_RS_ENTRIES = 4;
+  parameter int unsigned STORE_VALUE_RS_ENTRIES = 4;
+  // ALU result buffer depth.  Mirrors the software reference ALU_CAP = 1: the
+  // reference (since 2026-10-07) applies this cycle's grant/flush before the
+  // push, so a single result slot is reusable in the cycle it is drained and
+  // one op per cycle is sustained without extra capacity.
+  parameter int unsigned ALU_RESULT_ENTRIES = 1;
+  parameter int unsigned CACHE_LINE_BYTES = 64;
+  parameter int unsigned CACHE_LINE_BITS = CACHE_LINE_BYTES << 3;
+  parameter int unsigned ICACHE_SETS = 16;
+  parameter int unsigned DCACHE_SETS = 128;
+  parameter int unsigned DCACHE_WAYS = 1;
+  parameter int unsigned RAS_ENTRIES = 32;
 
   localparam logic [31:0] HALT_INSN = 32'h0ff0_0513;
   localparam logic [6:0] OPCODE_LUI    = 7'b0110111;
@@ -192,13 +211,11 @@ package rv32_pkg;
   typedef struct packed {
     logic [4:0] source1Arch;
     logic [4:0] source2Arch;
-    logic [4:0] debugArch;
   } rat_read_input_t;
 
   typedef struct packed {
     phy_tag_t source1Phy;
     phy_tag_t source2Phy;
-    phy_tag_t debugPhy;
   } rat_read_output_t;
 
   typedef struct packed {
@@ -267,7 +284,14 @@ package rv32_pkg;
 
   typedef struct packed {
     logic valid;
+    rob_tag_t robTag;
+    logic [31:0] value;
+  } store_data_input_t;
+
+  typedef struct packed {
+    logic valid;
     logic isStore;
+    rob_tag_t robTag;
     logic [31:0] address;
   } lsu_address_input_t;
 
@@ -275,6 +299,13 @@ package rv32_pkg;
     logic valid;
     rob_tag_t robTag;
   } store_commit_input_t;
+
+  // Actual ROB retirement broadcast. LSU recycles a matching live LQ row;
+  // non-load retirement tags have no matching row and leave the LQ alone.
+  typedef struct packed {
+    logic valid;
+    rob_tag_t robTag;
+  } rob_retirement_input_t;
 
   typedef struct packed {
     logic valid;
@@ -284,8 +315,10 @@ package rv32_pkg;
   } load_result_output_t;
 
   typedef struct packed {
-    logic valid;
-    rob_tag_t robTag;
+    // Indexed by the package tag's slot bits, even in reduced-DEPTH ROB tests.
+    // A bit is qualified only by an old, uncommitted, address/data-ready SQ row.
+    logic [ROB_ENTRIES-1:0] readyMask;
+    logic [ROB_ENTRIES-1:0] epochMask;
   } store_completion_output_t;
 
   typedef struct packed {
@@ -305,12 +338,26 @@ package rv32_pkg;
   typedef struct packed {
     logic valid;
     logic [31:0] address;
+    logic [31:0] predictedProgramCounter;
+    bpu_ckpt_id_t predictorCheckpointId;
   } icache_cpu_request_input_t;
 
   typedef struct packed {
     logic valid;
     logic [31:0] instruction;
+    logic [31:0] address;
+    logic [31:0] predictedProgramCounter;
+    bpu_ckpt_id_t predictorCheckpointId;
   } icache_cpu_response_output_t;
+
+  // I$ line returns carry their line identity, as software IMEM::LineReturn.
+  // The instruction-line environment acknowledges logical cancellation with
+  // memFlushOutput; a physical bus adapter owns any cancelled transport drain.
+  typedef struct packed {
+    logic valid;
+    logic [31:0] address;
+    logic [CACHE_LINE_BITS-1:0] data;
+  } icache_line_response_input_t;
 
   typedef struct packed {
     logic [31:0] programCounter;
@@ -325,6 +372,8 @@ package rv32_pkg;
   typedef struct packed {
     logic valid;
     logic [31:0] address;
+    logic [31:0] predictedProgramCounter;
+    bpu_ckpt_id_t predictorCheckpointId;
   } instruction_memory_request_output_t;
 
   typedef struct packed {
@@ -355,13 +404,23 @@ package rv32_pkg;
     logic valid;
     logic write;
     logic [31:0] address;
-    logic [127:0] writeData;
+    logic [CACHE_LINE_BITS-1:0] writeData;
   } cache_line_request_output_t;
 
   typedef struct packed {
     logic valid;
-    logic [127:0] data;
+    logic [CACHE_LINE_BITS-1:0] data;
   } cache_line_response_input_t;
+
+  // D$ mirrors the software DMEM's independent read/write line channels.
+  // A write handshake transfers the payload; write completion is separate.
+  typedef struct packed {
+    logic readValid;
+    logic [31:0] readAddress;
+    logic writeValid;
+    logic [31:0] writeAddress;
+    logic [CACHE_LINE_BITS-1:0] writeData;
+  } dcache_line_request_output_t;
 
   typedef struct packed {
     logic valid;

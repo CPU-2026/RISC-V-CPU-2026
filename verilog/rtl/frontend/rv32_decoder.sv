@@ -28,6 +28,8 @@ module rv32_decoder (
     uopOutput.memorySize = MEM_WORD;
 
     if (decodeContextInput.instruction == HALT_INSN) begin
+      // Retain the encoded ADDI payload, as the software decoded IQ does.
+      uopOutput.immediate = {{20{decodeContextInput.instruction[31]}}, decodeContextInput.instruction[31:20]};
       uopOutput.illegal = 1'b0;
       uopOutput.halt = 1'b1;
       uopOutput.uopClass = UOP_HALT;
