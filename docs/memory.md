@@ -39,14 +39,14 @@ n 拍计算并保存，n+1 拍交付、拍末置 LSU 地址 ready，n+2 拍可�
 
 ## 2. `rv32_lsu`：队列及对外接口
 
-参数：`LQ_DEPTH=8`、`SQ_DEPTH=8`、`STORE_DATA_LANES=1`；core 将数据交付路数配置为 4。
+参数：`LQ_DEPTH=8`、`SQ_DEPTH=8`、`STORE_DATA_LANES=1`；当前 core 将数据交付路数配置为 2。
 
 | 方向 | 端口 | 含义与有效条件 |
 |---|---|---|
 | 输入 | `clkInput`, `rstNInput`, `flushInfoInput: rob_flush_input_t` | 时钟/复位；`valid/robTag` 使年轻 LQ/SQ 项无效，并将已发出的错路 load 响应标记为待丢弃。 |
 | 输入 / 输出 | `loadAllocationInput: load_allocation_input_t`, `loadAllocReadyOutput`, `loadAllocIndexOutput[$clog2(LQ_DEPTH)-1:0]` | `valid && ready` 分配 LQ 槽；载荷为 `robTag/destinationPhy/size/isUnsigned`。索引交访存 RS，用于之后写地址。 |
 | 输入 / 输出 | `storeAllocationInput: store_allocation_input_t`, `storeAllocReadyOutput`, `storeAllocIndexOutput[$clog2(SQ_DEPTH)-1:0]` | `valid && ready` 分配 SQ 槽；携带 store 大小以及 `dataReady/dataTag/dataValue`。 |
-| 输入 | `storeDataInput[STORE_DATA_LANES]: store_data_input_t`, `storeDataIndexInput[STORE_DATA_LANES]` | StoreValue RS 并行交付数据与 SQ 索引，完整 tag 匹配后拍末置数据就绪。 |
+| 输入 | `storeDataInput[STORE_DATA_LANES]: store_data_input_t`, `storeDataIndexInput[STORE_DATA_LANES]` | StoreValue RS 最多两路并行交付数据与 SQ 索引，完整 tag 匹配后拍末置数据就绪。 |
 | 输入 | `addressInput: lsu_address_input_t`, `addressIndexInput[max($clog2(LQ_DEPTH),$clog2(SQ_DEPTH))-1:0]` | 地址与槽号定位目标，须核验完整 tag 和恢复年龄。 |
 | 输入 | `writebackInput[4]: cdb_result_t` | 非零 `dataTag` 匹配时唤醒 SQ 数据，也可在分配拍旁路；core 的 `dataTag=0` 表示等待 StoreValue。 |
 | 输出 / 输入 | `loadResultOutput: load_result_output_t`, `loadResultReadyInput` | 最老已完成、未广播的 Load；握手后标记已广播，不释放 LQ。 |
@@ -55,7 +55,7 @@ n 拍计算并保存，n+1 拍交付、拍末置 LSU 地址 ready，n+2 拍可�
 | 输入 / 输出 | `storeCommitInput: store_commit_input_t`, `storeCommitIndexInput[$clog2(SQ_DEPTH)-1:0]`, `storeCommitReadyOutput` | ROB 头 Store 退休提议；目标身份、就绪和恢复资格匹配即 ready，不依赖 dmemReady。 |
 | 输出 | `storeRetirementOutput: data_memory_request_output_t` | ROB 头目标的独立退休载荷，valid 为提议匹配；实际 commit 才使能跟踪。 |
 | 输出 / 输入 | `dmemRequestOutput: data_memory_request_output_t`, `dmemReqReadyInput` | 至多一个 32 位处理器侧请求；`valid && ready` 被内存系统接受，store 优先于 load。 |
-| 输入 | `dmemResponseInput: data_memory_response_input_t` | 已发 load 的 `valid/readData`；只有一个待返回 load，错路返回须消费但不写入 LQ。 |
+| 输入 | `dmemResponseInput: data_memory_response_input_t` | 有序 Load 运输完成；四项FIFO冻结每个owner的身份/宽度/符号/取消位，错路返回仍消费但不写LQ。 |
 | 输出 | `lqCountOutput[$clog2(LQ_DEPTH+1)-1:0]`, `sqCountOutput[$clog2(SQ_DEPTH+1)-1:0]` | 各自当前有效槽数，容量上限即参数指定深度。 |
 
 `loadAllocIndexOutput/storeAllocIndexOutput` 仅在分配握手时代表新身份。StoreValue 的 core 数组为升序、LSU 端口为降序，核验交付事件应按实际连线匹配，不能直接对应同数字 lane。
@@ -67,6 +67,6 @@ Load 地址交付查询旧 SQ；Store 地址/数据通知使用新到达字段�
 1. **转发**：选择最年轻的字节重叠 Store，必须单源完整覆盖、数据就绪且比最后未知地址项年轻。不能跳过年轻部分覆盖项，也不多源拼接或合并部分内存返回。已提交 Store 按 SQ FIFO 次序参与，不用已退休 ROB tag 比较。
 2. **Cache 准入**：转发失败时，更老未提交 Store 地址未知或有任意字节重叠都会阻塞读。按实际 1/2/4 B 消歧，返回按宽度和 `isUnsigned` 扩展。
 3. **发送**：SQ 头已提交或本拍实际退休时优先发写，否则选择未阻塞 Load。只有请求握手才释放 SQ；满队列本拍不因发送提前接收分配。Store 使用原始字节地址，strobe 为 `0001/0011/1111`，从原始地址起排列。
-4. **返回身份**：仅一个在途 Load，接受时冻结 slot/tag/size/unsigned。返回须匹配活动槽完整 tag 且尚未 READY；已转发或错路返回只消费、清 pending。旧响应与新读可同拍替换，不能用复用后的槽重解释旧响应。
+4. **返回身份**：最多四个Load在D$排队；接受时逐项冻结 slot/tag/size/unsigned，恢复对旧owner持久置drop（包括边界，按软件严格更老资格）。返回消费FIFO旧头，须匹配活动且已发送、尚未READY的LQ槽。已转发或错路返回只出队；同时返回/接受时head/tail/count统一更新。队列满时不接受新Load，不能先握手后因FIFO满吞掉请求。不能从复用槽读取旧事务的宽度/符号。
 
-`storeCompleteOutput` 只表示地址/数据齐，ROB 批量置 ready 后下拍才可退休。core 停机只等 SQ 请求接受排空；最终脏行写回由 `rv32_dmem_backend` 完成，见 [cache.md](cache.md)。
+`storeCompleteOutput` 只表示地址/数据齐，ROB 批量置 ready 后下拍才可退休。HALT实际提交立即结束，SQ/D$/外存可仍有Store；不排空、不写回所有dirty。正常脏逐出及实际运输完成协议保留，见 [cache.md](cache.md)。

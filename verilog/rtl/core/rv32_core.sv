@@ -612,9 +612,8 @@ module rv32_core #(
     commitMemAddrOutput = lsuStoreRetirementOutputInner.address;
     commitMemDataOutput = lsuStoreRetirementOutputInner.writeData;
     commitMemWstrbOutput = lsuStoreRetirementOutputInner.writeStrobe;
-    // Retirement stops issue immediately; expose HALT after posted SQ writes
-    // have all been accepted. An outer cache/memory owns its subsequent drain.
-    haltedOutput = haltedInner && sqCountInner == 0;
+    // HALT commits immediately; no SQ/cache/memory drain (software-aligned).
+    haltedOutput = haltedInner;
     trapOutput = trapInner;
   end
 

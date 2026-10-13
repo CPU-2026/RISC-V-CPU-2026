@@ -1,6 +1,6 @@
 module rv32_frontend #(
-  parameter int unsigned FQ_DEPTH = 4,
-  parameter int unsigned IQ_DEPTH = 4,
+  parameter int unsigned FQ_DEPTH = rv32_pkg::FQ_ENTRIES,
+  parameter int unsigned IQ_DEPTH = rv32_pkg::IQ_ENTRIES,
   parameter int unsigned REQUEST_DEPTH = rv32_pkg::FETCH_REQUEST_ENTRIES,
   parameter logic [31:0] RESET_PC = 32'b0
 ) (

@@ -4,19 +4,20 @@
 
 ## 1. 常量、宽度和身份
 
-checkpoint 容量须与包定义及 ID 宽度一致，覆盖 ROB+I$+FQ+IQ 的默认预算 28，且不超过 64。RAS 深度允许 1..255；BTB 项数须为不小于 2 的二次幂，并保留 PC tag。
+checkpoint 容量须与包定义及 ID 宽度一致，覆盖 ROB+I$+FQ+IQ 的当前预算 24，且不超过 64。RAS 深度允许 1..255；BTB 项数须为不小于 2 的二次幂，并保留 PC tag。
 
 | 定义 | 当前值 | 硬件含义 |
 |---|---:|---|
 | `XLEN` / `ARCH_REGS` | 32 / 32 | 数据位宽 / 架构寄存器数，`x0` 恒为零。 |
 | `ROB_ENTRIES` / `ROB_TAG_W` | 16 / 5 | ROB 槽数 / 完整循环标签宽度。 |
 | `PRF_ENTRIES` / `PHY_TAG_W` | 48 / 6 | PRF 条目数 / 物理标签宽度；P0 对应 `x0`，不分配。 |
+| `FQ_ENTRIES` / `IQ_ENTRIES` | 2 / 2 | 当前取指和译码队列深度。 |
 | `LQ_ENTRIES` / `SQ_ENTRIES` | 8 / 8 | load/store 队列默认槽数。 |
 | `BPU_CKPT_ENTRIES` / `BPU_CKPT_ID_W` | 32 / 5 | 预测历史检查点数 / `bpu_ckpt_id_t` 宽度。 |
-| `FETCH_REQUEST_ENTRIES` / `RAS_ENTRIES` | 4 / 32 | 取指请求容量 / 返回栈深度。 |
+| `FETCH_REQUEST_ENTRIES` / `RAS_ENTRIES` | 4 / 16 | 取指请求容量 / 返回栈深度。 |
 | `CACHE_LINE_BYTES` / `CACHE_LINE_BITS` | 64 / 512 | Cache 行字节数 / 数据位宽。 |
 | `ICACHE_SETS` / `DCACHE_SETS` / `DCACHE_WAYS` | 16 / 128 / 1 | I$ 1 KiB、D$ 8 KiB，均直接映射。 |
-| RS 容量 | 4/2/1/4/4/4/4 | Integer/Multiply/Divide/Branch/Load/StoreAddr/StoreValue，共 23 槽。 |
+| RS 容量 | 2/1/1/2/2/2/2 | Integer/Multiply/Divide/Branch/Load/StoreAddr/StoreValue，共 12 槽。 |
 | `HALT_INSN` | `32'h0ff0_0513` | 特定停机指令字。 |
 
 `OPCODE_*` 定义 RV32I 主 opcode；`uop_class_e` 定义指令类别，`operation_e` 定义具体运算。`mem_size_e` 与请求 `size` 统一为 `MEM_BYTE/HALF/WORD=0/1/2`，对应 1/2/4 B。
@@ -78,7 +79,7 @@ checkpoint 容量须与包定义及 ID 宽度一致，覆盖 ROB+I$+FQ+IQ 的默
 |---|---|
 | `load_allocation_input_t` | `valid/robTag/destinationPhy/size/isUnsigned`：LQ 分配。 |
 | `store_allocation_input_t` | `valid/robTag/size/dataReady/dataTag/dataValue`：SQ 分配；非零 dataTag 可由 CDB 唤醒，0 表示等待 StoreValue。 |
-| `store_data_input_t` | `valid/robTag/value`：StoreValue 数据交付，另有 SQ 槽索引；core 使用 4 路。 |
+| `store_data_input_t` | `valid/robTag/value`：StoreValue 数据交付，另有 SQ 槽索引；当前 core 使用 2 路。 |
 | `lsu_address_input_t` | `valid/isStore/robTag/address`：配合槽号定位 LQ/SQ，须匹配旧活动项或同拍分配的完整 tag。 |
 | `store_commit_input_t` | `valid/robTag`：ROB 头 Store 退休提议；ready 只等目标就绪，实际退休由 `rob_retirement_input_t` 确认。 |
 | `store_completion_output_t` | `readyMask/epochMask` 各 `ROB_ENTRIES` 位：旧有效、未提交且地址/数据齐的 Store 批量完成，ROB 核验身份与恢复年龄后置 ready。 |

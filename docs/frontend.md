@@ -45,7 +45,7 @@ FQ、IQ 和已接受请求各 4 槽，每拍至多输出一条。FQ/IQ 使用 ep
 
 ## 3. `rv32_predictor`：预测顶层
 
-源码：[`rv32_predictor.sv`](../verilog/rtl/predictor/rv32_predictor.sv)。参数 `BHT_ENTRIES=256`、`BTB_ENTRIES=64`、`RAS_ENTRIES=32`、`CONDSEEN_ENTRIES=512`、`CKPT_ENTRIES=32`。
+源码：[`rv32_predictor.sv`](../verilog/rtl/predictor/rv32_predictor.sv)。参数 `BHT_ENTRIES=256`、`BTB_ENTRIES=64`、`RAS_ENTRIES=16`、`CONDSEEN_ENTRIES=512`、`CKPT_ENTRIES=32`。
 
 | 方向 | 端口 | 作用 |
 |---|---|---|
@@ -85,7 +85,7 @@ FQ、IQ 和已接受请求各 4 槽，每拍至多输出一条。FQ/IQ 使用 ep
 
 ### 3.3 `rv32_bpu_ras`：返回地址栈
 
-源码：[`rv32_bpu_ras.sv`](../verilog/rtl/predictor/rv32_bpu_ras.sv)。参数 `RAS_ENTRIES=32`，非环形有界栈；满 push、空 pop 保持。
+源码：[`rv32_bpu_ras.sv`](../verilog/rtl/predictor/rv32_bpu_ras.sv)。参数 `RAS_ENTRIES=16`，非环形有界栈；满 push、空 pop 保持。
 
 JALR 的 push=`rd∈{x1,x5}`、pop=`rs1∈{x1,x5}`，两标志独立；双 link 即使同寄存器也先 pop 后 push。JAL 仅按 rd 判断 push。容量检查使用 pop 后深度，查询读取旧栈顶。
 

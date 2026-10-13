@@ -9,14 +9,16 @@ package rv32_pkg;
   parameter int unsigned SQ_ENTRIES   = 8;
   parameter int unsigned BPU_CKPT_ENTRIES = 32;
   parameter int unsigned BPU_CKPT_ID_W = $clog2(BPU_CKPT_ENTRIES);
+  parameter int unsigned FQ_ENTRIES   = 2;
+  parameter int unsigned IQ_ENTRIES   = 2;
   parameter int unsigned FETCH_REQUEST_ENTRIES = 4;
-  parameter int unsigned INT_RS_ENTRIES = 4;
-  parameter int unsigned MUL_RS_ENTRIES = 2;
+  parameter int unsigned INT_RS_ENTRIES = 2;
+  parameter int unsigned MUL_RS_ENTRIES = 1;
   parameter int unsigned DIV_RS_ENTRIES = 1;
-  parameter int unsigned BRANCH_RS_ENTRIES = 4;
-  parameter int unsigned LOAD_RS_ENTRIES = 4;
-  parameter int unsigned STORE_ADDR_RS_ENTRIES = 4;
-  parameter int unsigned STORE_VALUE_RS_ENTRIES = 4;
+  parameter int unsigned BRANCH_RS_ENTRIES = 2;
+  parameter int unsigned LOAD_RS_ENTRIES = 2;
+  parameter int unsigned STORE_ADDR_RS_ENTRIES = 2;
+  parameter int unsigned STORE_VALUE_RS_ENTRIES = 2;
   // ALU result buffer depth.  Mirrors the software reference ALU_CAP = 1: the
   // reference (since 2026-10-07) applies this cycle's grant/flush before the
   // push, so a single result slot is reusable in the cycle it is drained and
@@ -27,7 +29,7 @@ package rv32_pkg;
   parameter int unsigned ICACHE_SETS = 16;
   parameter int unsigned DCACHE_SETS = 128;
   parameter int unsigned DCACHE_WAYS = 1;
-  parameter int unsigned RAS_ENTRIES = 32;
+  parameter int unsigned RAS_ENTRIES = 16;
 
   localparam logic [31:0] HALT_INSN = 32'h0ff0_0513;
   localparam logic [6:0] OPCODE_LUI    = 7'b0110111;

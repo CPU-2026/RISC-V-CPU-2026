@@ -49,9 +49,11 @@ module student_top (
   logic [1:0] coreDmemReqSizeInner;
   logic coreDmemRspValidInner;
   logic [31:0] coreDmemRspDataInner;
+  logic coreResetNInner;
+  assign coreResetNInner = !reset;
 
   rv32_core u_core (
-    .clkInput(clock), .rstNInput(!reset),
+    .clkInput(clock), .rstNInput(coreResetNInner),
     .imemReqValidOutput(coreImemReqValidInner),
     .imemReqReadyInput(coreImemReadyInner),
     .imemReqAddrOutput(coreImemReqAddrInner),
@@ -97,6 +99,8 @@ module student_top (
   assign coreDmemRspDataInner = dmemRspDataInput[31:0];
   assign drainDoneOutput = haltedOutput;
 `else
+  // Compatibility observation only; HALT is no longer an instruction to drain.
+  assign drainDoneOutput = haltedOutput;
   icache_cpu_response_output_t icacheResponseInner;
   cache_line_request_output_t icacheLineRequestInner;
   icache_line_response_input_t icacheLineResponseInner;
@@ -113,7 +117,7 @@ module student_top (
   assign coreImemRspValidInner = icacheResponseInner.valid;
   assign coreImemRspDataInner = icacheResponseInner.instruction;
   rv32_icache u_icache (
-    .clkInput(clock), .rstNInput(!reset), .flushInput(coreImemFlushInner),
+    .clkInput(clock), .rstNInput(coreResetNInner), .flushInput(coreImemFlushInner),
     .cpuRequestInput(coreImemRequestInner), .cpuReqReadyOutput(coreImemReadyInner),
     .cpuResponseOutput(icacheResponseInner), .cpuRspReadyInput(coreImemRspReadyInner),
     .memRequestOutput(icacheLineRequestInner), .memReqReadyInput(imemReqReadyInput),
@@ -144,7 +148,7 @@ module student_top (
     .cpuResponseOutput(dcacheResponseInner), .memRequestOutput(dcacheLineRequestInner),
     .memReadReadyInput(dmemReadReadyInput), .memWriteReadyInput(dmemWriteReadyInput),
     .memResponseInput(dcacheLineResponseInner), .memWriteDoneInput(dmemWriteDoneInput),
-    .drainInput(haltedOutput), .drainDoneOutput(drainDoneOutput)
+    .initializedOutput()
   );
 `endif
 endmodule

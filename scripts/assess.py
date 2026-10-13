@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assess the native core, optionally with caches, without a memory slave."""
+"""Assess the core, cached system, or DCache without an external memory slave."""
 import argparse
 import hashlib
 import json
@@ -12,62 +12,14 @@ import time
 
 from build import read_sources
 from fakeram import RAM_SOURCE
+from sv_frontend import convert_sources
 from toolchain import DEFAULT_APPIMAGE, executable
-
-
-def explicit_port_patterns(sources, directory):
-    """Supply the declared port type for sv2v's implicit-pattern limitation.
-
-    Only generated copies are changed: type'('{field: value}) has the same
-    SystemVerilog semantics as the original pattern in a typed input port.
-    """
-    texts = {path: path.read_text() for path in sources}
-    ports = {}
-    for text in texts.values():
-        module = re.search(r"\bmodule\s+(\w+)", text)
-        if module:
-            ports[module[1]] = dict((name, kind) for kind, name in re.findall(
-                r"\binput\s+(rv32_pkg::\w+)\s+(\w+)", text))
-    changes = []
-    staged = []
-    directory.mkdir(parents=True, exist_ok=True)
-    for path, text in texts.items():
-        def instance(match):
-            block = match[0]
-            replacements = []
-            for port in re.finditer(r"\.(\w+)\(\s*('\{)", block):
-                kind = ports.get(match[1], {}).get(port[1])
-                if not kind:
-                    raise ValueError(f"unknown pattern port type: {path}: {match[1]}.{port[1]}")
-                start = port.start(2)
-                depth = 1
-                end = start + 2
-                while end < len(block) and depth:
-                    depth += (block[end] == "{") - (block[end] == "}")
-                    end += 1
-                if depth:
-                    raise ValueError(f"unbalanced assignment pattern in {path}")
-                replacements.append((start, end, kind + "'(" + block[start:end] + ")"))
-                changes.append({"source": str(path), "module": match[1], "port": port[1], "type": kind})
-            for start, end, replacement in reversed(replacements):
-                block = block[:start] + replacement + block[end:]
-            return block
-        rewritten = re.sub(r"^  (rv32_\w+)\s+.*?\);", instance, text, flags=re.MULTILINE | re.DOTALL)
-        if path.name == "rv32_prf.sv":
-            # sv2v otherwise emits a nonconstant replication width for '0 in
-            # the variable-index packed-struct ROB-age expression.
-            rewritten = rewritten.replace("& ROB_AGE_MASK) != '0)",
-                                          "& ROB_AGE_MASK) != rob_tag_t'(0))")
-        target = directory / path.name
-        target.write_text(rewritten)
-        staged.append(target)
-    return staged, changes
 
 
 def main():
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scope", choices=("core", "cached"), default="cached")
+    parser.add_argument("--scope", choices=("core", "cached", "dcache"), default="cached")
     parser.add_argument("--mode", choices=("opt", "diagnose"), default="opt")
     parser.add_argument("--clock-period", type=float, default=2.0)
     parser.add_argument("--out", type=Path, default=root / "build" / "assessment")
@@ -100,27 +52,19 @@ def main():
         sv2v = executable(args.sv2v)
         # Use the framework's canonical SRAM declaration once. The unfinished
         # AXI course wrapper is replaced only in this assessment source list.
-        sources = [path for path in read_sources(root / "verilog" / "filelist.f")
-                   if path.name not in ("student_top.sv", "rv32_sram.sv")]
-        sources += [RAM_SOURCE, root / "verilog" / "assessment" / "student_top.sv"]
+        if args.scope == "dcache":
+            sources = [root / "verilog" / "rtl" / "common" / "rv32_pkg.sv",
+                       root / "verilog" / "rtl" / "memory" / "rv32_dcache.sv",
+                       RAM_SOURCE, root / "verilog" / "assessment" / "dcache_top.sv"]
+        else:
+            sources = [path for path in read_sources(root / "verilog" / "filelist.f")
+                       if path.name not in ("student_top.sv", "rv32_sram.sv")]
+            sources += [RAM_SOURCE, root / "verilog" / "assessment" / "student_top.sv"]
         destination = args.out.resolve() / args.scope
         out = args.work_dir.resolve() / args.scope if args.work_dir else destination
         out.mkdir(parents=True, exist_ok=True)
-        staged, pattern_changes = explicit_port_patterns(sources, out / "sources")
-        converted = out / "converted.v"
-        # Yosys accepts always_comb/always_ff. Retaining them avoids sv2v's
-        # invalid whole-unpacked-array sensitivity lists in LSU helper calls.
-        command = [sv2v, "-D", "SYNTHESIS", "--exclude=Always", "--top=student_top"]
-        if args.scope == "core":
-            command += ["-D", "ASSESS_CORE_ONLY"]
-        command += [str(path) for path in staged]
-        with converted.open("w") as stream:
-            subprocess.run(command, stdout=stream, check=True)
-        # Older Yosys treats automatic function temporaries in conditionally
-        # called helpers as always_comb latch errors. Normal @* lowering lets
-        # optimization remove those unused temporaries; synth.py still rejects
-        # every surviving latch in the actual mapped circuit.
-        converted.write_text(re.sub(r"\balways_comb\b", "always @*", converted.read_text()))
+        defines = ("SYNTHESIS", "ASSESS_CORE_ONLY") if args.scope == "core" else ("SYNTHESIS",)
+        converted, frontend = convert_sources(sv2v, sources, out, defines=defines)
         filelist = out / "filelist.f"
         filelist.write_text("converted.v\n")
         manifest = {
@@ -128,15 +72,11 @@ def main():
             "hierarchical_optimization": False,
             "clock_period_ns": args.clock_period,
             "external_memory": "ports only; no slave or bus adapter",
-            "commit_trace_outputs": "retained as top-level outputs",
-            "sv2v": subprocess.check_output([sv2v, "--version"], text=True).strip(),
-            "conversion_command": command,
-            "explicit_port_patterns": pattern_changes,
-            "combinational_lowering": "always_comb -> always @*; surviving latches rejected",
-            "typed_zero_lowering": "PRF masked ROB-age comparison uses rob_tag_t'(0) instead of '0",
+            "commit_trace_outputs": "not applicable" if args.scope == "dcache" else "retained as top-level outputs",
+            "frontend": frontend["name"],
+            **{key: value for key, value in frontend.items() if key != "name"},
             "inputs": [{"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
                        for path in sources],
-            "converted_sha256": hashlib.sha256(converted.read_bytes()).hexdigest(),
         }
         if args.reuse_elaboration:
             snapshot = args.reuse_elaboration.resolve()

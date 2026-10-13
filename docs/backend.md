@@ -10,7 +10,7 @@ IQ ──译码/单发射──► RAT + PRF + ROB + 七个 RS 池
             按序 ROB 提交 ◄───────────┘        flush arbiter ──► ROB/RS/LSU/BPU 恢复
 ```
 
-默认 ROB 16 项、PRF 48 项。七个 RS 池容量依次为整数 4、乘法 2、除法 1、分支 4、Load 4、StoreAddr 4、StoreValue 4，共 23 槽。Load/StoreAddr 共用 AGU，StoreValue 独立向 LSU 交付数据。
+默认 ROB 16 项、PRF 48 项。当前七个 RS 池容量依次为整数 2、乘法 1、除法 1、分支 2、Load 2、StoreAddr 2、StoreValue 2，共 12 槽。Load/StoreAddr 共用 AGU，StoreValue 独立向 LSU 交付数据。
 
 ## 1. 集成边界：`rv32_core`
 
@@ -92,7 +92,7 @@ IQ ──译码/单发射──► RAT + PRF + ROB + 七个 RS 池
 | 输入 | `writebackInput[4]: cdb_result_t` | 用有效写回的物理标签/值旁路并唤醒源操作数。 |
 | 输出 / 输入 | `issueOutput: rs_issue_output_t`, `issueReadyInput` | 最老的源就绪项及实际操作数；`valid && ready` 出槽。 |
 | 输出 | `issueAuxOutput[AUX_W-1:0]`, `occupancyOutput[$clog2(DEPTH+1)-1:0]` | 被选项附加位和当前占槽数。 |
-| 输出 | `issueLaneValidOutput`, `issueLaneOutput[ISSUE_WIDTH]`, `issueLaneAuxOutput[ISSUE_WIDTH]` | 多路派发接口；StoreValue 配置 `ISSUE_WIDTH=4`，同拍交付全部就绪项。 |
+| 输出 | `issueLaneValidOutput`, `issueLaneOutput[ISSUE_WIDTH]`, `issueLaneAuxOutput[ISSUE_WIDTH]` | 多路派发接口；当前 StoreValue 配置 `ISSUE_WIDTH=2`，同拍最多交付两个就绪项。 |
 
 Load/StoreAddr 的 aux 保存类别与 LSQ 槽号；StoreValue 保存 SQ 槽号，通过 `storeDataInput/storeDataIndexInput` 交付数据并核验完整 ROB tag。core 设置 `dataTag=0`，禁用 SQ 直接 CDB 唤醒。
 

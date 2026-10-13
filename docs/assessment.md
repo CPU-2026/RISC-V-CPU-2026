@@ -1,20 +1,25 @@
 # 无外部从机的面积与时序评估
 
-评估入口：`scripts/assess.py`、`verilog/assessment/student_top.sv`。
+评估入口：`scripts/assess.py`、`verilog/assessment/student_top.sv`；D$ 单模块使用
+`verilog/assessment/dcache_top.sv`。
 
 ## 范围
 
 | `--scope` | 电路范围 | 外部接口 |
 |---|---|---|
 | `core` | `rv32_core`，含预测器、前后端、执行单元和 LSU | 32 bit 逻辑取指/访存；数据放在行数据端口的低 32 bit |
-| `cached` | core + 1 KiB ICache + 8 KiB DCache + 最终排空控制 | 64 B 内存行；I$ 回填附带行地址，D$ 读写通道独立 |
+| `cached` | core + 1 KiB ICache + 8 KiB DCache；HALT 提交立即结束，不排空 | 64 B 内存行；I$ 回填附带行地址，D$ 读写通道独立 |
+| `dcache` | 仅 DCache：4 项请求队列、16 个 data bank、tag/dirty SRAM、128个 valid 寄存器、8 拍回填控制 | CPU 请求及应答；独立行读/写请求、返回行和写完成 |
 
 所有内存响应及 ready 均保留为顶层输入，没有常量化。从机不进入网表。
-顶层保留全部提交跟踪输出，面积和接口时序包含这些可观察输出的开销。
+`core/cached` 顶层保留全部提交跟踪输出，面积和接口时序包含这些可观察输出的开销。
 复位为高有效 `reset`，连接到内部低有效复位；STA 设置 `reset=0`。
 
-I$ 数据使用课程 `sram_fakeram` 面积/时序模型。D$ 按当前 RTL 使用
-寄存器数组，计入标准单元面积，不按 SRAM 宏折算。
+I$/D$ 数据使用课程 `sram_fakeram` 面积/时序模型。D$ 实际实例为
+16 个 `128×32`、8 bit 写粒度的 data bank，以及一个 `128×20` tag/dirty SRAM；
+128 个 valid bit 为可复位寄存器，计入时序逻辑面积；无 SRAM 清零扫描。
+不把 data 阵列降为触发器，也不使用零面积 blackbox。模型是 FakeRAM 拟合估计，
+不是工艺厂 SRAM 编译器或布局布线实测。
 
 ## 运行
 
@@ -24,6 +29,7 @@ I$ 数据使用课程 `sram_fakeram` 面积/时序模型。D$ 按当前 RTL 使�
 python3 scripts/assess.py --scope core --mode opt --clock-period 2.0
 python3 scripts/assess.py --scope cached --mode opt --clock-period 2.0
 python3 scripts/assess.py --scope cached --mode diagnose --clock-period 2.0 --no-checkpoints
+python3 scripts/assess.py --scope dcache --mode opt --clock-period 2.0 --no-checkpoints
 ```
 
 长任务可附加 `--background`；启动时输出 PID 和 `build/assessment/<scope>/job-<mode>.log`。
@@ -74,6 +80,21 @@ Yosys 使用相对路径读取 Unicode 工程目录中的文件，以绕过 JSON
 Unicode 源路径属性的限制；`--work-dir` 可指定其他工作根目录。
 工程 RTL 原文件不参与这些副本改写。
 
+普通 `scripts/synth.py` / `make synth` 也使用同一 `scripts/sv_frontend.py`：
+默认 `--frontend auto` 在 `.sv` 输入且存在 `sv2v` 时自动转换；纯 `.v` 输入保持
+Yosys 原生路径。可用 `--frontend sv2v --sv2v /path/to/sv2v` 强制转换，或
+`--frontend yosys` 明确选择原生解析器。Make 对应 `SYNTH_FRONTEND` / `SV2V`。
+无 `sv2v` 时 auto 回到原生解析器，但旧 Yosys 不能处理本工程的 `import`、
+结构体赋值及动态结构体数组下标；此时应安装/指定 `sv2v`，而不是手改队列 RTL。
+普通综合的 `report.json` 中 `frontend` 记录转换命令、版本和生成文件 SHA-256。
+
+前端回归含原始/转换 D$ 逐半拍端口、valid寄存器及 SRAM 全 bank 内容对拍与再次复位；综合报告的
+`ram/manifest.json`、`area.sram_instances` 另验证宏配置和映射数量：
+
+```bash
+python3 -B -m unittest discover -s scripts/tests -v
+```
+
 `python3 scripts/assessment_paths.py build/assessment/core/opt` 可将关键路径
 与保留下来的 RTL 网络名及源码位置关联，并生成 `rtl-critical-path.txt`。
 
@@ -91,6 +112,10 @@ verilator --lint-only --top-module student_top -DSYNTHESIS \
 沿用课程 ASAP7 RVT TT 库与 OpenSTA 约束：输入/输出预算各 0.2 ns，
 时钟不确定度 0.05 ns，输入/时钟 transition 0.05 ns，输出负载 5 fF。
 `--clock-period 2.0` 是 500 MHz 优化和检查目标，最高频率由关键路径分析求得。
+
+STA 对顶层 `reset` 采用 `reset=0`。当前 `coreResetNInner = !reset`，不再由
+DCache 初始化状态驱动；valid移至寄存器后已删除内部初始化释放网络。
+旧版本由启动复位高扇出支配的 PPA 仅作历史基线；不使用新增 false path 掩盖该路径。
 
 本评估为理想时钟、无互连寄生参数的综合级估计，尚未包含 AXI 适配器、
 总线仲裁、课程 MMIO 退出逻辑，以及布局布线后的影响。程序周期数和 IPC

@@ -8,6 +8,8 @@ PYTHON ?= python3
 APPIMAGE ?= $(FRAMEWORK_DIR)/cpu2026-tools-x86_64.AppImage
 VERILATOR ?=
 YOSYS ?=
+SV2V ?=
+SYNTH_FRONTEND ?= auto
 ABC ?=
 STA ?=
 ASAP7_LIB ?=
@@ -45,7 +47,7 @@ code:
 
 help:
 	@echo 'Host prerequisites: Python 3.10+, GNU Make, G++ (C++17), and binutils. No Docker required.'
-	@echo 'Configure APPIMAGE or native VERILATOR/YOSYS/ABC/STA/ASAP7_LIB in config.mk.'
+	@echo 'Configure APPIMAGE or native VERILATOR/YOSYS/SV2V/ABC/STA/ASAP7_LIB in config.mk.'
 	@echo 'make build [FILELIST=verilog/filelist.f BUILD=build JOBS=4]'
 	@echo 'make run PROGRAM=program.bin EXPECTED=186 [WAVE=trace.vcd] [LOG=run.log]'
 	@echo 'make test [Case=correctness_add_to_100] [SIM=/path/to/prebuilt/sim]'
@@ -87,6 +89,7 @@ synth:
 		--mode "$(MODE)" --clock-period "$(CLOCK_PERIOD_NS)" \
 		--abc-driving-cell "$(ABC_DRIVING_CELL)" --abc-load-ff "$(ABC_LOAD_FF)" \
 		--appimage "$(APPIMAGE)" $(if $(YOSYS),--yosys "$(YOSYS)",) \
+		$(if $(SV2V),--sv2v "$(SV2V)",) \
 		$(if $(ABC),--abc "$(ABC)",) $(if $(STA),--sta "$(STA)",) \
 		$(if $(ASAP7_LIB),--asap7-lib "$(ASAP7_LIB)",)
 

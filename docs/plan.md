@@ -11,8 +11,8 @@
 | 总面积 | ≤36,000 μm²（标准单元 + 全部 FakeRAM）  | ≤34,000 μm²  |
 | 频率   | 最高档 ≥300 MHz；≥500 MHz 可获额外 4 分 | ≥525 MHz     |
 
-- **已有核心**：源码由 `verilog/filelist.f` 列出，单宽 RV32IM 乱序核已有 CLA 整数/乘除单元、中心化的48容量物理寄存器堆PRF 、RAT、16容量的ROB、FQ/IQ 各 4 槽、有界 RS、LQ/SQ 各 8 槽、访存单元（DMEM+IMEM+D$+I$）、四条CDB总线、顺序提交和分支恢复。
-- **预测与缓存**：Tournament 三张 256×2 bit 表、推测 GHR8、BTB64（56 bit/项）、RAS8、SARAS16、condSeen512、32 项取指检查点及 16 项 RAS 日志；8 KiB 直接映射 I$、64 KiB 四路 D$，支持脏行写回和原带外 HALT 排空。
+- **已有核心**：源码由 `verilog/filelist.f` 列出，单宽 RV32IM 乱序核已有 CLA 整数/乘除单元、中心化的48容量物理寄存器堆PRF 、RAT、16容量的ROB、FQ/IQ 各 2 槽、七池 RS 共 12 槽、RAS16、LQ/SQ 各 8 槽、访存单元（DMEM+IMEM+D$+I$）、四条CDB总线、顺序提交和分支恢复。
+- **预测与缓存**：Tournament 三张 256×2 bit 表、推测 GHR8、BTB64（56 bit/项）、RAS16、condSeen512、32 项取指检查点；1 KiB 直接映射 I$、8 KiB 直接映射 D$，支持脏行写回和最终排空。
 - **接口缺口**：`cpu_top` 是无缓存原生接口，`cpu_cached_top` 使用 128 位缓存行；两者均为低有效复位和带外 HALT，尚无 `student_top`、AXI4-Lite、MMIO 退出和 `sram_fakeram`。
 - **吞吐瓶颈**：核心每周期仅一次 `issue_fire`、一次 ROB 提交，仅增加执行单元或 RS 容量无法突破长期 IPC ≤1；前端单在途取指、I$ 命中 TAG_READ 与阻塞式 D$ 也限制双宽吞吐。
 

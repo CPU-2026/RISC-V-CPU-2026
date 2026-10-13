@@ -1,6 +1,129 @@
 # 原生 CPU 面积与时序基线
 
-日期：2026-10-11。流程和复现命令见 [assessment.md](assessment.md)。
+更新：2026-10-13。流程和复现命令见 [assessment.md](assessment.md)。
+
+> **历史基线注意**：下文的 2026-10-13 valid仍在SRAM版本、2026-10-11
+> 纯核心/寄存器DCache版本均不代表当前源码；只保留作旧版本对照。
+
+## 当前 valid 寄存器版本 DCache（2026-10-13）
+
+`scripts/assess.py --scope dcache --mode opt --clock-period 2.0 --no-checkpoints`：
+sv2v 0.0.12、Yosys 0.63/ABC、ASAP7 RVT TT、OpenSTA 3.1.0。
+范围为 DCache 四项队列、16×128×32 data bank、128×20 tag/dirty SRAM 和128个
+可复位valid寄存器；外存仅为顶层端口。8 bit 写粒度映射为64个 `128×8` 叶宏和
+1个 `128×20` 叶宏，valid计入时序逻辑，不进入SRAM。
+
+| 指标 | 当前 DCache |
+|---|---:|
+| 总面积 | **4,698.412 μm²** |
+| 组合逻辑面积 | 1,251.839 μm² |
+| 时序逻辑面积 | 587.195 μm² |
+| SRAM 宏面积 | 2,859.378 μm² |
+| 估计最高频率 | **77.423 MHz** |
+| 最小时钟周期 | 12.9160 ns |
+| 2.0 ns 目标下最差 setup slack | −10.9158 ns |
+
+相比valid仍在SRAM版本，DCache面积增加96.889 μm²，周期缩短2.4189 ns；
+取消128拍metadata清零扫描，三端均仅保留core的1拍boot。未新增STA false path。
+最差路径为DCache控制寄存器到 `responseDataOutput[4]`，包含扇出1,030/505/522的
+选择网络，不是被删除的初始化释放网。2.0 ns目标仍未达成。
+
+报告：`/tmp/opencode/dcache-valid-registers/dcache/opt/report.json`、`timing.rpt`、
+`rtl-critical-path.txt`。展开网表已核对128个valid bit均由异步复位触发器承载，
+SRAM配置/叶宏数量及原始源码SHA-256均匹配。模型仍为FakeRAM拟合、理想时钟、
+无互连寄生的综合级估计，不是布局布线或工艺厂SRAM实测。
+
+当前版本检查：前端回归6/6通过（原始/转换DCache端口、128项valid与全部SRAM行
+逐拍一致，含再次复位）；完整容量/接口回归19/19通过；DCache四方15,435拍/19字段
+一致；七项故障注入均检出，其中新增valid未清零、忽略valid命中和提前置valid三项。
+复位专项检查非零初始SRAM、全部128项valid、脏行内容保留，以及半途回填/待消费命中
+复位，不以清零SRAM掩盖无效行访问。cached转换RTL的Verilator lint通过。
+
+两软件随后也同步为128项valid寄存器与20bit tag/dirty SRAM；普通及非零SRAM初态
+（tag=0/dirty=1/data=0xA5）均与RTL、独立参考15,435拍/19字段全等。两树Release/
+`_DEBUG`四构建各18 ISA＋6 IPC严格匹配golden，13,041,323/844,639周期与退休/统计不变。
+软件改动不影响本文RTL综合输入；新的三端24镜像整核回归另行记录，不复用旧软件验收。
+
+## 当前 valid 寄存器版本 core + I$/D$（2026-10-13）
+
+`scripts/assess.py --scope cached --mode opt --clock-period 2.0 --no-checkpoints`，
+与DCache单模块相同工具、库和约束。范围包含当前容量core、1 KiB ICache、8 KiB
+DCache；外存留作端口，无从机、AXI适配器或HALT排空FSM，提交跟踪输出保留。
+全部81个叶SRAM为64×`128×8`、1×`128×20`、16×`16×32`，总SRAM面积含I$/D$。
+
+| 指标 | 当前 core + I$/D$ |
+|---|---:|
+| 总面积 | **24,550.131 μm²** |
+| 组合逻辑面积 | 14,565.493 μm² |
+| 时序逻辑面积 | 6,781.275 μm² |
+| SRAM 宏面积 | 3,203.364 μm² |
+| 估计最高频率 | **50.147 MHz** |
+| 最小时钟周期 | 19.9414 ns |
+| 2.0 ns 目标下最差 setup slack | −17.9404 ns |
+
+相对valid仍在SRAM版本，面积增加663.949 μm²；该差值包含全局逻辑重构和技术映射，
+不能只归因于valid触发器。初始化状态驱动的内部复位已删除，`coreResetNInner = !reset`；
+最低周期由258.0547 ns降至19.9414 ns，未新增false path。2.0 ns目标仍未达成。
+新的最差路径为 `_413940_/QN → _407688_/D`：起点属于 `rv32_flush_arbiter`
+（D别名 `validNext[0]`），经过全局 `imemFlushOutput`、`commitValidOutput` 和
+RAS恢复/更新选择网络，终点属于 `rv32_bpu_ras`，不再经过DCache初始化状态。
+flush网单个INV节点的STA扇出973、延迟8.0021 ns；仍有明显高扇出及RAS组合深度瓶颈。
+结果仍是无寄生、FakeRAM估计口径，非物理实现。
+
+报告：`/tmp/opencode/cached-valid-registers/cached/opt/report.json`、`timing.rpt`、
+`rtl-critical-path.txt`；
+转换和输入身份清单为 `/tmp/opencode/cached-valid-registers/cached/assessment-opt.json`。
+已核对叶宏配置、数量及原始RTL/转换结果/综合报告之间的SHA-256一致性；综合无残留
+锁存器、初始化属性和未映射单元，STA约束覆盖检查无错误。
+
+## valid仍在SRAM时的 DCache 单模块基线（2026-10-13，改造前）
+
+`scripts/assess.py --scope dcache --mode opt --clock-period 2.0`，sv2v 0.0.12、
+Yosys/ABC、ASAP7 RVT TT、OpenSTA。范围仅含当时 RTL DCache、四项请求队列和 17 个
+SRAM 原语（16×128×32 data、1×128×21 metadata）；8 bit 写粒度将其映射为
+64 个 `128×8` 叶 SRAM 与 1 个 `128×21` 叶 SRAM；行存储器由顶层接口代表。
+SRAM 面积/时序采用课程 FakeRAM 拟合模型，结果是无互连寄生的综合级估计。
+
+| 指标 | DCache 单模块结果 |
+|---|---:|
+| 总面积 | **4,601.523 μm²** |
+| 组合逻辑面积 | 1,195.443 μm² |
+| 时序逻辑面积 | 541.326 μm² |
+| SRAM 宏面积 | 2,864.753 μm² |
+| 估计最高频率 | **65.21 MHz** |
+| 最小时钟周期 | 15.3350 ns |
+| 2.0 ns 目标下最差 setup slack | −13.3341 ns |
+
+结论只用于 DCache 模块级定位，不代表整核最高频率。关键路径落在 DCache 时序块，
+含扇出约 1,000 的选择/控制网络；核心与 Cache 的联合 PPA 需另按当前 RTL 综合。
+历史报告：`/tmp/opencode/dcache-frontend-fixed/dcache/opt/report.txt`、
+`report.json`、`timing.rpt`；本地完整命令见 [assessment.md](assessment.md)。
+
+## valid仍在SRAM时的 core + I$/D$ 基线（2026-10-13，改造前）
+
+当时容量与 SRAM RTL 的 `cached` scope，展平 opt；Yosys 0.63、ABC、ASAP7 RVT TT、
+OpenSTA 3.1.0，目标周期 2.0 ns。外存留作顶层接口，I$/D$ 均使用 FakeRAM 拟合宏，
+提交跟踪端口保留。
+
+| 指标 | 改造前 core + I$/D$ |
+|---|---:|
+| 总面积 | **23,886.182 μm²** |
+| 组合逻辑面积 | 13,942.038 μm² |
+| 时序逻辑面积 | 6,735.406 μm² |
+| SRAM 宏面积 | 3,208.738 μm²（81 个叶宏） |
+| STA 全路径估计最高频率 | 3.875 MHz |
+| 最小时钟周期 | 258.0547 ns |
+| 2.0 ns 目标下最差 setup slack | −256.0540 ns |
+
+该全路径频率由**启动复位释放网络**主导，而非稳定运行的整数/Cache 数据通路：
+DCache `initialized` 释放 `coreResetNInner`，再驱动 LSU 下一状态逻辑，综合网表中
+该复位使能网扇出约 16,064，该综合级报告没有布局布线的复位缓冲树。这是当时
+约束下的保守 worst-path 结果；在解释稳态 IPC/时钟能力前，应单独评估启动复位网的
+扇出/缓冲实现，不能把 3.875 MHz 误读成 DCache 本体频率（DCache 单模块为 65.21 MHz）。
+
+历史 core+I$/D$ 报告：`/tmp/opencode/cached-sv2v/cached/opt/report.txt`、
+`report.json`、`timing.rpt`；输入源码与 sv2v 转换清单在
+`/tmp/opencode/cached-sv2v/cached/assessment-opt.json`。
 
 ## 已完成的纯核心结果
 

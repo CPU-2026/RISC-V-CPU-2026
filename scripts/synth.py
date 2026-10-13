@@ -10,11 +10,13 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 
 from build import read_sources
 from fakeram import MODEL, RAM_SOURCE, prepare_memories
 from toolchain import DEFAULT_APPIMAGE, enter_appimage, executable, packaged_tool
 from synth_report import area_report, format_report
+from sv_frontend import convert_sources, select_frontend
 from timing import analyze
 
 
@@ -52,6 +54,9 @@ def main():
     parser.add_argument("--blackboxes", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--appimage", default=str(DEFAULT_APPIMAGE))
     parser.add_argument("--yosys", help="custom Yosys executable")
+    parser.add_argument("--frontend", choices=("auto", "yosys", "sv2v"), default="auto",
+                        help="SV frontend: auto prefers sv2v for .sv input; yosys uses its limited native parser")
+    parser.add_argument("--sv2v", help="custom sv2v executable (also selects sv2v in auto mode)")
     parser.add_argument("--abc", help="custom ABC executable")
     parser.add_argument("--sta", help="custom OpenSTA executable")
     parser.add_argument("--asap7-lib", type=Path, help="directory containing the five ASAP7 libraries")
@@ -96,19 +101,38 @@ def main():
     # Elaborate the framework's empty SRAM interface as a normal module so
     # Yosys resolves parameter expressions, defaults, hierarchy and generates.
     # No RAM array is lowered to flops in this stage.
+    frontend = {"name": "elaboration_snapshot"}
     if args.elaborated_json:
         previous = args.elaborated_json.resolve()
         if previous != out / "elaborated.json":
             shutil.copyfile(previous, out / "elaborated.json")
     else:
-        run_yosys(yosys, out, "elaborate", [
-            *["read_verilog -sv -D SYNTHESIS " + quote(path) for path in sources if path != RAM_SOURCE],
-            "read_verilog -sv -noblackbox -D SYNTHESIS " + quote(RAM_SOURCE),
-            "hierarchy -top student_top",
-            "proc",
-            "memory_collect",
-            "write_json " + quote(out / "elaborated.json"),
-        ])
+        try:
+            selected, sv2v = select_frontend(args.frontend, sources, args.sv2v)
+            frontend = {"name": selected}
+            if selected == "sv2v":
+                converted, frontend = convert_sources(sv2v, [path for path in sources if path != RAM_SOURCE],
+                                                       out / "frontend")
+                reads = ["read_verilog -sv -D SYNTHESIS " + quote(converted)]
+            else:
+                reads = ["read_verilog -sv -D SYNTHESIS " + quote(path) for path in sources if path != RAM_SOURCE]
+        except (ValueError, OSError) as error:
+            parser.error(str(error))
+        print(f"[synth] Frontend: {selected}", flush=True)
+        try:
+            run_yosys(yosys, out, "elaborate", [
+                *reads,
+                "read_verilog -sv -noblackbox -D SYNTHESIS " + quote(RAM_SOURCE),
+                "hierarchy -top student_top",
+                "proc",
+                "memory_collect",
+                "write_json " + quote(out / "elaborated.json"),
+            ])
+        except subprocess.CalledProcessError:
+            if selected == "yosys" and any(path.suffix == ".sv" for path in sources):
+                print("[synth] Native Yosys has limited SystemVerilog support. For packages/struct arrays, "
+                      "install sv2v and use --frontend sv2v [--sv2v /path/to/sv2v].", file=sys.stderr)
+            raise
     try:
         elaborated = json.loads((out / "elaborated.json").read_text())
         clock = elaborated["modules"]["student_top"].get("ports", {}).get(args.clock_port, {})
@@ -170,6 +194,7 @@ def main():
               "area": area, "timing": timing,
               "inputs": identities([*sources, RAM_SOURCE]), "libraries": identities([*libs, *ram_libs]),
               "sram_model": MODEL,
+              "frontend": frontend,
                "tools": {"yosys": subprocess.check_output([yosys, "-V"], text=True).strip(),
                          "opensta": subprocess.check_output([sta, "-version"], text=True).strip()}}
     if args.elaborated_json:

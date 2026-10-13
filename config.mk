@@ -14,6 +14,8 @@ APPIMAGE ?= $(FRAMEWORK_DIR)/cpu2026-tools-x86_64.AppImage
 # Explicit overrides always win; an invalid override fails instead of falling back.
 VERILATOR ?=
 YOSYS ?=
+SV2V ?=
+SYNTH_FRONTEND ?= auto
 ABC ?=
 STA ?=
 ASAP7_LIB ?=
@@ -22,6 +24,8 @@ ASAP7_LIB ?=
 # APPIMAGE =
 # VERILATOR = /opt/verilator/bin/verilator
 # YOSYS = /opt/yosys/bin/yosys
+# SV2V = /path/to/sv2v
+# SYNTH_FRONTEND = sv2v
 # ABC = /opt/yosys/bin/yosys-abc
 # STA = /opt/opensta/bin/sta
 # ASAP7_LIB = /opt/asap7/lib

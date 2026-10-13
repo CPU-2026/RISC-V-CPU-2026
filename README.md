@@ -2,6 +2,8 @@
 
 基于 SystemVerilog 的 **RV32IM 乱序处理器**：单宽取指与发射、七池保留站、乱序执行、四路并行写回、按序提交。核心入口为 [`rv32_core`](verilog/rtl/core/rv32_core.sv)，I$/D$ 为独立核外模块。
 
+> **2026-10-13 SRAM/停机同步**：D$ data为16×128×32bit/8bit mask公共真实SRAM，tag/dirty为128×20bit SRAM，valid为128个可复位寄存器；无128拍metadata清零扫描，三端只保留core boot1拍。4项请求队列只查询旧队首；LSU四项有序owner冻结身份/宽度/符号/持久取消。HALT提交立即结束，无SQ/Cache/外存排空。验证入口及范围见 [cache.md](docs/cache.md)；下方寄存器D$面积/STA数值属于改造前历史，不能套用到本实现。
+
 ## CPU 流水线架构
 
 架构分为总览、执行数据通路和预测恢复三张图。图按功能分组，队列与执行单元形成实际时序边界；实线表示数据或请求，虚线表示控制与状态更新。
@@ -14,18 +16,17 @@
 flowchart TB
     FETCH["PC / 预测取指<br/>4 个在途请求"]
     IC["I$ · 1 KiB<br/>同步 SRAM"]
-    FRONT["FQ4 → IQ4<br/>组合译码"]
+    FRONT["FQ2 → IQ2<br/>组合译码"]
     ISSUE["RAT / PRF48<br/>重命名与单发射"]
-    RS["七池保留站<br/>共 23 槽"]
+    RS["七池保留站<br/>共 12 槽"]
     EXEC["ALU / MUL / DIV<br/>BRU / AGU"]
     WB["四路 CDB 写回"]
     ROB["ROB16<br/>按序提交"]
     COMMIT["更新提交映射 / 回收旧物理寄存器<br/>提交跟踪 / HALT / 异常"]
     LSU["LSU<br/>LQ8 / SQ8"]
-    DC["D$ · 8 KiB<br/>寄存器 / 写回缓存"]
+    DC["D$ · 8 KiB<br/>双 SRAM / 4 项请求 / 写回缓存"]
     MEM["核外内存<br/>64 B 行接口"]
-    DRAIN["HALT + SQ 排空<br/>D$ 脏行写回"]
-    DONE["drainDoneOutput"]
+    DONE["HALT 提交立即结束<br/>haltedOutput"]
 
     FETCH --> IC --> FRONT --> ISSUE --> RS --> EXEC
     ISSUE -.->|分配| ROB
@@ -44,14 +45,10 @@ flowchart TB
     DC -->|Load 返回| LSU
     IC <-->|读行 / 回填| MEM
     DC <-->|读行 / 写回 / 写完成| MEM
-    COMMIT -.->|HALT| DRAIN
-    LSU -.->|SQ 为空| DRAIN
-    DRAIN -.->|flush / 等待写完成| DC
-    DC -.->|排空完成| DRAIN
-    DRAIN --> DONE
+    COMMIT -.->|HALT| DONE
 ```
 
-I$/D$ 位于 `rv32_core` 外；`rv32_dmem_backend` 包含 D$ 与最终排空控制。
+I$/D$ 位于 `rv32_core` 外；`rv32_dmem_backend` 包含 D$ 并输出初始化完成，不含停机排空控制。
 
 ### 2. 执行与写回
 
@@ -59,13 +56,13 @@ I$/D$ 位于 `rv32_core` 外；`rv32_dmem_backend` 包含 D$ 与最终排空控�
 flowchart LR
     ISSUE["单发射"]
     subgraph RS["七池 RS"]
-        RSI["Integer4"]
-        RSM["Multiply2"]
+        RSI["Integer2"]
+        RSM["Multiply1"]
         RSD["Divide1"]
-        RSB["Branch4"]
-        RSL["Load4"]
-        RSA["StoreAddr4"]
-        RSV["StoreValue4"]
+        RSB["Branch2"]
+        RSL["Load2"]
+        RSA["StoreAddr2"]
+        RSV["StoreValue2"]
     end
     ALU["ALU<br/>单槽结果级"]
     MUL["MUL<br/>三级弹性流水"]
@@ -87,7 +84,7 @@ flowchart LR
     RSL --> SELECT
     RSA --> SELECT
     SELECT --> AGU -->|地址| LSU
-    RSV -->|最多 4 路数据| LSU
+    RSV -->|最多 2 路数据| LSU
     LSU -->|Load 结果| WB
     LSU -.->|Store ready| STATE
     CTRL -.->|ROB 完成| STATE
@@ -102,7 +99,7 @@ PRF 使用 3 读/4 写口和 FIFO 空闲队列。MUL 为 Booth → CSA → 最�
 ```mermaid
 flowchart TB
     FRONT["取指 / FQ 预译码"]
-    BPU["Tournament 方向预测 / BTB64<br/>RAS32 / GHR8 / Checkpoint32<br/>condSeen512"]
+    BPU["Tournament 方向预测 / BTB64<br/>RAS16 / GHR8 / Checkpoint32<br/>condSeen512"]
     EXEC["ALU 跳转 / BRU 分支"]
     ROB["ROB<br/>身份与预测上下文"]
     CTRL["控制流结算<br/>实际 nextPC 与预测 PC 比较"]
@@ -126,10 +123,10 @@ flowchart TB
 
 恢复重放来自存活 ROB 窗口；已提交 Store 保留，错路 Load 返回排空。物理总线适配器负责丢弃已取消事务的迟到响应。
 
-- **发射与派发**：每拍分配一条指令；各 RS 独立寻找就绪项，Load/StoreAddr 竞争一个 AGU，StoreValue 可并行交付四项。
+- **发射与派发**：每拍分配一条指令；各 RS 独立寻找就绪项，Load/StoreAddr 竞争一个 AGU，StoreValue 最多并行交付两项。
 - **写回**：CDB 同拍写 PRF、通知 ROB 并捕获唤醒，下拍才可派发依赖项。BRU 和 Store ready 不占 CDB；JAL/JALR 的链接值在分配时预置为 PC+4。
 - **退休与恢复**：Load 提交时释放 LQ；Store 提交后仍留在 SQ，内存接受才释放。恢复以完整 ROB tag 为边界，执行单元按各自年龄规则过滤结果。
-- **停机**：core 的 `haltedOutput` 只表示 HALT 与 SQ 接受排空；接缓存时，以 `drainDoneOutput` 确认全部脏行写回完成。
+- **停机**：core 的 `haltedOutput` 表示HALT实际提交，不等待SQ/Cache/外存；`total=core`、`drain=0`。不保证已退休Store均已写回外存。
 
 ## 默认配置
 
@@ -137,10 +134,10 @@ flowchart TB
 |---|---|
 | 指令集 / 数据位宽 | RV32IM / 32 bit |
 | 取指、发射、提交宽度 | 各 1 条/拍 |
-| FQ / IQ / ROB / PRF | 4 / 4 / 16 / 48 项 |
+| FQ / IQ / ROB / PRF | 2 / 2 / 16 / 48 项 |
 | LQ / SQ | 各 8 项 |
 | 方向预测 | local/global PHT + chooser，各 256×2 bit；GHR 8 bit |
-| BTB / RAS / Checkpoint | 64 / 32 / 32 项 |
+| BTB / RAS / Checkpoint | 64 / 16 / 32 项 |
 | I$ / D$ / Cache Line | 1 KiB / 8 KiB / 64 B，默认直接映射 |
 | 核心时钟与复位 | 上升沿更新、低有效异步复位；`RESET_PC=0` |
 
@@ -153,7 +150,7 @@ verilog/rtl/
 ├── predictor/   方向预测、BTB、RAS、检查点
 ├── backend/     RAT、PRF、ROB、保留站
 ├── execute/     ALU、MUL、DIV、BRU、AGU
-├── memory/      LSU、I$、D$、最终排空
+├── memory/      LSU、I$、D$、可复位valid及tag/dirty SRAM
 └── core/        核心集成与恢复仲裁
 scripts/         Verilator 仿真、Yosys/ABC 综合、OpenSTA 分析
 testcases/       官方正确性与性能用例（Git 子模块）
@@ -183,10 +180,29 @@ make perf                                # 周期与 IPC
 make synth MODE=opt CLOCK_PERIOD_NS=2.0   # 面积与时序，输出 build/synth/opt/
 ```
 
-### 本机核心 + I$/D$ 层次面积诊断（2026-10-11）
+### 当前紧凑容量配置 RTL 面积与频率（2026-10-12）
 
-评估范围为原生核心、1 KiB ICache、8 KiB 寄存器 DCache 及最终排空控制，采用
-Yosys/ASAP7 + OpenSTA 的 `diagnose` 模式（保留模块层次）。
+RS/RAS/FQ/IQ缩减后的容量配置已重新评估。综合使用 Yosys/ABC、ASAP7 与 OpenSTA，目标周期
+2.000 ns；CPU-only使用 `opt`（flattened and optimized），CPU+缓存使用 `diagnose`
+（保留模块层次），因此两范围的优化模式不同。评估顶层为原生核心、1 KiB ICache、8 KiB
+寄存器DCache及最终排空控制；外部存储器为接口端口，不含slave或总线适配器。
+
+| 评估范围 | 模式 | 总面积（μm²） | 组合（μm²） | 时序（μm²） | SRAM（μm²） | 估计最高频率 | 最小时钟周期 | 最差 setup slack |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 原生核心 | opt，扁平优化 | 18,781.985 | 12,838.477 | 5,943.508 | 0 | 51.11 MHz | 19.5645 ns | −17.5637 ns |
+| 核心 + I$/D$ + 排空 | diagnose，保留层次 | 67,707.609 | 40,077.796 | 27,285.828 | 343.985 | 31.13 MHz | 32.1270 ns | −30.1265 ns |
+
+2.000 ns目标下两范围均未达标。当前缓存范围面积中，DCache为45,936.462 μm²（67.85%），
+核心层次小计20,626.195 μm²（30.46%），预测器小计6,667.609 μm²（9.85%，已包含在核心小计中）。
+当前缓存关键路径从 `u_core/u_rob/_46577_` 经 ROB 高扇出选择逻辑和 LSU，终止于
+`u_dmem_backend/cache/_698905_`。完整层次面积、STA路径及JSON报告位于
+[`build/assessment/capacity-current/cached/diagnose/`](build/assessment/capacity-current/cached/diagnose/)；
+核心优化报告位于 [`build/assessment/core/opt/`](build/assessment/core/opt/)。
+
+### 历史缓存层次面积诊断：容量缩减前基线（2026-10-11）
+
+以下模块明细属于缩容前容量，供历史对照，不代表当前RTL。评估范围和 `diagnose` 模式与上方
+当前缓存范围相同。
 
 - **总面积：71,458.562 μm²**（组合逻辑 42,504.709 μm²、时序逻辑 28,609.867 μm²、SRAM 343.985 μm²）。
 - **估计最高频率：25.21 MHz**，最小时钟周期 **39.6641 ns**。
@@ -235,3 +251,40 @@ Yosys/ASAP7 + OpenSTA 的 `diagnose` 模式（保留模块层次）。
 
 面积热点为 DCache（64.03%）和预测器（11.46%）。最差路径为
 `u_core/u_flush_arbiter/_4036_/QN → u_dmem_backend/cache/_701283_/D`。
+
+### 核心容量软件消融（六项 IPC）
+
+消融阶段先在仓库外的主树/模板副本容量上试验；通过筛选后，以下紧凑配置已同步到
+主树、模板树及 RTL。面积代理为 `sizeof` 汇总
+BPU、ROB、PRF、七池 RS、FQ、IQ、LQ、SQ 软件状态对象；它反映容量导致的状态存储变化，
+**不是 ASIC 综合面积**。以 6 项 `data/testcases_ipc` 的 `retired / ipc-cycles` 几何平均
+作为 IPC 指标，门槛为 **IPC ≥ 0.6**。
+
+| 容量方案 | 容量改动 | 主树状态代理 | 模板树状态代理 | 六项 IPC 几何平均（主树 / 模板） |
+|---|---|---:|---:|---:|
+| 基线 | ROB16、FQ/IQ4、RS（Integer/MUL/DIV/Branch/Load/StoreAddr/StoreValue）=4/2/1/4/4/4/4、RAS32 | 4,732 B | 21,208 B | 0.635113 / 0.635113 |
+| RS 半容量 | Integer/Load/StoreAddr/StoreValue/Branch RS：4→2；MUL RS：2→1 | 4,432 B（−300 B，−6.34%） | 20,080 B（−1,128 B，−5.32%） | 0.612731 / 0.612731 |
+| **当前核心紧凑配置** | RS 半容量，RAS32→16，FQ/IQ4→2 | **4,176 B（−556 B，−11.75%）** | **19,640 B（−1,568 B，−7.39%）** | **0.612678 / 0.612678** |
+
+紧凑配置的 ROB16、PRF48、LQ/SQ各8、DIV RS1、Cache 几何均保持不变。
+主树状态代理变化分项为 BPU −128 B、RS −300 B、FQ −32 B、IQ −96 B；模板树为
+BPU −256 B、RS −456 B、FQ −56 B、IQ −128 B、LQ/SQ 转发通知载荷合计 −672 B。
+LQ/SQ容量本身未缩减；模板 LQ/SQ 对象缩小来自 StoreAddr/StoreValue RS 通知通道减半。
+
+六项 IPC（容量修改前→当前配置）：median 0.555985→0.544360、multiply
+0.812140→0.810503、qsort 0.451291→0.446948、rsort 0.566837→0.519797、
+towers 0.722468→0.675761、vvadd 0.786460→0.763603。qsort、rsort 单项 IPC 在基线中
+本就低于 0.6；**两树六项几何平均都高于 0.6**。候选还通过了主树/模板树 **18 ISA＋6 IPC**
+软件回归，x10、退休数及两树周期对齐；容量变化后的周期不要求等于基线。
+
+该消融表明，在软件容量模型中，RS/RAS/FQ/IQ 状态规模合计缩减可使状态对象代理下降
+约 **7.4%–11.8%**，且 IPC 几何平均仍为 **0.6127**。这是容量方案的筛选证据；转为 RTL 后仍需
+分别综合确认实际 μm² 与时序。
+
+`make` 默认构建并生成 OJ 入口 `./code`；`Case=用例名` 可指定单个测试，`WAVE=trace.vcd` 可用于 `make run` 导出波形。
+
+## 文档
+
+- [前端与预测](docs/frontend.md) · [后端与执行](docs/backend.md) · [访存队列](docs/memory.md)
+- [缓存与初始化/HALT](docs/cache.md) · [公共类型与信号约定](docs/package.md)
+- [AXI4-Lite 协议](docs/axi4-lite.md) · [SRAM 接口](docs/sram.md)
