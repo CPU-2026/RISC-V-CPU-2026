@@ -16,11 +16,11 @@ module student_top (
   output logic [31:0] readAddressOutput,
   output logic writeValidOutput,
   output logic [31:0] writeAddressOutput,
-  output logic [rv32_pkg::CACHE_LINE_BITS-1:0] writeDataOutput,
+  output logic [rv32_pkg::DCACHE_LINE_BITS-1:0] writeDataOutput,
   input logic readReadyInput,
   input logic writeReadyInput,
   input logic lineResponseValidInput,
-  input logic [rv32_pkg::CACHE_LINE_BITS-1:0] lineResponseDataInput,
+  input logic [rv32_pkg::DCACHE_LINE_BITS-1:0] lineResponseDataInput,
   input logic writeDoneInput,
   output logic initializedOutput,
   output logic idleOutput
@@ -29,7 +29,7 @@ module student_top (
   dcache_cpu_request_input_t cpuRequestInner;
   dcache_cpu_response_output_t cpuResponseInner;
   dcache_line_request_output_t lineRequestInner;
-  cache_line_response_input_t lineResponseInner;
+  dcache_line_response_input_t lineResponseInner;
 
   assign cpuRequestInner = '{valid:cpuValidInput, write:cpuWriteInput,
     address:cpuAddressInput, writeData:cpuWriteDataInput,

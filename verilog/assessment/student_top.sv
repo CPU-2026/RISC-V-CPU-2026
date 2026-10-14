@@ -16,12 +16,12 @@ module student_top (
   input logic dmemReadReadyInput,
   output logic dmemWriteValidOutput,
   output logic [31:0] dmemWriteAddrOutput,
-  output logic [rv32_pkg::CACHE_LINE_BITS-1:0] dmemWriteDataOutput,
+  output logic [rv32_pkg::DCACHE_LINE_BITS-1:0] dmemWriteDataOutput,
   output logic [3:0] dmemWriteStrobeOutput,
   output logic [1:0] dmemSizeOutput,
   input logic dmemWriteReadyInput,
   input logic dmemRspValidInput,
-  input logic [rv32_pkg::CACHE_LINE_BITS-1:0] dmemRspDataInput,
+  input logic [rv32_pkg::DCACHE_LINE_BITS-1:0] dmemRspDataInput,
   input logic dmemWriteDoneInput,
   output logic commitValidOutput,
   output logic [31:0] commitPcOutput,
@@ -107,7 +107,7 @@ module student_top (
   dcache_cpu_request_input_t dcacheRequestInner;
   dcache_cpu_response_output_t dcacheResponseInner;
   dcache_line_request_output_t dcacheLineRequestInner;
-  cache_line_response_input_t dcacheLineResponseInner;
+  dcache_line_response_input_t dcacheLineResponseInner;
 
   assign icacheLineResponseInner.valid = imemRspValidInput;
   assign icacheLineResponseInner.address = imemRspAddrInput;

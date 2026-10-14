@@ -1,5 +1,10 @@
 # RTL 缓存
 
+> **4 KiB几何扫描**：RTL现支持1/2/4路tree-PLRU及独立32/64/128 B D$行；
+> 默认仍为下文8 KiB/64 B/1路，I$行保持64 B。多路同步读所有路，命中写对应路，
+> invalid优先/否则PLRU，miss冻结victim身份。几何、评分及验证见[扫描说明](dcache-4k-sweep.md)。
+> 扫描不更新活动golden；下文固定16 bank/8拍/512bit数字仅描述默认配置。
+
 当前 D$ 周期合同与 2026-10-13 软件 SRAM 实现一致；RTL 的 valid 独立为寄存器，取消 SRAM 初始化扫描。共同父目录旧 §55/62 的寄存器 D$/停机排空记录是历史。core 使用 32 位处理器端口，外存仍传 512 位整行；Cache data 拆为 16 个同步 32 位 word bank，核外延迟由环境 ready/valid 决定。
 
 ```text
@@ -34,15 +39,19 @@ core 的 `imemCacheRequestOutput` 接 CPU 请求，Cache ready 接 core 请求 r
 
 ## DCache
 
-`rv32_dcache` 默认 `SETS=128`、`WAYS=1`，写回、写分配。当前 SRAM 合同只支持直接映射；`WAYS!=1` 被断言拒绝，不保留未同步的四路 PLRU 路径。
+`rv32_dcache` 默认 `SETS=128`、`WAYS=1`，写回、写分配；支持`WAYS=1/2/4`。
+多路采用同步data/metadata SRAM和独立valid，最低编号invalid优先、否则tree-PLRU；
+不是恢复历史寄存器D$/四路路径。命中与末拍回填更新PLRU，单路替换状态无作用。
 
 - 准入：4项请求队列，拍初 `count<4` 时接收；满队列本拍完成也不补入。入队与查询分离，miss等待期间仍可排队。
 - 命中：n拍接受，n+1最早查询旧队首 data/tag+dirty，并在查询沿采样对应 valid；n+2 Load直接使用旧 SRAM 输出和对齐的valid返回。Store实际字节写/置 dirty 才出队。下一队首不提前查询。
 - 缺失：查询结束并行读到所有16个bank，保存完整victim及旧metadata；外存仍只读回一条512-bit整行。回填游标按0、2、…、14推进，每拍写两个相邻bank，共8拍；回复可在首拍直通、之后保持到末拍。脏行读写可并行发起，但回填必须等脏写实际完成。
-- 回填提交：前7拍只写对应data bank，不改tag/dirty/valid、不返回Load、不释放队首、不消费DMEM回复；第8拍写最后一对bank、更新tag/dirty并置valid、返回Load并同时消费回复/释放队首。Store miss 的字节在对应bank拍到达时合并，不能推迟到末拍。
+- Load early restart：完整512bit回复到达且脏写回已实际完成时，首个合格回填拍（游标0）按原地址/宽度提取字节并响应一次，即使目标位于最后一对bank。`loadRespondedInner`防重复；提前响应只释放LSU运输owner，不释放Cache队首、不消费行回复。
+- 响应data选择与使能解耦：按队首`needMemory`选择完整回复或命中SRAM字节，只有valid使用完整服务资格；有效hit/miss返回值与拍数不变。valid=0时readData无约定，不把高扇出fill使能用于数据源选择，不加响应寄存级。
+- 回填提交：首拍实际覆写bank时清对应valid，前7拍不改tag/dirty、不释放队首、不消费DMEM回复；第8拍写最后一对bank、更新tag/dirty并置valid、消费回复/释放队首，Load不再次响应。Store miss的字节在对应bank拍到达时合并，不能推迟到末拍；Store不形成Load响应。
 - SRAM端口：查询同时同步读全部16个bank和metadata；回填只启用当前bank对，命中Store只启用被写字节触及的一个或两个bank，并同步置dirty。写/禁用周期的旧输出不作为新查询结果。Load返回只保留实际宽度的原始字节，符号扩展由LSU的冻结身份完成。
 - 空闲：`idleOutput` 表示复位已释放且请求队列、读结果与外存事务均空；不是 HALT 结束条件。
-- 恢复：D$保持已接受请求顺序，包含被取消的读。LSU四项FIFO持有 slot/tag/size/unsigned/drop，负责逻辑取消和返回鉴权，D$只完成有序运输；已提交Store保留。
+- 恢复：D$保持已接受请求顺序，包含被取消的读。LSU四项FIFO持有 slot/tag/size/unsigned/drop，负责逻辑取消和返回鉴权，D$只完成有序运输；已提交Store保留。提前响应前/同拍取消仍消费一次owner但不写LQ；响应后取消不能再生成响应。Cache满时即使owner已释放仍不得提前接收下一请求。
 
 ## `rv32_dmem_backend`：处理器接口和复位
 
@@ -65,7 +74,8 @@ core 的 `haltedOutput` 只表示 HALT 已提交，不等待SQ空、Cache空或�
 
 - `python3 -B sync/run_sram_dcache.py`：两软件实际模块、RTL与独立周期/字节参考，逐拍比较回填游标/完成、metadata/有效行数据及实际DMEM；覆盖8拍回填和脏缺失。
 - 上述入口加`--poison-sram`：仅在外部软件测试副本预置tag=0/dirty=1/data=0xA5，验证valid=0屏蔽未初始化SRAM，不要求初始SRAM零值。
-- `python3 -B sync/run_capacity.py`：另含16-bank逐拍写使能/byte mask断言、末拍metadata/响应门控，以及跨bank Store miss/hit合并和 dirty refetch。
+- `python3 -B sync/run_capacity.py`：另含16-bank逐拍写使能/byte mask断言、末拍metadata/释放门控，以及跨bank Store miss/hit合并和dirty refetch；`tb_sram_early_restart`接实际LSU＋DCache验证一次早响应、满Cache与owner独立、取消/同tag复用、脏行及部分回填复位。
 - `python3 -B sync/run_capacity.py`：现行容量/接口门禁；新增D$非零初始SRAM、128项valid复位、脏行SRAM保留、部分回填/待返回命中复位检查；驻留dirty不自动写回、HALT保留posted SQ。
 - `python3 -B sync/run_sram_cpu.py`：实际三CPU的70项每拍观察指纹、逐条独立ISA退休与实际DMEM/有效Cache内容；`--trace` 另逐word比较pre/post轨迹。
+- 有意变更时序使用`--allow-cycle-change`，只放开旧周期golden，仍要求结果/退休数及三端逐拍严格一致；验证后才刷新活动表。`run_early_restart_cpu.py --binaries ...`专门检查真实HALT中止回填、恢复及独立有效内存。
 - 旧 `run_cached_rtl_chain.py`、`run_cpu_benchmarks.py` 和 §56/68 的2872word/最终全dirty内存合同是历史，不代表本次新的整核内部状态门禁或课程AXI已通过。

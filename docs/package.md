@@ -15,7 +15,8 @@ checkpoint 容量须与包定义及 ID 宽度一致，覆盖 ROB+I$+FQ+IQ 的当
 | `LQ_ENTRIES` / `SQ_ENTRIES` | 8 / 8 | load/store 队列默认槽数。 |
 | `BPU_CKPT_ENTRIES` / `BPU_CKPT_ID_W` | 32 / 5 | 预测历史检查点数 / `bpu_ckpt_id_t` 宽度。 |
 | `FETCH_REQUEST_ENTRIES` / `RAS_ENTRIES` | 4 / 16 | 取指请求容量 / 返回栈深度。 |
-| `CACHE_LINE_BYTES` / `CACHE_LINE_BITS` | 64 / 512 | Cache 行字节数 / 数据位宽。 |
+| `CACHE_LINE_BYTES` / `CACHE_LINE_BITS` | 64 / 512 | I$行字节数 / 数据位宽。 |
+| `DCACHE_LINE_BYTES` / `DCACHE_LINE_BITS` | 64 / 512 | 独立D$行；扫描支持32/64/128 B而不改I$。 |
 | `ICACHE_SETS` / `DCACHE_SETS` / `DCACHE_WAYS` | 16 / 128 / 1 | I$ 1 KiB、D$ 8 KiB，均直接映射。 |
 | RS 容量 | 2/1/1/2/2/2/2 | Integer/Multiply/Divide/Branch/Load/StoreAddr/StoreValue，共 12 槽。 |
 | `HALT_INSN` | `32'h0ff0_0513` | 特定停机指令字。 |
@@ -92,6 +93,6 @@ checkpoint 容量须与包定义及 ID 宽度一致，覆盖 ROB+I$+FQ+IQ 的当
 | `icache_line_response_input_t` | `valid/address/data[511:0]`：I$ 行返回身份，`memRspReady` 确认接受，`memFlush` 取消逻辑请求。 |
 | `dcache_cpu_request_input_t` / `dcache_cpu_response_output_t` | `valid/write/address/writeData/writeStrobe/size` 的处理器访问、`valid/readData` 的 load 应答；store 无读响应。 |
 | `cache_line_request_output_t` / `cache_line_response_input_t` | I$整行接口：`valid/write/address/writeData[511:0]` 请求、`valid/data[511:0]` 回填。 |
-| `dcache_line_request_output_t` / `cache_line_response_input_t` | 独立 `readValid/readAddress` 与 `writeValid/writeAddress/writeData[511:0]`，分别握手；写完成用 `memWriteDoneInput`，读返回为 `valid/data[511:0]`。 |
+| `dcache_line_request_output_t` / `dcache_line_response_input_t` | 独立 `readValid/readAddress` 与 `writeValid/writeAddress/writeData[DCACHE_LINE_BITS-1:0]`，分别握手；写完成用 `memWriteDoneInput`，读返回为 `valid/data`同宽。 |
 
 包内函数 `rob_is_younger/rob_is_older` 比较循环 ROB tag 的相对年龄，仅用于有效在飞窗口；`mem_bytes(size)` 返回 1/2/4 字节。

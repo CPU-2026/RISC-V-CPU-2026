@@ -10,7 +10,7 @@ module rv32_dmem_backend (
   output rv32_pkg::dcache_line_request_output_t memRequestOutput,
   input logic memReadReadyInput,
   input logic memWriteReadyInput,
-  input rv32_pkg::cache_line_response_input_t memResponseInput,
+  input rv32_pkg::dcache_line_response_input_t memResponseInput,
   input logic memWriteDoneInput,
   output logic initializedOutput
 );

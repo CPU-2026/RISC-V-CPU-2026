@@ -29,6 +29,11 @@ package rv32_pkg;
   parameter int unsigned ICACHE_SETS = 16;
   parameter int unsigned DCACHE_SETS = 128;
   parameter int unsigned DCACHE_WAYS = 1;
+  // DCache line size is decoupled from the ICache line: refill beats, bank
+  // count and the external line payload all follow DCACHE_LINE_BYTES while
+  // the ICache keeps CACHE_LINE_BYTES.
+  parameter int unsigned DCACHE_LINE_BYTES = 64;
+  parameter int unsigned DCACHE_LINE_BITS = DCACHE_LINE_BYTES << 3;
   parameter int unsigned RAS_ENTRIES = 16;
 
   localparam logic [31:0] HALT_INSN = 32'h0ff0_0513;
@@ -416,13 +421,20 @@ package rv32_pkg;
 
   // D$ mirrors the software DMEM's independent read/write line channels.
   // A write handshake transfers the payload; write completion is separate.
+  // The DCache line payload follows DCACHE_LINE_BITS, independent of the
+  // ICache line width.
   typedef struct packed {
     logic readValid;
     logic [31:0] readAddress;
     logic writeValid;
     logic [31:0] writeAddress;
-    logic [CACHE_LINE_BITS-1:0] writeData;
+    logic [DCACHE_LINE_BITS-1:0] writeData;
   } dcache_line_request_output_t;
+
+  typedef struct packed {
+    logic valid;
+    logic [DCACHE_LINE_BITS-1:0] data;
+  } dcache_line_response_input_t;
 
   typedef struct packed {
     logic valid;

@@ -1,11 +1,162 @@
 # 原生 CPU 面积与时序基线
 
-更新：2026-10-13。流程和复现命令见 [assessment.md](assessment.md)。
+更新：2026-10-14（最终回归收口、模块面积重新综合）。流程和复现命令见 [assessment.md](assessment.md)。
+
+## 2026-10-14 模块面积重新综合
+
+当前源码新建持久工件，展平opt重新复现**24,361.816 μm²／59.3761 MHz**；保留层次
+diagnose总面积**26,238.262 μm²**，各RTL模块/功能块的实际映射面积与组合/时序/SRAM
+分项见[模块面积表](module-area-20261014.md)。两模式总量不能混用，不按比例猜测opt
+模块面积。新网表、STA、原始输入摘要及CSV保存在`build/assessment/module-area-20261014/`。
+
+> **旧临时工件可用性**：2026-10-14服务重启后`/tmp/opencode`已清空，下文临时路径
+> 仅保留原运行定位。数值来自重启前实际综合与已返回的完成日志，不将恢复的摘要伪称
+> 原始报告。上述模块统计重新生成了当前版本的持久网表/STA；旧临时路径不冒充新报告。
 
 > **历史基线注意**：下文的 2026-10-13 valid仍在SRAM版本、2026-10-11
 > 纯核心/寄存器DCache版本均不代表当前源码；只保留作旧版本对照。
 
-## 当前 valid 寄存器版本 DCache（2026-10-13）
+## 当前合并版：RAS瘦身＋early restart（2026-10-13）
+
+当前源码保留第一阶段RAS等价改写与第二阶段Load early restart，并将响应data选择
+独立为`headNeedMemoryInner ? fillRawInner : hitRawInner`；响应valid仍用原hit/首拍资格。
+有效hit不可能needMemory，有效miss响应必然needMemory，故有效载荷/响应拍数不变；
+valid=0时载荷无约定。此改写避免把高扇出回填使能串入响应数据源选择，不加寄存级。
+
+同约束core＋I$/D$比较：
+
+| 配置 | 面积 μm² | 最小周期 ns | 估计Fmax MHz | 六例几何IPC |
+|---|---:|---:|---:|---:|
+| 原基线 | 24,550.131 | 19.9414 | 50.1469 | 0.543625029 |
+| 仅RAS瘦身 | 24,312.317 | 16.6064 | 60.2176 | 0.543625029 |
+| **仅early restart最终版（保留旧RAS）** | **24,589.410** | **23.1553** | **43.1867** | **0.547674361** |
+| 仅early restart初版（历史） | 24,475.671 | 20.7266 | 48.2473 | 0.547674361 |
+| 合并初版（历史） | 24,396.633 | 21.9082 | 45.6450 | 0.547674361 |
+| **当前合并版（data mux解耦）** | **24,361.816** | **16.8418** | **59.3761** | **0.547674361** |
+
+当前相对原基线面积**−0.7671%**、估计Fmax**＋18.4043%**，软件六例几何IPC
+**＋0.7449%**。相对仅RAS版则面积＋0.2036%、Fmax−1.3974%；`Fmax×几何IPC`估计
+吞吐代理比原基线＋19.2862%，但比仅RAS版**−0.6630%**。因此第二阶段虽提高IPC，
+不意味着其独立提升物理吞吐，也不能声称优于第一阶段的全部指标。
+
+单独early restart最终版相对原基线面积＋0.1600%、Fmax−13.8796%，最差仍为
+Flush Arbiter→global flush→commitValid→旧RAS。因此第二阶段独立只证明IPC收益，
+并非独立减面积或提频；合并结果也不能由两项独立PPA数值相加推算。
+
+当前面积细分：组合14,385.138、时序6,773.314、SRAM3,203.364 μm²。2.0ns目标setup
+slack **−14.8416ns**，仍未达标。全部工具/Liberty摘要、81个SRAM及理想时钟/无互连
+寄生约束一致；完整输入因子审计原30项仅RAS/DCache不同，未增加false path。
+这是ASAP7/FakeRAM综合估计，不是布局布线或实测频率。
+
+初版合并的最差路径`_404786_/QN → _407273_/D`起于DCache，终于LSU；高扇出
+698/972/525三级分别延迟4.7726/10.1556/4.9186ns。data选择解耦后不再为最差路径；
+当前最差`_409219_/QN → _409057_/D`起止均为Flush Arbiter，经全局`imemFlushOutput`
+控制，仍有497/805/530扇出，约11.83ns累计到达flush节点。未扩大到全局flush缓冲或
+新增流水级改造。
+
+独立DCache最终mux版：**4,699.229 μm²、9.9102ns、100.9066MHz**、2.0ns slack
+−7.9098ns；组合1,252.276、时序587.574、SRAM2,859.378 μm²。比DCache原基线
+面积＋0.01738%、Fmax＋30.3311%，65个SRAM保持；这些单模块数值不冒充整机结果。
+
+当前报告：`/tmp/opencode/dcache-early-restart/final/cached/opt/`；最初全量综合在
+`response-mux-candidate/cached/opt/`。生产源码重新sv2v转换后确认backend输入逐byte
+完全一致，再复制其已完成报告（**没有冒称又做一次综合**）；原始生产摘要位于
+`final/cached/assessment-opt.json`，复用证据为`verified-report-reuse.json`。关键路径
+已按生产清单重新映射。初版矩阵/报告保留在`factorial-ppa-v1.json`、`early-only/`、
+`combined/`，不覆盖旧证据。
+最终四组合原始输入/工具/Liberty/SRAM独立审计已通过，摘要为
+`/tmp/opencode/dcache-early-restart/factorial-ppa-final.json`；仅early restart最终整机
+报告在`early-only-final/cached/opt/`，DCache单模块在`dcache-early-final/dcache/opt/`。
+
+功能/周期证据：early restart初版完整三CPU24镜像13,848,612拍/27,697,224个70项
+pre/post点严格一致，独立退休与实际DMEM/有效Cache比较通过，四软件构建新golden
+strict通过。当前mux源码模块15,435拍一致、完整RTL20/20与转换6/6（13,487拍/822请求）
+通过，实际七个early restart程序及33个RAS程序三端逐拍通过；最终mux版六IPC三端
+默认strict（不放开周期）无损pre/post、退休、实际内存再次通过，报告
+`/tmp/opencode/sync-sram-cpu-wb0_n_zw/report.json`；最终mux版完整24镜像默认strict
+重编长跑已由补发的完成通知确认**24/24通过**，原目录`sync-sram-cpu-6efx_20o/`，
+13,848,612拍／27,697,224个70项pre/post点、退休流与实际DMEM／有效Cache逐项一致，
+全部新golden周期严格匹配。源码／构建记录独立于初版；未取得SAT正式等价证明。
+
+## 第二阶段初版独立 DCache early restart（2026-10-13，历史）
+
+第二阶段同步两软件与RTL：缺失Load在首个合格回填拍从旧512bit完整回复取字节，
+按队首记录`loadResponded`，至第8拍才释放队首/消费行回复；dirty写实际完成资格保持。
+首拍覆写清valid，末拍更新tag/dirty并置valid。每个Load恰好一次运输完成，取消身份
+由LSU冻结owner处理；不改Store响应、ALU依赖派发、立即HALT，也不增加回填行缓冲。
+
+独立DCache范围排除RAS变化，前后全量重建（仅DCache原始源码摘要不同），同工具/库
+摘要、目标2.0ns、65个SRAM宏及拓扑；修改前数值重现valid寄存器历史报告。
+
+| 指标 | 无early restart | 当前early restart |
+|---|---:|---:|
+| 总面积 | 4,698.412 μm² | **4,699.316 μm²（＋0.01924%）** |
+| 组合逻辑面积 | 1,251.839 μm² | 1,252.364 μm² |
+| 时序逻辑面积 | 587.195 μm² | 587.574 μm² |
+| SRAM宏面积 | 2,859.378 μm² | 2,859.378 μm² |
+| 估计Fmax | 77.4233 MHz | **109.5539 MHz（＋41.4999%）** |
+| 最小周期 | 12.9160 ns | **9.1279 ns** |
+| 2.0ns setup slack | −10.9158 ns | −7.1271 ns |
+
+增加1个response-sent触发器，模块面积净增0.904 μm²，不能称第二阶段自身减面积。
+频率改善包含响应/valid使能改写后的全局映射变化，是单模块结果，不直接当作整机频率。
+理想时钟、无互连寄生、FakeRAM拟合约束保持，2.0ns仍未达成。
+
+报告在`/tmp/opencode/dcache-early-restart/{dcache-baseline,dcache-early}/dcache/opt/`：
+`report.json`、`timing.rpt`、`rtl-critical-path.txt`；原始输入及转换摘要在上一级
+`assessment-opt.json`。当前模块最差路径为`_36973_/QN → responseDataOutput[30]`。
+
+六IPC三CPU70项pre/post/退休/实际内存严格全等，几何IPC
+**0.543625028725→0.547674360731（＋0.7448759%）**，五项改善、towers不变；
+18 ISA＋6 IPC四软件构建均结果/退休/周期/共有统计一致，周期合计13,009,100/839,512。
+模块普通/非零SRAM各15,435拍一致，新LSU＋DCache整链及七个真实CPU专项通过，九种
+实际RTL负向均检出。完整24镜像三端与整机“独立early restart/合并”综合分别记录，
+不能用模块频率或局部功能门禁代替整机结论，详细入口见共同父目录`sync/README.md`。
+
+## 第一阶段单独 RAS等价瘦身 core + I$/D$（2026-10-13）
+
+第一阶段仅修改`rv32_bpu_ras.sv`，两软件生产源码与Cache不变。内部depth由16bit收紧为
+`$clog2(RAS_ENTRIES+1)`，默认16项为5bit；公开16bit端口补零。恢复从旧architectural
+RAS重放存活ROB含头/边界，候选不读取提交下一态，也不受flush/commit使能控制；架构
+提交与普通投机更新独立，最后按flush选择，不增加寄存级或恢复周期。
+
+修改前源码先转换保存，再对前后两个输入分别全量综合。Yosys0.63/ABC、sv2v0.0.12、
+ASAP7 RVT TT、OpenSTA3.1.0，展平opt、目标2.0ns；原始输入仅RAS文件摘要不同，工具
+版本、Liberty摘要、约束及81个SRAM叶宏完全一致。新建基线重现旧报告全部PPA数值。
+
+| 指标 | 修改前重建基线 | 当前RAS瘦身 |
+|---|---:|---:|
+| 总面积 | 24,550.131 μm² | **24,312.317 μm²（−0.9687%）** |
+| 组合逻辑面积 | 14,565.493 μm² | 14,336.018 μm² |
+| 时序逻辑面积 | 6,781.275 μm² | 6,772.935 μm² |
+| SRAM宏面积 | 3,203.364 μm² | 3,203.364 μm² |
+| 估计最高频率 | 50.1469 MHz | **60.2176 MHz（＋20.0823%）** |
+| 最小时钟周期 | 19.9414 ns | **16.6064 ns** |
+| 2.0ns目标下setup slack | −17.9404 ns | −14.6058 ns |
+| RAS归属触发器数 | 1,056 | **1,034** |
+
+面积减少237.814 μm²；22个depth触发器减少8.340 μm²，其余是组合逻辑及全局映射变化，
+不能将全部面积差直接归属某一种优化。2.0ns目标仍未达成；结果为理想时钟、无互连
+寄生的FakeRAM综合级估计，不是布局布线实测。
+
+新的最差路径`_404568_/QN → _401816_/D`起于`rv32_rob`，经ROB指令读取选择网络
+（保留别名`commitInstrOutput[13]`）及RAS重放，终于`rv32_bpu_ras`。它不再是旧的
+Flush Arbiter→全局flush→commitValid→RAS路径，但一处NAND2节点仍有961扇出、
+5.5993ns单级延迟，ROB读选择负载与RAS串联深度仍是瓶颈。
+
+报告（前后均已映射回原始RTL）：
+
+- `/tmp/opencode/ras-slim-phase1/baseline/cached/opt/report.json`
+- `/tmp/opencode/ras-slim-phase1/candidate/cached/opt/report.json`
+- 两目录下`timing.rpt`、`rtl-critical-path.txt`、`register-area-by-module.json`
+- 两目录上一级`assessment-opt.json`原始输入/转换SHA-256清单
+
+功能验证：8种深度共29,271拍，旧RTL＋独立旧顺序参考的全部槽位内容/查询逐拍一致，
+三种实际RTL负向均检出；当前真实SRAM三CPU的33个RAS程序13,074拍/70项pre/post严格
+一致，独立退休及实际内存/Cache检查通过；完整RTL容量/接口/整链19/19及native lint通过。
+完整18 ISA＋6 IPC回归结果见`sync/README.md`的RAS第一阶段条目，未实施early restart。
+
+## early restart前 valid 寄存器版本 DCache（2026-10-13历史基线）
 
 `scripts/assess.py --scope dcache --mode opt --clock-period 2.0 --no-checkpoints`：
 sv2v 0.0.12、Yosys 0.63/ABC、ASAP7 RVT TT、OpenSTA 3.1.0。
@@ -44,7 +195,7 @@ SRAM配置/叶宏数量及原始源码SHA-256均匹配。模型仍为FakeRAM拟�
 `_DEBUG`四构建各18 ISA＋6 IPC严格匹配golden，13,041,323/844,639周期与退休/统计不变。
 软件改动不影响本文RTL综合输入；新的三端24镜像整核回归另行记录，不复用旧软件验收。
 
-## 当前 valid 寄存器版本 core + I$/D$（2026-10-13）
+## RAS瘦身前 valid 寄存器版本 core + I$/D$（2026-10-13历史基线）
 
 `scripts/assess.py --scope cached --mode opt --clock-period 2.0 --no-checkpoints`，
 与DCache单模块相同工具、库和约束。范围包含当前容量core、1 KiB ICache、8 KiB

@@ -66,6 +66,21 @@ python3 scripts/assess.py --scope cached --mode opt \
 输出检查已通过。诊断报告适合定位热点，其总面积/频率会与展平 `opt` 不同。
 由于层次诊断的 generic/pre-ABC 快照很大，运行 diagnose 时建议使用 `--no-checkpoints`。
 
+### 导出不重复计数的模块面积
+
+```bash
+python3 scripts/module_area.py build/assessment/cached/diagnose/report.json \
+  --flat-report build/assessment/cached/opt/report.json
+```
+
+生成`module-area.md/json`、`module-area-direct.csv`、`module-area-hierarchy.csv`及
+`functional-blocks.csv`（互斥功能块，包含其内部加法器/FIFO）。
+direct表按原RTL模块类型合并所有参数版本/实例，仅计算各自映射单元，不包含其他RTL
+子模块；SRAM宏和生成包装的接口门归入所属Cache，因此各行组合＋时序＋SRAM面积
+之和严格等于diagnose总面积。hierarchy表另保留每个实例的自有/含子模块面积，不能
+把其中父子inclusive列相加。可选opt比较必须具有相同源码/库摘要、工具及目标周期。
+展平后的跨模块共享无法唯一分归原模块，工具不按比例将diagnose表缩放到opt总面积。
+
 ## 转换和检查
 
 当前 RTL 使用 package、packed struct/array、结构体赋值模式，先以 `sv2v`
