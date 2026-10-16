@@ -4,6 +4,7 @@ module rv32_bpu_direction #(
 ) (
   input  logic                   clkInput,
   input  logic                   rstNInput,
+  input logic freezeInput,
 
   input  logic [31:0]            queryPcInput,
   input  rv32_pkg::branch_training_input_t branchInput,
@@ -77,7 +78,7 @@ module rv32_bpu_direction #(
       end
       for (seqIndexInner = 0; seqIndexInner < CONDSEEN_ENTRIES; seqIndexInner = seqIndexInner + 1)
         condseenInner[seqIndexInner] <= 1'b0;
-    end else begin
+    end else if (!freezeInput) begin
       if (branchInput.valid) begin
         if (branchInput.taken) begin
           if (localPhtInner[branchLocalIdxInner] != 2'b11)

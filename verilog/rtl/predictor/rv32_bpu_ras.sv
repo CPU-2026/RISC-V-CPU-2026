@@ -3,6 +3,7 @@ module rv32_bpu_ras #(
 ) (
   input logic clkInput,
   input logic rstNInput,
+  input logic freezeInput,
 
   input rv32_pkg::predictor_fetch_info_t fetchInfoInput,
   input rv32_pkg::squash_input_t         squashInput,
@@ -130,7 +131,7 @@ module rv32_bpu_ras #(
         specRasPcInner[seqIndexInner] <= '0;
         archRasPcInner[seqIndexInner] <= '0;
       end
-    end else begin
+    end else if (!freezeInput) begin
       specRasTopInner <= specRasTopNext;
       archRasTopInner <= archRasTopNext;
       for (seqIndexInner = 0; seqIndexInner < RAS_STORAGE_ENTRIES; seqIndexInner = seqIndexInner + 1) begin

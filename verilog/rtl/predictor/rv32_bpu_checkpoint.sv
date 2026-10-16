@@ -3,6 +3,7 @@ module rv32_bpu_checkpoint #(
 ) (
   input  logic                         clkInput,
   input  logic                         rstNInput,
+  input logic freezeInput,
 
   input  rv32_pkg::checkpoint_input_t  checkpointInput,
   output rv32_pkg::checkpoint_output_t checkpointOutput,
@@ -48,7 +49,7 @@ module rv32_bpu_checkpoint #(
       for (seqIndexInner = 0; seqIndexInner < CKPT_ENTRIES; seqIndexInner = seqIndexInner + 1) begin
         ckptGhrInner[seqIndexInner] <= 8'd0;
       end
-    end else begin
+    end else if (!freezeInput) begin
       if (checkpointInput.fetchAccepted && !checkpointInput.squash.valid) begin
         ckptGhrInner[CKPT_ADDR_W'(nextCkptIdInner)] <= checkpointInput.globalHistory;
       end

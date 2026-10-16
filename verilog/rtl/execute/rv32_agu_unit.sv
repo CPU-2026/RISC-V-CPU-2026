@@ -4,6 +4,7 @@
 module rv32_agu_unit (
   input  logic clkInput,
   input  logic rstNInput,
+  input logic freezeInput,
   input  rv32_pkg::rob_flush_input_t flushInfoInput,
   input  rv32_pkg::rs_issue_output_t executeInput,
   input  logic [3:0] auxiliaryInput,
@@ -42,7 +43,7 @@ module rv32_agu_unit (
       addressInner <= '0;
       auxiliaryInner <= '0;
       robTagInner <= '0;
-    end else begin
+    end else if (!freezeInput) begin
       // Old payload is consumed using Q[n]; all new fields are captured
       // together. Old cancellation never overrides the incoming tag's keep.
       validInner <= executeInput.valid && (!flushInfoInput.valid ||

@@ -1,123 +1,60 @@
-# RTL 前端
+# RTL 前端与预测
 
-源码：[`frontend/`](../verilog/rtl/frontend/)、[`predictor/`](../verilog/rtl/predictor/)。公共类型见 [package.md](package.md)，I$ 接口见 [cache.md](cache.md)。
+源码：[`frontend/`](../verilog/rtl/frontend/)、[`predictor/`](../verilog/rtl/predictor/)。容量与公共约定见 [package.md](package.md)，取指存储接口见 [cache.md](cache.md)。
 
+```text
+PC ─┬─► I$ ───────────► FQ → IQ → 组合译码 → 后端
+    └─► 寄存器 BTB / 方向表 / RAS
+实际取指握手：保存预测上下文，推进 PC、GHR、checkpoint
+redirect：清逻辑请求与队列，恢复预测状态
 ```
-查询 PC ──► rv32_predictor ──► 预测 nextPC / checkpointId
-   ▲                                  │
-   └── rv32_frontend ◄─ 指令响应 ◄────┘
-          FQ → IQ ──► rv32_decoder ──► core 发射
-                  解析跳转、训练预测器；冲刷重定向并丢弃错路响应
-```
 
-FQ、IQ 和已接受请求各 4 槽，每拍至多输出一条。FQ/IQ 使用 epoch 指针，占用数由 tail-head 派生；满队列可同拍出旧项、补新项，空队列不直通。请求保存预测 PC/checkpoint，响应按 FIFO 顺序返回，实际进入 FQ 后才释放请求身份。
+## 取指与译码
 
-## 1. `rv32_frontend`：PC、FQ/IQ 与取指响应
+[`rv32_frontend`](../verilog/rtl/frontend/rv32_frontend.sv) 每拍最多接受一条取指，FQ/IQ 空队列不直通。
 
-源码：[`rv32_frontend.sv`](../verilog/rtl/frontend/rv32_frontend.sv)。参数 `FQ_DEPTH=4`、`IQ_DEPTH=4`、`REQUEST_DEPTH=4`、`RESET_PC=0`。
+| 接口 | 合同 |
+|---|---|
+| `predictorQueryOutput` / `fetchProgramCounterOutput` | 当前查询 PC；独立 PC 连线不依赖 accepted 总线。 |
+| `predictionInput` | 组合预测，实际请求接受沿保存 nextPC/checkpoint 并推进 PC。 |
+| `imemRequestOutput` / `imemReqReadyInput` | 字节 PC 与预测上下文；ready 握手接受。 |
+| `imemResponseInput` / `imemRspReadyOutput` | 顺序返回；FQ 实际接收才释放请求身份，满请求槽可同拍替换。 |
+| `instructionOutput` / `iqReadyInput` | IQ 队首上下文；ready 接后端本拍发射成功。 |
+| `fetchInfoOutput` | 上一拍进入 FQ 的跳转预译码，直接训练 BTB/RAS。 |
+| `redirectInput` / `imemFlushOutput` | 清 FQ/IQ、停取状态与请求身份，设置新 PC；同拍旧响应不入 FQ。物理旧事务由适配器排空。 |
+| `freezeInput` | 冻结前端状态；课程退出控制见 [course.md](course.md)。 |
+| `fqCountOutput` / `iqCountOutput` | 实际占用数，范围 `0..DEPTH`。 |
 
-| 方向 | 端口 | 作用 |
-|---|---|---|
-| 输入 | `clkInput`, `rstNInput` | 时钟与异步低电平复位；PC 复位为 `RESET_PC`。 |
-| 输出 | `predictorQueryOutput: fetch_query_output_t` | BPU 查询 PC；accepted 仅在取指请求握手时置位。 |
-| 输出 | `fetchProgramCounterOutput[31:0]` | 独立旧 PC 连线，供 BPU/I$ 使用，避免依赖 accepted 总线。 |
-| 输入 | `predictionInput: prediction_output_t` | `nextProgramCounter/taken/checkpointId`；请求握手时锁存预测下一 PC、检查点并推进 PC。 |
-| 输出 / 输入 | `imemRequestOutput: instruction_memory_request_output_t`, `imemReqReadyInput` | 字节 PC 与预测上下文，请求按 ready 接受。 |
-| 输入 / 输出 | `imemResponseInput: instruction_memory_response_input_t`, `imemRspReadyOutput` | 顺序返回指令，握手后进 FQ 并释放请求身份。 |
-| 输出 | `imemFlushOutput` | 取消 I$/IMEM 逻辑请求；物理旧事务由总线适配器排空。 |
-| 输入 | `redirectInput: redirect_input_t` | 清队列与请求身份，设置新 PC。 |
-| 输出 / 输入 | `instructionOutput: fetch_queue_output_t`, `iqReadyInput` | IQ 队首及上下文，握手后交后端。 |
-| 输出 | `fetchInfoOutput: predictor_fetch_info_t` | 上一拍 FQ 入队的跳转预译码，供 BTB/RAS 训练。 |
-| 输出 | `fqCountOutput`, `iqCountOutput` | FQ/IQ 实际占用数，范围 `0..DEPTH`。 |
+[`rv32_decoder`](../verilog/rtl/frontend/rv32_decoder.sv) 无时钟、无 ready、无新增流水级：`decodeContextInput` 组合生成 `uopOutput`，实际发射仍需 IQ 握手。未知编码译为 `UOP_ILLEGAL`；JAL/JALR 走 ALU，条件分支走 BRU。
 
-`HALT_INSN=32'h0ff0_0513` 实际进入 FQ 时锁存 `stopFetch`，同拍停止新请求。redirect 清除 FQ/IQ、HALT 和请求身份，并取消旧逻辑请求；同拍旧响应不入 FQ。FQ 向 IQ 转移旧队首，组合译码位于 IQ 之后。
+`RESET_PC=0`、`LEGACY_HALT=0`。仅显式开启旧 HALT 时，停机字进入 FQ 才锁存 `stopFetch`，译码为 `UOP_HALT`。
 
-## 2. `rv32_decoder`：组合译码
+## 预测顶层
 
-源码：[`rv32_decoder.sv`](../verilog/rtl/frontend/rv32_decoder.sv)。**无时钟、无 ready**。
+[`rv32_predictor`](../verilog/rtl/predictor/rv32_predictor.sv) 组合查询旧表，无查询等待级、训练 FIFO 或训练信用背压。
 
-| 方向 | 端口 | 作用 |
-|---|---|---|
-| 输入 | `decodeContextInput: decode_context_t` | 指令字、当前 PC、预测下一 PC、检查点 ID。 |
-| 输出 | `uopOutput: decoded_uop_t` | 指令类别/具体操作、寄存器号、源使用与写回位、符号扩展立即数、访存大小与无符号标志，以及原始预测上下文。 |
+| 接口 | 合同 |
+|---|---|
+| `queryPcInput` / `predictionOutput` | 输出预测 nextPC 和旧 checkpoint ID；未命中预测 PC+4。 |
+| `fetchAcceptInput` | 实际取指握手；同沿保存旧 GHR/checkpoint，按预测移位 GHR。 |
+| `fetchInfoInput` / `branchInput` / `jumpInput` | 预译码、BRU、ALU 三源训练；分支/跳转须 `valid && robEntryLive`，冲刷拍须严格更老。 |
+| `squashInput` / `robInput` | 恢复 GHR、RAS、checkpoint 序号；ROB 提供提交信息与存活窗口。 |
+| `freezeInput` | 冻结表、历史、RAS 和 checkpoint。 |
 
-未知编码译为 `UOP_ILLEGAL`，停机字译为 `UOP_HALT`。译码不另设流水级，实际发射仍需 IQ 握手。JAL/JALR 走 ALU 控制路径，条件分支走 BRU。
+### 方向表与 BTB
 
-## 3. `rv32_predictor`：预测顶层
+- [`rv32_bpu_direction`](../verilog/rtl/predictor/rv32_bpu_direction.sv)：localPHT、globalPHT、selector 各 256×2 bit；全局/选择表用 `PC xor GHR` 索引，另有 condSeen 位图。
+- BRU 按检查点 GHR 和真实 `taken` 更新饱和计数器，两路预测不同时更新 chooser。不能以 `nextPC != PC+4` 反推方向；目标恰为 PC+4 时也可 taken=1。
+- [`rv32_bpu_btb`](../verilog/rtl/predictor/rv32_bpu_btb.sv)：64 项，默认索引 `PC[7:2]`，保存上位 PC tag、`target[31:2]` 及 invalid/conditional/unconditional/return 类型。目标低两位补零。
+- tag/类型与 target 分别按槽仲裁：fetch > jump > taken branch；无写者保持旧值，无静态目标的 JALR/RET 可采用同拍解析目标。拍末训练，下拍查询可见。
+- 条件 taken 还须 BTB 命中，无条件项强制 taken；空 RAS 不采纳 return。
 
-源码：[`rv32_predictor.sv`](../verilog/rtl/predictor/rv32_predictor.sv)。参数 `BHT_ENTRIES=256`、`BTB_ENTRIES=64`、`RAS_ENTRIES=16`、`CONDSEEN_ENTRIES=512`、`CKPT_ENTRIES=32`。
+两种 SRAM BTB 不接活动 core、不进课程 filelist；接口和测量见 [实验记录](experiments.md#3-两种-sram-btb)。
 
-| 方向 | 端口 | 作用 |
-|---|---|---|
-| 输入 | `clkInput`, `rstNInput` | 预测表、历史和 RAS 状态的时钟/复位。 |
-| 输入 / 输出 | `queryPcInput[31:0]`, `predictionOutput: prediction_output_t` | 组合返回 taken/nextPC/checkpoint；目标未命中时预测 PC+4。 |
-| 输入 | `fetchAcceptInput` | 实际取指握手，推进 checkpoint 和投机历史。 |
-| 输入 | `fetchInfoInput: predictor_fetch_info_t` | 前端对已取到的跳转做预译码，训练 BTB/推送或弹出投机 RAS。 |
-| 输入 | `branchInput: branch_result_input_t` | BRU 条件分支结算；更新方向表与目标表，并使用对应检查点中的 GHR。 |
-| 输入 | `jumpInput: jump_result_input_t` | ALU 侧 JAL/JALR 结算；训练跳转目标，不更新条件分支方向表。 |
-| 输入 | `squashInput: squash_input_t` | 仲裁后的恢复边界、重定向 PC 和检查点；恢复 GHR / RAS 及检查点序号。 |
-| 输入 | `robInput: rob_predictor_input_t` | ROB 头提交及存活窗口条目，供 RAS 的已提交态更新/恢复重放。 |
+### RAS 与 checkpoint
 
-分支/跳转训练需要 `valid && robEntryLive`，且冲刷周期必须严格早于冲刷标签。方向预测的 taken 还需 BTB 命中；BTB 标记无条件时强制 taken。return 预测使用 RAS 栈顶；栈空时不采纳返回预测。
+[`rv32_bpu_ras`](../verilog/rtl/predictor/rv32_bpu_ras.sv) 为非环形有界栈：空 pop、满 push 保持。JALR 的 push=`rd∈{x1,x5}`、pop=`rs1∈{x1,x5}`，双 link 含同寄存器均先 pop 后 push；JAL 仅按 rd 判断 push。容量检查使用 pop 后深度，查询读取旧栈顶，空栈目标为 0。
 
-### 3.1 `rv32_bpu_direction`：方向表和 GHR
+内部深度为 `$clog2(RAS_ENTRIES+1)` 位，公开 16 位深度输出补零。已提交栈、普通投机更新和恢复候选独立计算：恢复从拍初完整已提交栈重放存活 ROB（含头项及边界），不读当拍提交后的下一态，也不由 `willCommit/squash.valid` 使能。最后由 squash 选择恢复候选，优先于早期取指；同拍提交头项恰好重放一次，不增加恢复拍数。
 
-源码：[`rv32_bpu_direction.sv`](../verilog/rtl/predictor/rv32_bpu_direction.sv)。参数 `BHT_ENTRIES=256`、`CONDSEEN_ENTRIES=512`。
-
-| 方向 | 端口 | 作用 |
-|---|---|---|
-| 输入 | `clkInput`, `rstNInput` | 三张方向表、condSeen 位图和 8 位 GHR 状态。 |
-| 输入 | `queryPcInput[31:0]` | 查询 localPHT、`PC xor GHR` 索引的 globalPHT/selector、condSeen。 |
-| 输入 | `branchInput: branch_training_input_t` | 按分支 PC、实际 taken 和该分支的检查点 GHR 更新两个 2-bit 饱和计数器；两路预测不同时更新 chooser。 |
-| 输入 | `historyInput: direction_history_input_t` | `fetchAccepted/queryShift/queryShiftValue` 控制预测 GHR 移位；`squashValid/recoveryHistory` 在恢复时优先覆盖。 |
-| 输出 | `predictionOutput: direction_prediction_output_t` | 条件分支方向、选全局位、已见条件分支位及当前 GHR。 |
-
-### 3.2 `rv32_bpu_btb`：目标缓存
-
-源码：[`rv32_bpu_btb.sv`](../verilog/rtl/predictor/rv32_bpu_btb.sv)。参数 `BTB_ENTRIES=64`，默认以 `PC[7:2]` 索引，表项保存上位 PC tag、`target[31:2]` 和 invalid/conditional/unconditional/return 状态；目标低两位还原为零。
-
-| 方向 | 端口 | 作用 |
-|---|---|---|
-| 输入 | `clkInput`, `rstNInput` | 表项寄存器的时钟与复位。 |
-| 输入 | `queryPcInput[31:0]` | 查索引/比较 tag。 |
-| 输出 | `lookupOutput: btb_lookup_output_t` | `hit/unconditional/isReturn/target`；使用目标时须结合 `hit`。 |
-| 输入 | `trainingInput: btb_training_input_t` | 前端静态 JAL/JALR 类型、执行阶段跳转目标、条件分支目标；同项写入按 fetch > jump > branch 仲裁。 |
-
-### 3.3 `rv32_bpu_ras`：返回地址栈
-
-源码：[`rv32_bpu_ras.sv`](../verilog/rtl/predictor/rv32_bpu_ras.sv)。参数 `RAS_ENTRIES=16`，非环形有界栈；满 push、空 pop 保持。
-
-JALR 的 push=`rd∈{x1,x5}`、pop=`rs1∈{x1,x5}`，两标志独立；双 link 即使同寄存器也先 pop 后 push。JAL 仅按 rd 判断 push。容量检查使用 pop 后深度，查询读取旧栈顶。
-
-内部栈深度使用 `$clog2(RAS_ENTRIES+1)` 位，默认16项时为5位；公开16位深度输出高位补零。
-恢复候选独立从拍初完整已提交栈重放存活 ROB（包含头项和边界），不读取当拍提交后的下一态，
-不受 `willCommit` 或 `squash.valid` 使能控制。已提交栈更新、普通投机更新各自计算，最后由
-`squash.valid` 选择恢复候选，恢复优先于早期取指事件。同拍提交头项在旧基线上恰好重放一次；
-无新增寄存级、预测或恢复拍数不变。checkpoint 仍只保存 GHR。
-
-| 方向 | 端口 | 作用 |
-|---|---|---|
-| 输入 | `clkInput`, `rstNInput` | 投机栈、已提交栈的时钟/复位。 |
-| 输入 | `fetchInfoInput: predictor_fetch_info_t` | 两个独立动作：return先pop，call后push PC+4；双link标志可同时真。 |
-| 输入 | `squashInput: squash_input_t` | 错路恢复：从已提交栈重建并重放存活 ROB 窗口。 |
-| 输入 | `robInput: rob_predictor_input_t` | 提交的 call/return 更新架构栈；提供按序 ROB 指令用于重放。 |
-| 输出 | `rasTopOutput[15:0]`, `queryRetTargetOutput[31:0]` | 投机栈深度/栈顶返回地址；栈空目标为 0。 |
-
-### 3.4 `rv32_bpu_checkpoint`：取指历史快照
-
-源码：[`rv32_bpu_checkpoint.sv`](../verilog/rtl/predictor/rv32_bpu_checkpoint.sv)。参数 `CKPT_ENTRIES=32`。这里只保存 **8 位 GHR** 快照；RAS 用已提交栈和 ROB 重放恢复。
-
-| 方向 | 端口 | 作用 |
-|---|---|---|
-| 输入 | `clkInput`, `rstNInput` | 快照表和下一个 checkpoint ID 的时钟/复位。 |
-| 输入 | `checkpointInput: checkpoint_input_t` | `fetchAccepted/globalHistory` 写当前 ID；`branchCheckpointId` 查训练历史；`squash.checkpointId` 查恢复历史并重置 ID 指针。 |
-| 输出 | `checkpointOutput: checkpoint_output_t` | `branchHistory/recoveryHistory/nextCheckpointId`。 |
-| 输出 | `nextCheckpointIdOutput: bpu_ckpt_id_t` | 独立旧 ID 连线，避免预测 ID 依赖 fetchAccepted 总线。 |
-
-## 4. 对接与时序要点
-
-- 方向训练使用 BRU 的真实 `taken`；目标恰为 PC+4 时仍可训练 taken=1，预测 PC 正确则不触发误预测恢复。
-- BTB 的 tag/类型和 target 分别按槽仲裁，优先级为 fetch > jump > taken branch；无写者保持旧值，查询读取旧态。无静态目标的 JALR/RET 预译码可采用同拍解析目标。
-- core 将 IQ payload 接译码器，`iqReadyInput` 接本拍发射成功信号。
-- checkpoint 仅随实际取指握手推进；`fetchInfoOutput.valid` 表示上一拍 FQ 入队。
-- 后端恢复见 [backend.md](backend.md)。指令返回时间由外部存储器决定。
+[`rv32_bpu_checkpoint`](../verilog/rtl/predictor/rv32_bpu_checkpoint.sv) 只保存 **8 位 GHR**，不保存 RAS。`checkpointInput` 负责取指写入、分支历史查询与恢复；`checkpointOutput` 返回历史和下一个 ID。独立 `nextCheckpointIdOutput` 避免 ID 依赖 fetchAccepted 总线。恢复仲裁时序见 [backend.md](backend.md)。

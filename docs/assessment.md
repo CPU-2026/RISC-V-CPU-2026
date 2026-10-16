@@ -1,25 +1,38 @@
-# 无外部从机的面积与时序评估
+# 综合、面积与时序评估
 
 评估入口：`scripts/assess.py`、`verilog/assessment/student_top.sv`；D$ 单模块使用
 `verilog/assessment/dcache_top.sv`。
 
-## 范围
+## 课程顶层与独立范围
+
+`make synth` 默认使用课程 `verilog/filelist.f`，评估当前 `student_top` 的 core＋I$/D$＋AXI 主机/MMIO 路径，不含外部从机。
+`scripts/assess.py` 则替换为独立 assessment 顶层，用于剥离总线后的模块诊断；两者边界与可观察端口不同，不能混用结果。
+
+```bash
+make synth MODE=opt CLOCK_PERIOD_NS=2.0
+make synth MODE=diagnose
+make synth ABC_DRIVING_CELL=BUFx2_ASAP7_75t_R ABC_LOAD_FF=1.0
+```
+
+课程综合输出 `SYNTH_OUT/MODE/`（默认 `build/synth/opt/`），包含 `report.txt/json`、`area.json`、`timing.json`、
+`timing.rpt`、`abc.constr` 和 `constraints.sdc`。默认 ABC 驱动 `INVx1_ASAP7_75t_R`、负载 5 fF；
+使用驱动/负载约束并进行缓冲插入与单元尺寸优化。2 ns 是优化/检查目标，不是达标声明；slack≥0 才满足该目标。
+
+独立 `assess.py` 范围如下，几何以当前常量为准：
 
 | `--scope` | 电路范围 | 外部接口 |
 |---|---|---|
 | `core` | `rv32_core`，含预测器、前后端、执行单元和 LSU | 32 bit 逻辑取指/访存；数据放在行数据端口的低 32 bit |
-| `cached` | core + 1 KiB ICache + 8 KiB DCache；HALT 提交立即结束，不排空 | 64 B 内存行；I$ 回填附带行地址，D$ 读写通道独立 |
-| `dcache` | 仅 DCache：4 项请求队列、16 个 data bank、tag/dirty SRAM、128个 valid 寄存器、8 拍回填控制 | CPU 请求及应答；独立行读/写请求、返回行和写完成 |
+| `cached` | core + I$/D$；显式 `LEGACY_HALT=1`，HALT 退休立即结束、不排空 | I$/D$ 行接口；D$ 带地址/ID 的读写独立完成 |
+| `dcache` | 仅 D$ | CPU 请求/响应；独立行读/写请求、回复及写完成 |
 
 所有内存响应及 ready 均保留为顶层输入，没有常量化。从机不进入网表。
 `core/cached` 顶层保留全部提交跟踪输出，面积和接口时序包含这些可观察输出的开销。
 复位为高有效 `reset`，连接到内部低有效复位；STA 设置 `reset=0`。
 
-I$/D$ 数据使用课程 `sram_fakeram` 面积/时序模型。D$ 实际实例为
-16 个 `128×32`、8 bit 写粒度的 data bank，以及一个 `128×20` tag/dirty SRAM；
-128 个 valid bit 为可复位寄存器，计入时序逻辑面积；无 SRAM 清零扫描。
-不把 data 阵列降为触发器，也不使用零面积 blackbox。模型是 FakeRAM 拟合估计，
-不是工艺厂 SRAM 编译器或布局布线实测。
+阵列配置见 [cache.md](cache.md#几何与-sram)：SRAM 使用课程 `sram_fakeram` 面积/时序模型，valid 寄存器计入时序面积；不得将阵列降为触发器或使用零面积 blackbox。FakeRAM 为拟合估计，不是工艺厂 SRAM 编译器结果。
+
+旧 HALT 评估中 `drainDoneOutput=haltedOutput` 仅为兼容观察，`total=core`、`drain=0`，外存不保证包含全部退休 Store。
 
 ## 运行
 
@@ -61,9 +74,9 @@ python3 scripts/assess.py --scope cached --mode opt \
 - 上一级 `assessment-<mode>.json`：原始源码 SHA-256、转换方式与工具版本。
 
 `opt` 是最终展平优化的 PPA 数值来源；`diagnose` 保留模块层次，输出每个模块
-含子模块面积、直接面积及总面积占比。诊断模式关闭 Yosys `opt_hier`，以避免
-跨层次端口优化；当前 ROB 输出默认赋零且 AGU 原始有效位端口已删除，未驱动
-输出检查已通过。诊断报告适合定位热点，其总面积/频率会与展平 `opt` 不同。
+含子模块面积、直接面积及总面积占比。独立 `assess.py` 诊断模式关闭 Yosys `opt_hier`，以避免
+跨层次端口优化；诊断报告适合定位热点，其总面积/频率会与展平 `opt` 不同。
+`Area` 含所有子模块，`Direct` 仅为实例自身；父子 inclusive 面积不可相加。
 由于层次诊断的 generic/pre-ABC 快照很大，运行 diagnose 时建议使用 `--no-checkpoints`。
 
 ### 导出不重复计数的模块面积
@@ -90,7 +103,6 @@ ROB 年龄比较的零常量类型，以绕过 `sv2v 0.0.12` 的转换限制。
 自动局部变量导致工具报出无用临时锁存器；最终综合网表仍必须通过
 课程脚本的无锁存器、无初始化属性、无未映射单元及连线检查。
 
-工具默认直接在 `build/assessment/<scope>/` 工作，检查点可跨运行环境重启保存。
 Yosys 使用相对路径读取 Unicode 工程目录中的文件，以绕过 JSON 前端对
 Unicode 源路径属性的限制；`--work-dir` 可指定其他工作根目录。
 工程 RTL 原文件不参与这些副本改写。
@@ -98,7 +110,8 @@ Unicode 源路径属性的限制；`--work-dir` 可指定其他工作根目录�
 普通 `scripts/synth.py` / `make synth` 也使用同一 `scripts/sv_frontend.py`：
 默认 `--frontend auto` 在 `.sv` 输入且存在 `sv2v` 时自动转换；纯 `.v` 输入保持
 Yosys 原生路径。可用 `--frontend sv2v --sv2v /path/to/sv2v` 强制转换，或
-`--frontend yosys` 明确选择原生解析器。Make 对应 `SYNTH_FRONTEND` / `SV2V`。
+`--frontend yosys` 明确选择原生解析器。Make 转发 `SV2V`；当前 Makefile 虽声明
+`SYNTH_FRONTEND`，尚未将其传给脚本，强制选择解析器时直接调用 `scripts/synth.py --frontend ...`。
 无 `sv2v` 时 auto 回到原生解析器，但旧 Yosys 不能处理本工程的 `import`、
 结构体赋值及动态结构体数组下标；此时应安装/指定 `sv2v`，而不是手改队列 RTL。
 普通综合的 `report.json` 中 `frontend` 记录转换命令、版本和生成文件 SHA-256。
@@ -132,6 +145,4 @@ STA 对顶层 `reset` 采用 `reset=0`。当前 `coreResetNInner = !reset`，不
 DCache 初始化状态驱动；valid移至寄存器后已删除内部初始化释放网络。
 旧版本由启动复位高扇出支配的 PPA 仅作历史基线；不使用新增 false path 掩盖该路径。
 
-本评估为理想时钟、无互连寄生参数的综合级估计，尚未包含 AXI 适配器、
-总线仲裁、课程 MMIO 退出逻辑，以及布局布线后的影响。程序周期数和 IPC
-由另一个仿真流程测量。
+本评估为理想时钟、无互连寄生的综合级估计，不含布局布线影响。IPC 另由仿真测量，见 [course.md](course.md)；历史数值见 [assessment-results.md](assessment-results.md) 与 [experiments.md](experiments.md)。

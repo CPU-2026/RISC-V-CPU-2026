@@ -22,6 +22,7 @@ module rv32_alu_unit #(
 ) (
   input  logic                   clkInput,
   input  logic                   rstNInput,
+  input logic freezeInput,
   input  rv32_pkg::rob_flush_input_t flushInfoInput,
 
   input  rv32_pkg::execute_request_input_t executeInput,
@@ -137,7 +138,7 @@ module rv32_alu_unit #(
         controlInner[seqIndexInner] <= 1'b0;
         controlMisalignedInner[seqIndexInner] <= 1'b0;
       end
-    end else begin
+    end else if (!freezeInput) begin
       // Single assignment per slot, priority push > flush > grant > keep.  A
       // push may land in a slot that is released this same cycle; the payload
       // written is the new one (drain-and-refill of a single result register).

@@ -1,4 +1,6 @@
-module rv32_decoder (
+module rv32_decoder #(
+  parameter bit LEGACY_HALT = 1'b0
+) (
   input  rv32_pkg::decode_context_t decodeContextInput,
   output rv32_pkg::decoded_uop_t    uopOutput
 );
@@ -27,7 +29,7 @@ module rv32_decoder (
     uopOutput.predictorCheckpointId = decodeContextInput.predictorCheckpointId;
     uopOutput.memorySize = MEM_WORD;
 
-    if (decodeContextInput.instruction == HALT_INSN) begin
+    if (LEGACY_HALT && decodeContextInput.instruction == HALT_INSN) begin
       // Retain the encoded ADDI payload, as the software decoded IQ does.
       uopOutput.immediate = {{20{decodeContextInput.instruction[31]}}, decodeContextInput.instruction[31:20]};
       uopOutput.illegal = 1'b0;

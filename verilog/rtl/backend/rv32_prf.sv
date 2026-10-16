@@ -4,6 +4,7 @@ module rv32_prf #(
 ) (
   input  logic                       clkInput,
   input  logic                       rstNInput,
+  input logic freezeInput,
 
   input  rv32_pkg::prf_allocation_input_t allocationInput,
   output logic                       allocReadyOutput,
@@ -129,7 +130,7 @@ module rv32_prf #(
       for (seqIndexInner = 0; seqIndexInner < PRF_DEPTH; seqIndexInner = seqIndexInner + 1)
         freeListInner[seqIndexInner] <= seqIndexInner < PRF_DEPTH-ARCH_REGS ?
             phy_tag_t'(ARCH_REGS+seqIndexInner) : phy_tag_t'(0);
-    end else begin
+    end else if (!freezeInput) begin
       if (allocationFireInner)
         freeHeadInner <= free_seq_next(freeHeadInner);
       if (recycleCountInner != 0)

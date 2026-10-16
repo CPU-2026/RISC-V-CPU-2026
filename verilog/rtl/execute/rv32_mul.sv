@@ -1,6 +1,7 @@
 module rv32_mul (
   input  logic                   clkInput,
   input  logic                   rstNInput,
+  input logic freezeInput,
   input  rv32_pkg::rob_flush_input_t flushInfoInput,
   input  rv32_pkg::execute_request_input_t executeInput,
   output logic                   inReadyOutput,
@@ -172,7 +173,7 @@ module rv32_mul (
         tagInner[seqIndexInner] <= '0;
         phyInner[seqIndexInner] <= '0;
       end
-    end else begin
+    end else if (!freezeInput) begin
       if (resultCanAcceptInner) begin
         validInner[2] <= keepValidInner[1];
         if (keepValidInner[1]) begin

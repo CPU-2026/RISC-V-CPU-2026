@@ -11,7 +11,23 @@ package rv32_pkg;
   parameter int unsigned BPU_CKPT_ID_W = $clog2(BPU_CKPT_ENTRIES);
   parameter int unsigned FQ_ENTRIES   = 2;
   parameter int unsigned IQ_ENTRIES   = 2;
-  parameter int unsigned FETCH_REQUEST_ENTRIES = 4;
+  parameter int unsigned FETCH_REQUEST_ENTRIES = 8;
+  parameter int unsigned AXI_FETCH_LINE_ENTRIES = 16;
+  parameter int unsigned DATA_REQUEST_ENTRIES = 8;
+  localparam int DATA_TRANSACTION_W = $clog2(DATA_REQUEST_ENTRIES);
+  typedef logic [DATA_TRANSACTION_W-1:0] data_transaction_t;
+  localparam logic [31:0] AXI_EXIT_ADDR = 32'h8000_0000;
+
+  typedef struct packed {
+    logic arValid, rReady, awValid, wValid, bReady;
+    logic [31:0] arAddr, awAddr, wData;
+    logic [3:0] wStrb;
+  } axi_master_t;
+  typedef struct packed {
+    logic arReady, rValid, awReady, wReady, bValid;
+    logic [31:0] rData;
+    logic [1:0] rResp, bResp;
+  } axi_slave_t;
   parameter int unsigned INT_RS_ENTRIES = 2;
   parameter int unsigned MUL_RS_ENTRIES = 1;
   parameter int unsigned DIV_RS_ENTRIES = 1;
@@ -27,12 +43,12 @@ package rv32_pkg;
   parameter int unsigned CACHE_LINE_BYTES = 64;
   parameter int unsigned CACHE_LINE_BITS = CACHE_LINE_BYTES << 3;
   parameter int unsigned ICACHE_SETS = 16;
-  parameter int unsigned DCACHE_SETS = 128;
-  parameter int unsigned DCACHE_WAYS = 1;
+  parameter int unsigned DCACHE_SETS = 64;
+  parameter int unsigned DCACHE_WAYS = 2;
   // DCache line size is decoupled from the ICache line: refill beats, bank
   // count and the external line payload all follow DCACHE_LINE_BYTES while
   // the ICache keeps CACHE_LINE_BYTES.
-  parameter int unsigned DCACHE_LINE_BYTES = 64;
+  parameter int unsigned DCACHE_LINE_BYTES = 32;
   parameter int unsigned DCACHE_LINE_BITS = DCACHE_LINE_BYTES << 3;
   parameter int unsigned RAS_ENTRIES = 16;
 
@@ -400,11 +416,13 @@ package rv32_pkg;
     logic [31:0] writeData;
     logic [3:0] writeStrobe;
     logic [1:0] size;
+    data_transaction_t transaction;
   } dcache_cpu_request_input_t;
 
   typedef struct packed {
     logic valid;
     logic [31:0] readData;
+    data_transaction_t transaction;
   } dcache_cpu_response_output_t;
 
   typedef struct packed {
@@ -426,15 +444,25 @@ package rv32_pkg;
   typedef struct packed {
     logic readValid;
     logic [31:0] readAddress;
+    logic [1:0] readTransaction;
     logic writeValid;
     logic [31:0] writeAddress;
+    logic [1:0] writeTransaction;
     logic [DCACHE_LINE_BITS-1:0] writeData;
   } dcache_line_request_output_t;
 
   typedef struct packed {
     logic valid;
+    logic [31:0] address;
+    logic [1:0] transaction;
     logic [DCACHE_LINE_BITS-1:0] data;
   } dcache_line_response_input_t;
+
+  typedef struct packed {
+    logic valid;
+    logic [31:0] address;
+    logic [1:0] transaction;
+  } dcache_write_response_input_t;
 
   typedef struct packed {
     logic valid;

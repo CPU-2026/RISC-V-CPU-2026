@@ -11,15 +11,21 @@ module rv32_dmem_backend (
   input logic memReadReadyInput,
   input logic memWriteReadyInput,
   input rv32_pkg::dcache_line_response_input_t memResponseInput,
-  input logic memWriteDoneInput,
-  output logic initializedOutput
+  input rv32_pkg::dcache_write_response_input_t memWriteResponseInput,
+  output logic memRspReadyOutput, memWriteRspReadyOutput,
+  output logic initializedOutput,
+  input logic exitReadyInput,
+  output logic exitValidOutput,
+  output logic [31:0] exitValueOutput
 );
   rv32_dcache cache (
     .clkInput(clkInput), .rstNInput(rstNInput),
     .cpuRequestInput(cpuRequestInput), .cpuReqReadyOutput(cpuReqReadyOutput),
     .cpuResponseOutput(cpuResponseOutput), .memRequestOutput(memRequestOutput),
     .memReadReadyInput(memReadReadyInput), .memWriteReadyInput(memWriteReadyInput),
-    .memResponseInput(memResponseInput), .memWriteDoneInput(memWriteDoneInput),
-    .initializedOutput(initializedOutput), .idleOutput()
+    .memResponseInput(memResponseInput), .memWriteResponseInput(memWriteResponseInput),
+    .memRspReadyOutput(memRspReadyOutput), .memWriteRspReadyOutput(memWriteRspReadyOutput),
+    .initializedOutput(initializedOutput), .idleOutput(),
+    .exitReadyInput(exitReadyInput), .exitValidOutput(exitValidOutput), .exitValueOutput(exitValueOutput)
   );
 endmodule

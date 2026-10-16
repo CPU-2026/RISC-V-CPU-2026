@@ -1,6 +1,7 @@
 module rv32_rat (
   input  logic                       clkInput,
   input  logic                       rstNInput,
+  input logic freezeInput,
 
   input  rv32_pkg::rat_read_input_t  readInput,
   output rv32_pkg::rat_read_output_t readOutput,
@@ -69,7 +70,7 @@ module rv32_rat (
         mapInner[stateIndexInner] <= phy_tag_t'(stateIndexInner);
         archInner[stateIndexInner] <= phy_tag_t'(stateIndexInner);
       end
-    end else begin
+    end else if (!freezeInput) begin
       if (restoreInput.valid) begin
         for (stateIndexInner = 0; stateIndexInner < ARCH_REGS;
              stateIndexInner = stateIndexInner + 1)

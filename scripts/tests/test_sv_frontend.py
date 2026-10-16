@@ -69,6 +69,7 @@ class FrontendTests(unittest.TestCase):
                          "requires sv2v and Verilator")
     def test_real_dcache_conversion_and_cycle_equivalence(self):
         sources = [ROOT / "verilog/rtl/common/rv32_pkg.sv", ROOT / "verilog/rtl/memory/rv32_dcache.sv",
+                   ROOT / "verilog/rtl/memory/rv32_dmem.sv",
                    ROOT / "verilog/assessment/dcache_top.sv"]
         hashes = [hashlib.sha256(source.read_bytes()).hexdigest() for source in sources]
         converted, manifest = convert_sources(shutil.which("sv2v"), sources, self.work / "frontend")
@@ -85,7 +86,7 @@ class FrontendTests(unittest.TestCase):
         self.assertEqual(replacements, 1)
         renamed.write_text(text)
         self.run_logged(["verilator", "--binary", "--timing", "--assert", "-Wno-fatal", "--unroll-count", "1024",
-                         "-j", "4", "--top-module", "tb_dcache_frontend", "--Mdir", str(self.work / "obj"),
+                         "-j", "1", "--top-module", "tb_dcache_frontend", "--Mdir", str(self.work / "obj"),
                          *map(str, sources), str(renamed), str(RAM_SOURCE), str(SCRIPTS / "tests/dcache_frontend_tb.sv")],
                         "verilator.log")
         self.run_logged([str(self.work / "obj/Vtb_dcache_frontend")], "simulation.log")

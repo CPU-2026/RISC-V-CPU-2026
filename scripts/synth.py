@@ -7,7 +7,6 @@ import math
 import os
 import re
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
@@ -45,6 +44,12 @@ def main():
     parser.add_argument("--mode", choices=("opt", "diagnose"), default="opt")
     parser.add_argument("--no-hieropt", action="store_true",
                         help="preserve hierarchy without opt_hier (workaround for port-removal bugs)")
+    parser.add_argument("--elaborated-json", type=Path,
+                        help="reuse an existing RTL elaboration snapshot")
+    parser.add_argument("--pre-abc-json", type=Path,
+                        help="resume mapping from an existing pre-ABC snapshot")
+    parser.add_argument("--checkpoints", action="store_true",
+                        help="save the generic synthesis JSON snapshot")
     parser.add_argument("--clock-period", type=float, default=2.0, help="target clock period in ns (default: 2)")
     parser.add_argument("--clock-port", default="clock", help="top-level clock input (default: clock)")
     parser.add_argument("--abc-driving-cell", default="INVx1_ASAP7_75t_R",

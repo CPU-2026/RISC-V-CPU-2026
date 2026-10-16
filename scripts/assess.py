@@ -50,8 +50,8 @@ def main():
         return
     try:
         sv2v = executable(args.sv2v)
-        # Use the framework's canonical SRAM declaration once. The unfinished
-        # AXI course wrapper is replaced only in this assessment source list.
+        # Use the framework's canonical SRAM declaration once. Replace the
+        # course AXI wrapper only in this standalone assessment source list.
         if args.scope == "dcache":
             sources = [root / "verilog" / "rtl" / "common" / "rv32_pkg.sv",
                        root / "verilog" / "rtl" / "memory" / "rv32_dcache.sv",

@@ -7,6 +7,7 @@ module rv32_predictor #(
 ) (
   input  logic                         clkInput,
   input  logic                         rstNInput,
+  input logic freezeInput,
 
   input  logic [31:0]                  queryPcInput,
   output rv32_pkg::prediction_output_t predictionOutput,
@@ -43,11 +44,13 @@ module rv32_predictor #(
   logic queryBtbHitInner;
   logic queryDirTakenInner, queryIsRetInner, queryTakenInner, queryShiftInner, queryShiftValueInner;
   logic [31:0] queryTargetInner;
+  btb_training_input_t trainingBatchInner;
 
   rv32_bpu_direction #(
     .BHT_ENTRIES(BHT_ENTRIES),
     .CONDSEEN_ENTRIES(CONDSEEN_ENTRIES)
   ) u_direction (
+    .freezeInput(freezeInput),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .queryPcInput(queryPcInput),
     .branchInput('{valid: branchTrainInner,
@@ -57,8 +60,8 @@ module rv32_predictor #(
                   globalHistory: branchGhrInner}),
     .historyInput('{fetchAccepted: fetchAcceptInput,
                    squashValid: squashInput.valid,
-                   queryShift: queryShiftInner,
-                   queryShiftValue: queryShiftValueInner,
+                     queryShift: queryShiftInner,
+                     queryShiftValue: queryShiftValueInner,
                    recoveryHistory: ckptSquashGhrInner}),
     .predictionOutput(directionOutputInner)
   );
@@ -67,26 +70,24 @@ module rv32_predictor #(
   assign dirCondseenInner = directionOutputInner.conditionalSeen;
   assign dirGhrInner = directionOutputInner.globalHistory;
 
+  assign trainingBatchInner = '{fetchValid: fetchInfoInput.valid,
+    isReturn: fetchInfoInput.isReturn, jalTargetValid: fetchInfoInput.jalTargetValid,
+    fetchProgramCounter: fetchInfoInput.programCounter, jalTarget: fetchInfoInput.jalTarget,
+    branch: '{valid: branchTrainInner, programCounter: branchInput.programCounter,
+      nextProgramCounter: branchInput.nextProgramCounter, taken: branchInput.taken,
+      globalHistory: branchGhrInner},
+    jumpValid: jumpTrainInner, jumpProgramCounter: jumpInput.programCounter,
+    jumpTarget: jumpInput.target, jumpIsReturn: jumpInput.isReturn};
+  // Register BTB: read old state combinationally, train on this edge. SRAM
+  // experiments remain standalone modules and do not add stages or credits here.
   rv32_bpu_btb #(
     .BTB_ENTRIES(BTB_ENTRIES)
   ) u_btb (
+    .freezeInput(freezeInput),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .queryPcInput(queryPcInput),
     .lookupOutput(btbLookupOutputInner),
-    .trainingInput('{fetchValid: fetchInfoInput.valid,
-                    isReturn: fetchInfoInput.isReturn,
-                    jalTargetValid: fetchInfoInput.jalTargetValid,
-                    fetchProgramCounter: fetchInfoInput.programCounter,
-                    jalTarget: fetchInfoInput.jalTarget,
-                    branch: '{valid: branchTrainInner,
-                              programCounter: branchInput.programCounter,
-                              nextProgramCounter: branchInput.nextProgramCounter,
-                              taken: branchInput.taken,
-                              globalHistory: branchGhrInner},
-                    jumpValid: jumpTrainInner,
-                    jumpProgramCounter: jumpInput.programCounter,
-                    jumpTarget: jumpInput.target,
-                    jumpIsReturn: jumpInput.isReturn})
+    .trainingInput(trainingBatchInner)
   );
   assign btbHitInner = btbLookupOutputInner.hit;
   assign btbUncondInner = btbLookupOutputInner.unconditional;
@@ -96,6 +97,7 @@ module rv32_predictor #(
   rv32_bpu_ras #(
     .RAS_ENTRIES(RAS_ENTRIES)
   ) u_ras (
+    .freezeInput(freezeInput),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .fetchInfoInput(fetchInfoInput),
     .squashInput(squashInput),
@@ -107,6 +109,7 @@ module rv32_predictor #(
   rv32_bpu_checkpoint #(
     .CKPT_ENTRIES(CKPT_ENTRIES)
   ) u_checkpoint (
+    .freezeInput(freezeInput),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .checkpointInput('{fetchAccepted: fetchAcceptInput,
                       squash: squashInput,
@@ -138,18 +141,18 @@ module rv32_predictor #(
     if (queryBtbHitInner && btbUncondInner)
       queryTakenInner = 1'b1;
     queryIsRetInner = btbRetInner;
-    if (queryIsRetInner && (rasTopInner == 16'd0)) begin
+    if (queryIsRetInner && rasTopInner == 0) begin
       queryBtbHitInner = 1'b0;
       queryTakenInner = 1'b0;
     end
     queryTargetInner = btbTgtInner;
-    if (queryIsRetInner && (rasTopInner != 16'd0))
+    if (queryIsRetInner && rasTopInner != 0)
       queryTargetInner = rasRetTargetInner;
     queryShiftInner = queryBtbHitInner || dirCondseenInner;
     queryShiftValueInner = queryBtbHitInner ?
                         (btbUncondInner ? 1'b1 : queryTakenInner) :
-                        (dirCondseenInner ? queryTakenInner : 1'b0);
+                          (dirCondseenInner ? queryTakenInner : 1'b0);
     predictionOutput.taken = queryTakenInner;
-    predictionOutput.nextProgramCounter = queryTakenInner ? queryTargetInner : (queryPcInput + 32'd4);
+    predictionOutput.nextProgramCounter = queryTakenInner ? queryTargetInner : queryPcInput + 32'd4;
   end
 endmodule

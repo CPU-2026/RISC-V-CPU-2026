@@ -1,81 +1,107 @@
-# RTL 缓存
+# RTL 缓存与行接口
 
-> **4 KiB几何扫描**：RTL现支持1/2/4路tree-PLRU及独立32/64/128 B D$行；
-> 默认仍为下文8 KiB/64 B/1路，I$行保持64 B。多路同步读所有路，命中写对应路，
-> invalid优先/否则PLRU，miss冻结victim身份。几何、评分及验证见[扫描说明](dcache-4k-sweep.md)。
-> 扫描不更新活动golden；下文固定16 bank/8拍/512bit数字仅描述默认配置。
+源码：[`memory/`](../verilog/rtl/memory/)。公共类型见 [package.md](package.md)，LSU 取消见 [memory.md](memory.md)，AXI/退出见 [course.md](course.md)。历史测量见 [experiments.md](experiments.md)。
 
-当前 D$ 周期合同与 2026-10-13 软件 SRAM 实现一致；RTL 的 valid 独立为寄存器，取消 SRAM 初始化扫描。共同父目录旧 §55/62 的寄存器 D$/停机排空记录是历史。core 使用 32 位处理器端口，外存仍传 512 位整行；Cache data 拆为 16 个同步 32 位 word bank，核外延迟由环境 ready/valid 决定。
+## 几何与 SRAM
 
 ```text
-frontend → I$：16组 × 1路 × 64 B = 1 KiB → 512-bit 整行读
-LSU      → D$：128组 × 1路 × 64 B = 8 KiB → 16 × (128×32-bit) data bank
+frontend → I$：16 组 × 1 路 × 64 B = 1 KiB → AXIFetch
+LSU      → D$：64 组 × 2 路 × 32 B = 4 KiB → AXIData → AXIBus
 ```
-
-## 公共几何与 SRAM
-
-每行 64 B，外存载荷 512 位，地址按 64 B 对齐。offset 为 6 位；I$/D$ 的 index 为 4/7 位，tag 为 22/19 位。D$ 地址拆分为 `[31:13] tag / [12:6] set / [5:2] word bank / [1:0] byte lane`。CPU 数据为 32 位，Store strobe 为 4 位。
 
 | 缓存 | 数据阵列 | 元数据 |
 |---|---|---|
-| I$ | 公共 `sram_fakeram`，16×512 bit，32 bit 写粒度，1RW 同步读写 | 寄存器 tag/valid |
-| D$ | 16 个公共 `sram_fakeram`，每个128×32 bit、8 bit写粒度、1RW同步读写 | 公共 SRAM，128×20 bit，`{dirty, tag[18:0]}`；另有128个可复位 valid 寄存器 |
+| I$ | 一个 16×512 bit `sram_fakeram`，32 bit 写粒度，1RW 同步读写 | 寄存器 tag/valid |
+| D$ | 每路 8 个、共 16 个 64×32 bit `sram_fakeram`，8 bit 写粒度，1RW 同步读写 | 每路一个 64×22 bit `{dirty, tag[20:0]}` SRAM；128 个 valid、64 个 MRU/PLRU 状态寄存器 |
 
-I$ 整行回填写掩码全 1。D$ 复位只清 valid 寄存器及控制状态，tag/dirty/data SRAM 保留原内容，冷启动和再次复位均不清 SRAM。valid=0 时不使用旧 tag/dirty 判断命中或脏逐出。`initializedOutput` 仅兼容观察复位释放（等于 `rstNInput`），core 不再等待 D$ 扫描；三端仅保留 core 的1拍 boot，不计入正常 core/total 周期。常量及接口类型见 [package.md](package.md)。
+I$ 行为 512 bit、offset 6 bit、index 4 bit、tag 22 bit；D$ 行为 256 bit，地址拆分为
+`[31:11] tag / [10:5] set / [4:2] word bank / [1:0] byte lane`。CPU 数据为 32 bit、Store strobe 为 4 bit。
 
-两软件和RTL均采用20 bit `{dirty, tag}` SRAM及独立valid寄存器。测试探针将二者重组为21 bit `{dirty, valid, tag}` 逻辑观察视图，按有效行比较，不要求无效行的 SRAM 内容等于软件初始零值。
+复位只清 valid、替换和控制状态，不清 tag/dirty/data SRAM；无效行旧内容不得影响命中或脏逐出。
+`initializedOutput = rstNInput` 仅为兼容观察，不存在 SRAM 扫描等待；core 另有 1 拍 boot。
 
 ## ICache
 
-`rv32_icache` 为 1 KiB 直接映射缓存，`REQUEST_DEPTH=4`。有序请求槽保存 PC、预测 PC、checkpoint 和结果；实际消费响应后释放，满时可同拍替换。
+`rv32_icache` 默认 `SETS=16`、`REQUEST_DEPTH=8`，有序槽保存 PC/预测 PC/checkpoint/结果。
+实际消费才释放，满槽可同拍替换；退出退休后 `freezeInput` 冻结控制和回填。
 
-- 命中：组合查旧 tag，接受沿发 SRAM 读；下一拍可旁路到匹配队首，否则保存到原槽。禁用或写周期的 SRAM 输出无效。
-- 缺失：每个已接受 miss 独立发一个行请求，同行请求不合并。行返回携带 `valid/address/data`，只接受匹配最老同行未就绪槽且无待完成 SRAM 读的返回，以 `memRspReadyOutput` 确认。
-- 回填：写整行和 tag，完成一个旧 miss。同拍同行新请求可按 `PC[5:2]` 从回填总线取指；回填写优先，异行 hit 停收一拍。
-- 准入：检查旧 IMEM 容量；同拍同行回填可旁路容量门控，一般返回消费不提供此旁路。
-- 恢复：`flushInput` 清逻辑请求与读身份，保留 Cache；`memFlushOutput` 取消逻辑 IMEM 队列。总线适配器负责识别并丢弃已取消的物理返回。
+- **命中**：组合查旧 tag，接受沿发同步 SRAM 读；下一拍可旁路到匹配队首，否则保存原槽。禁用/写周期 SRAM 输出无效。
+- **缺失**：每个已接受 miss 独立发一个行请求，同行不合并。行回复含 `valid/address/data`，匹配最老同行未就绪槽，且无待完成 SRAM 读，才以 `memRspReadyOutput` 消费。
+- **回填**：写整行/tag，完成一个旧 miss；同拍同行新请求可从回填总线按 `PC[5:2]` 取指。回填写优先，异行 hit 停收一拍。
+- **准入**：检查旧 IMEM 容量；同拍同行回填可旁路容量门控，一般返回消费不提供此旁路。
+- **恢复**：`flushInput` 清逻辑请求/读身份，保留 Cache；`memFlushOutput` 取消 AXIFetch 逻辑请求，适配器排空旧物理返回。
 
-core 的 `imemCacheRequestOutput` 接 CPU 请求，Cache ready 接 core 请求 ready；响应 valid/instruction 接 core 返回，`imemRspReadyOutput/imemFlushOutput` 分别接消费与恢复。
+## DCache：请求、MSHR 与回填
 
-## DCache
+`rv32_dcache` 默认 `SETS=64`、`WAYS=2`，写回、写分配；支持 1/2/4 路 tree-PLRU。
+最低编号 invalid 优先，否则 PLRU；命中及末拍回填更新替换状态，early restart 不单独更新。
 
-`rv32_dcache` 默认 `SETS=128`、`WAYS=1`，写回、写分配；支持`WAYS=1/2/4`。
-多路采用同步data/metadata SRAM和独立valid，最低编号invalid优先、否则tree-PLRU；
-不是恢复历史寄存器D$/四路路径。命中与末拍回填更新PLRU，单路替换状态无作用。
+### 准入与顺序
 
-- 准入：4项请求队列，拍初 `count<4` 时接收；满队列本拍完成也不补入。入队与查询分离，miss等待期间仍可排队。
-- 命中：n拍接受，n+1最早查询旧队首 data/tag+dirty，并在查询沿采样对应 valid；n+2 Load直接使用旧 SRAM 输出和对齐的valid返回。Store实际字节写/置 dirty 才出队。下一队首不提前查询。
-- 缺失：查询结束并行读到所有16个bank，保存完整victim及旧metadata；外存仍只读回一条512-bit整行。回填游标按0、2、…、14推进，每拍写两个相邻bank，共8拍；回复可在首拍直通、之后保持到末拍。脏行读写可并行发起，但回填必须等脏写实际完成。
-- Load early restart：完整512bit回复到达且脏写回已实际完成时，首个合格回填拍（游标0）按原地址/宽度提取字节并响应一次，即使目标位于最后一对bank。`loadRespondedInner`防重复；提前响应只释放LSU运输owner，不释放Cache队首、不消费行回复。
-- 响应data选择与使能解耦：按队首`needMemory`选择完整回复或命中SRAM字节，只有valid使用完整服务资格；有效hit/miss返回值与拍数不变。valid=0时readData无约定，不把高扇出fill使能用于数据源选择，不加响应寄存级。
-- 回填提交：首拍实际覆写bank时清对应valid，前7拍不改tag/dirty、不释放队首、不消费DMEM回复；第8拍写最后一对bank、更新tag/dirty并置valid、消费回复/释放队首，Load不再次响应。Store miss的字节在对应bank拍到达时合并，不能推迟到末拍；Store不形成Load响应。
-- SRAM端口：查询同时同步读全部16个bank和metadata；回填只启用当前bank对，命中Store只启用被写字节触及的一个或两个bank，并同步置dirty。写/禁用周期的旧输出不作为新查询结果。Load返回只保留实际宽度的原始字节，符号扩展由LSU的冻结身份完成。
-- 空闲：`idleOutput` 表示复位已释放且请求队列、读结果与外存事务均空；不是 HALT 结束条件。
-- 恢复：D$保持已接受请求顺序，包含被取消的读。LSU四项FIFO持有 slot/tag/size/unsigned/drop，负责逻辑取消和返回鉴权，D$只完成有序运输；已提交Store保留。提前响应前/同拍取消仍消费一次owner但不写LQ；响应后取消不能再生成响应。Cache满时即使owner已释放仍不得提前接收下一请求。
+- **8 项总请求信用、4 MSHR**。旧 `count<8` 才接受，旧满不复用本拍完成信用；MSHR owner 保留至回填末拍。
+- 活动请求独立释放，轮转分配；接受顺序由 8×8 位关系表维护，不能用已退休且可能回绕的 ROB tag 排序。
+- n 拍接受，n+1 最早同步查询旧请求，n+2 最早返回 hit Load。安全年轻 Load 可 hit-under-miss；更老 Store 字节重叠阻塞 Load，年轻 miss 还须避开更老 Store 所需 set。
+- Store 只在最老活动请求时实际写入并释放，不新增 D$ Store 转发。
+- 4 MSHR 冻结 line/owner/victim/dirty/data，不同 set 可并发，同 set 锁至完整回填。同行 Load 在首拍前合并，Store owner 或存在更老同 set Store 时不合并。
+- 同行首拍返回 owner，其他等待者 raw 保存后各自应答；每拍最多一个 Load 运输完成。
 
-## `rv32_dmem_backend`：处理器接口和复位
+### 同步 SRAM 与回填
 
-内部实例化 DCache，接口类型与位宽相同：
+- SRAM 端口优先级：回填 > Store > lookup；miss 早响应优先于同拍 hit，hit 结果可保存。
+- 查询同步读全部路 data/metadata；miss 冻结 victim 身份及完整旧数据。分配时使 victim 无效，末拍才发布新行。
+- 脏 victim 读/写可并发，必须等实际脏写完成才回填。读/写分别挑最老未发送 MSHR，完成核对 ID 与原地址。
+- 每拍写 victim 路两个相邻 32 bit bank，游标 0、2、4、6，共 4 拍。回复可首拍直通，之后必须保持到末拍消费。
+- **early restart**：完整 256 bit 回复和脏写完成均就绪，首个合格回填拍按原地址/宽度提取 Load 字节，即使目标在最后一对 bank。响应只发生一次，释放 LSU 运输 owner，但不释放 Cache owner/MSHR，也不消费行回复。
+- 前 3 拍不安装 tag/dirty、不释放 owner；第 4 拍写最后一对 bank、更新 metadata/valid/PLRU，消费回复并释放 owner。Store miss 字节在对应 bank 拍合并，不推迟到末拍，Store 不形成 Load 响应。
+- Store hit 只写对应路和实际触及的 bank/字节并置 dirty；写/禁用周期旧 SRAM 输出不作为新查询。
+- 响应数据源按已选请求 `needMemory` 选择整行回复或命中 SRAM，不将高扇出 fill 资格串入数据选择；valid=0 时 readData 无约定。返回 raw 字节，符号扩展由 LSU 冻结身份完成。
+
+### 三种身份
+
+| 身份 | 位宽 / 生命周期 |
+|---|---|
+| CPU 运输 ID | 3 bit；LSU 8 项 owner 冻结 LQ slot、ROB tag、宽度、符号、drop；D$ 原样返回 |
+| MSHR ID | 2 bit；行读/写请求、回复与写完成；完整运输和行发布后才复用 |
+| 行执行器物理 slot | 4 bit；验证环境 `rv32_dmem` 的 16 项混合 FIFO，不是上述事务 ID |
+
+LSU 的 owner 冻结、drop 与乱序返回认证见 [memory.md](memory.md#运输身份与迟到返回)。
+
+## Backend、MMIO 与 AXI
+
+`rv32_dmem_backend` 内含 DCache，接口如下：
 
 | 接口 | 端口 |
 |---|---|
 | CPU 请求/响应 | `cpuRequestInput/cpuReqReadyOutput/cpuResponseOutput` |
 | 行请求/响应 | `memRequestOutput/memResponseInput` |
-| 行接受/写完成 | `memReadReadyInput/memWriteReadyInput/memWriteDoneInput` |
-| 复位释放兼容观察（无扫描等待） | `initializedOutput = rstNInput` |
+| 行接受/带 ID 写完成 | `memReadReadyInput/memWriteReadyInput/memWriteResponseInput` |
+| 回复消费 | `memRspReadyOutput/memWriteRspReadyOutput` |
+| MMIO 旁路 | `exitValidOutput/exitValueOutput/exitReadyInput` |
+| 复位释放兼容观察 | `initializedOutput = rstNInput` |
 
-core 的 `haltedOutput` 只表示 HALT 已提交，不等待SQ空、Cache空或外存完成。backend不含排空FSM，不扫描dirty行。assessment顶层的旧 `drainDoneOutput` 仅兼容观察，直接等于 `haltedOutput`；它不再驱动写回。
+行接口含读/写各自 ID、返回地址/ID 与独立消费握手；intent 仅在 `valid && ready` 接受后标记 sent，
+回复保持到实际消费，不使用旧式无 ID 单拍脉冲。`idleOutput` 不是课程退出条件。
 
-计时：`total=core`、`drain=0`，保留HALT提交当拍的正常更新。HALT时实际外存可能尚未包含已退休Store；测试分别验证退休Store序列与实际外存/Cache/队列，不能用dirty行覆盖外存来冒充最终落地。
+MMIO 不查询/分配 Cache 行；旁路排序与退出完成条件见 [course.md](course.md#退出与复位)。
 
-## 验证入口与范围
+独立 assessment 的旧 HALT 边界见 [assessment.md](assessment.md#课程顶层与独立范围)；未落外存的 dirty 行不能冒充已完成写回。
 
-共同父目录下的验证入口：
+## 验证用行执行器 `rv32_dmem`
 
-- `python3 -B sync/run_sram_dcache.py`：两软件实际模块、RTL与独立周期/字节参考，逐拍比较回填游标/完成、metadata/有效行数据及实际DMEM；覆盖8拍回填和脏缺失。
-- 上述入口加`--poison-sram`：仅在外部软件测试副本预置tag=0/dirty=1/data=0xA5，验证valid=0屏蔽未初始化SRAM，不要求初始SRAM零值。
-- `python3 -B sync/run_capacity.py`：另含16-bank逐拍写使能/byte mask断言、末拍metadata/释放门控，以及跨bank Store miss/hit合并和dirty refetch；`tb_sram_early_restart`接实际LSU＋DCache验证一次早响应、满Cache与owner独立、取消/同tag复用、脏行及部分回填复位。
-- `python3 -B sync/run_capacity.py`：现行容量/接口门禁；新增D$非零初始SRAM、128项valid复位、脏行SRAM保留、部分回填/待返回命中复位检查；驻留dirty不自动写回、HALT保留posted SQ。
-- `python3 -B sync/run_sram_cpu.py`：实际三CPU的70项每拍观察指纹、逐条独立ISA退休与实际DMEM/有效Cache内容；`--trace` 另逐word比较pre/post轨迹。
-- 有意变更时序使用`--allow-cycle-change`，只放开旧周期golden，仍要求结果/退休数及三端逐拍严格一致；验证后才刷新活动表。`run_early_restart_cpu.py --binaries ...`专门检查真实HALT中止回填、恢复及独立有效内存。
-- 旧 `run_cached_rtl_chain.py`、`run_cpu_benchmarks.py` 和 §56/68 的2872word/最终全dirty内存合同是历史，不代表本次新的整核内部状态门禁或课程AXI已通过。
+`DEPTH=16`、`LATENCY=20`，用于独立数据侧环境，不在课程活动 filelist 中；不把 128 KiB 宿主内存综合进 CPU。
+一个混合 FIFO，每项复用一份 32 B 载荷存写数据或读结果；每拍最多一写一读，双接受先写，最后旧信用归写。
+旧满即停收；所有旧请求独立递减，接受拍不递减。到期读采样旧阵列，写在沿上落阵列；旧读背压不阻止后续执行。
+读/写各选本类型最老未消费项，写完成可越过未消费读以避免脏回填死锁；只回收连续已消费前缀。
+复位不清外部持久字节阵列，旧 HALT 环境不额外 drain。
+
+## 验证入口与边界
+
+```bash
+python3 -B -m unittest discover -s scripts/tests -p 'test_sv_frontend.py' -v
+python3 -B -m unittest discover -s scripts/tests -p 'test_lsu_tagged.py' -v
+python3 -B scripts/check_dcache_sync.py
+```
+
+前端/转换测试比较原始与转换 RTL 的两路 SRAM、valid、PLRU 和接口，并用独立字节参考核验 Load。
+数据侧对拍只读同级软件源码，包含满 16 信用、写完成越过旧读、4 MSHR、同行合并、hit-under-miss 与乱序返回。
+当前整核验证见 [course.md](course.md#当前验证记录)，历史 4 请求槽数据侧报告见 [experiments.md](experiments.md#4-四-mshr-数据侧快照2026-10-16早于当前课程顶层)。

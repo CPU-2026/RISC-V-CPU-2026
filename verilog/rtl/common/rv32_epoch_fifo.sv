@@ -6,6 +6,7 @@ module rv32_epoch_fifo #(
   localparam int unsigned SEQ_W = SLOT_W + 1
 ) (
   input logic clkInput, rstNInput, flushInput,
+  input logic freezeInput,
   input logic inValidInput,
   output logic inReadyOutput,
   input logic [WIDTH-1:0] inDataInput,
@@ -27,10 +28,10 @@ module rv32_epoch_fifo #(
     if (!rstNInput) begin
       headInner <= '0;
       tailInner <= '0;
-    end else if (flushInput) begin
+    end else if (!freezeInput && flushInput) begin
       headInner <= '0;
       tailInner <= '0;
-    end else begin
+    end else if (!freezeInput) begin
       if (inValidInput && inReadyOutput) begin
         entriesInner[tailInner[SLOT_W-1:0]] <= inDataInput;
         tailInner <= tailInner + SEQ_W'(1);

@@ -3,6 +3,7 @@ module rv32_rob #(
 ) (
   input  logic                   clkInput,
   input  logic                   rstNInput,
+  input logic freezeInput,
 
   input  rv32_pkg::rob_allocation_input_t allocInput,
   output logic                   allocReadyOutput,
@@ -97,9 +98,9 @@ module rv32_rob #(
       end
       always_ff @(posedge clkInput or negedge rstNInput) begin
         if (!rstNInput) readyInner[row] <= 1'b0;
-        else if (allocInput.valid && allocReadyOutput && tailSlotInner == SLOT_W'(row))
+        else if (!freezeInput && allocInput.valid && allocReadyOutput && tailSlotInner == SLOT_W'(row))
           readyInner[row] <= allocInput.ready || allocInput.isHalt || allocInput.hasException;
-        else if (readySetInner[row]) readyInner[row] <= 1'b1;
+        else if (!freezeInput && readySetInner[row]) readyInner[row] <= 1'b1;
       end
     end
   endgenerate
@@ -231,7 +232,7 @@ module rv32_rob #(
         predictorCkptIdInner[iInner] <= '0;
         isRetInner[iInner] <= 1'b0;
       end
-    end else if (flushInput.valid) begin
+    end else if (!freezeInput && flushInput.valid) begin
       tailInner <= flushTagNext;
       countInner <= commitFireOutput ? flushCountAfterCommitInner :
                                  flushCountInner[COUNT_W-1:0];
@@ -247,7 +248,7 @@ module rv32_rob #(
         validInner[headSlotInner] <= 1'b0;
         headInner <= headNext;
       end
-    end else begin
+    end else if (!freezeInput) begin
       for (iInner = 0; iInner < DEPTH; iInner = iInner + 1)
         if (exceptionSetInner[iInner]) exceptionInner[iInner] <= 1'b1;
 

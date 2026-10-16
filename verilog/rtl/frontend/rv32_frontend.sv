@@ -2,9 +2,11 @@ module rv32_frontend #(
   parameter int unsigned FQ_DEPTH = rv32_pkg::FQ_ENTRIES,
   parameter int unsigned IQ_DEPTH = rv32_pkg::IQ_ENTRIES,
   parameter int unsigned REQUEST_DEPTH = rv32_pkg::FETCH_REQUEST_ENTRIES,
-  parameter logic [31:0] RESET_PC = 32'b0
+  parameter logic [31:0] RESET_PC = 32'b0,
+  parameter bit LEGACY_HALT = 1'b0
 ) (
   input logic clkInput, rstNInput,
+  input logic freezeInput,
   output rv32_pkg::fetch_query_output_t predictorQueryOutput,
   output logic [31:0] fetchProgramCounterOutput,
   input rv32_pkg::prediction_output_t predictionInput,
@@ -40,17 +42,15 @@ module rv32_frontend #(
   assign reqCountInner = reqTailInner - reqHeadInner;
   assign reqHeadSlotInner = reqHeadInner[REQ_SLOT_W-1:0];
   assign reqTailSlotInner = reqTailInner[REQ_SLOT_W-1:0];
-  // Return remains in I$ until FQ really accepts it. No advance/reservation
-  // release merely because a response was offered to a full FQ.
-  assign imemRspReadyOutput = rstNInput && !redirectInput.valid && !stopFetchInner &&
+  // Prediction is combinational. I$ retains the instruction until the same
+  // FQ acceptance edge; no SRAM-BTB join queue or prediction pipeline remains.
+  assign imemRspReadyOutput = rstNInput && !freezeInput && !redirectInput.valid && !stopFetchInner &&
     reqCountInner != 0 && fqReadyInner;
   assign imemFlushOutput = redirectInput.valid;
   assign responseAcceptInner = imemResponseInput.valid && imemRspReadyOutput;
-  assign haltResponseInner = fqPushInner && fqReadyInner &&
+  assign haltResponseInner = LEGACY_HALT && responseAcceptInner &&
       imemResponseInput.instruction == HALT_INSN;
-  // Keep acceptance independent of prediction payload and its accepted query;
-  // no packed-output combinational feedback through the prediction bundle.
-  assign fetchAllowedInner = rstNInput &&
+  assign fetchAllowedInner = rstNInput && !freezeInput &&
         (reqCountInner < REQ_SEQ_W'(REQUEST_DEPTH) || responseAcceptInner) &&
         fqReadyInner && !haltResponseInner && !stopFetchInner && !redirectInput.valid;
   assign imemRequestOutput.valid = fetchAllowedInner;
@@ -64,16 +64,18 @@ module rv32_frontend #(
     fqInputInner = requestInner[reqHeadSlotInner];
     fqInputInner.instruction = imemResponseInput.instruction;
   end
-  assign requestFireInner = fetchAllowedInner && imemReqReadyInput;
+  assign requestFireInner = imemRequestOutput.valid && imemReqReadyInput;
   assign fqPushInner = responseAcceptInner;
   assign fqPopInner = fqValidInner && iqReadyInner;
   rv32_epoch_fifo #(.DEPTH(FQ_DEPTH), .WIDTH($bits(decode_context_t))) u_fq (
+    .freezeInput(freezeInput),
     .clkInput(clkInput), .rstNInput(rstNInput), .flushInput(redirectInput.valid),
     .inValidInput(fqPushInner), .inReadyOutput(fqReadyInner), .inDataInput(fqInputInner),
     .outValidOutput(fqValidInner), .outReadyInput(iqReadyInner), .outDataOutput(fqHeadInner),
     .countOutput(fqCountOutput)
   );
   rv32_epoch_fifo #(.DEPTH(IQ_DEPTH), .WIDTH($bits(decode_context_t))) u_iq (
+    .freezeInput(freezeInput),
     .clkInput(clkInput), .rstNInput(rstNInput), .flushInput(redirectInput.valid),
     .inValidInput(fqValidInner), .inReadyOutput(iqReadyInner), .inDataInput(fqHeadInner),
     .outValidOutput(instructionOutput.valid), .outReadyInput(iqReadyInput),
@@ -109,7 +111,7 @@ module rv32_frontend #(
       for (iInner = 0; iInner < REQUEST_DEPTH; iInner++) begin
         requestInner[iInner] <= '0;
       end
-    end else begin
+    end else if (!freezeInput) begin
       if (responseAcceptInner)
         reqHeadInner <= reqHeadInner + REQ_SEQ_W'(1);
       if (redirectInput.valid) begin
@@ -126,7 +128,9 @@ module rv32_frontend #(
           reqTailInner <= reqTailInner + REQ_SEQ_W'(1);
           pcInner <= predictionInput.nextProgramCounter;
         end
-        if (haltResponseInner) stopFetchInner <= 1;
+        if (haltResponseInner) begin
+          stopFetchInner <= 1;
+        end
         lastFqPushInner <= fqPushInner && fqReadyInner;
         if (fqPushInner && fqReadyInner) begin
           lastFqInstrInner <= imemResponseInput.instruction;

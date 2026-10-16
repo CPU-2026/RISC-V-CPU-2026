@@ -1,5 +1,7 @@
 module rv32_core #(
-  parameter logic [31:0] RESET_PC = 32'b0
+  parameter logic [31:0] RESET_PC = 32'b0,
+  parameter bit TAGGED_DMEM = 1'b0,
+  parameter bit LEGACY_HALT = 1'b0
 ) (
   input  logic             clkInput,
   input  logic             rstNInput,
@@ -22,6 +24,8 @@ module rv32_core #(
   output logic [1:0]       dmemReqSizeOutput,
   input  logic             dmemRspValidInput,
   input  logic [31:0]      dmemRspRdataInput,
+  output rv32_pkg::data_transaction_t dmemReqTransactionOutput,
+  input rv32_pkg::data_transaction_t dmemRspTransactionInput,
 
   output logic             commitValidOutput,
   output logic [31:0]      commitPcOutput,
@@ -468,8 +472,8 @@ module rv32_core #(
   assign mulRobLiveInner = robLookupOutputInner[3].valid;
   assign divRobLiveInner = robLookupOutputInner[4].valid;
   assign predictorFetchAcceptInner = predictorQueryOutputInner.accepted;
-  assign imemReqValidOutput = frontendImemRequestOutputInner.valid && bootDoneInner;
-  assign imemCacheRequestOutput = '{valid:frontendImemRequestOutputInner.valid && bootDoneInner,
+  assign imemReqValidOutput = frontendImemRequestOutputInner.valid && bootDoneInner && !haltedInner;
+  assign imemCacheRequestOutput = '{valid:imemReqValidOutput,
     address:predictorPcInner,
     predictedProgramCounter:frontendImemRequestOutputInner.predictedProgramCounter,
     predictorCheckpointId:frontendImemRequestOutputInner.predictorCheckpointId};
@@ -491,19 +495,21 @@ module rv32_core #(
   };
 
   rv32_flush_arbiter u_flush_arbiter (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .branchInput(branchFlushInputInner),
     .jumpInput(jumpFlushInputInner),
     .squashOutput(flushOutputInner)
   );
 
-  rv32_frontend #(.RESET_PC(RESET_PC)) u_frontend (
+  rv32_frontend #(.RESET_PC(RESET_PC), .LEGACY_HALT(LEGACY_HALT)) u_frontend (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .predictorQueryOutput(predictorQueryOutputInner),
     .fetchProgramCounterOutput(predictorPcInner),
     .predictionInput(predictorOutputInner),
     .imemRequestOutput(frontendImemRequestOutputInner),
-    .imemReqReadyInput(imemReqReadyInput && bootDoneInner),
+    .imemReqReadyInput(imemReqReadyInput && bootDoneInner && !haltedInner),
     .imemResponseInput(frontendImemResponseInputInner),
     .imemRspReadyOutput(imemRspReadyOutput), .imemFlushOutput(imemFlushOutput),
     .redirectInput(frontendRedirectInputInner),
@@ -514,6 +520,7 @@ module rv32_core #(
   );
 
   rv32_predictor u_predictor (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput), .queryPcInput(predictorPcInner),
     .fetchAcceptInput(predictorFetchAcceptInner),
     .fetchInfoInput(predictorFetchInfoInner),
@@ -524,7 +531,7 @@ module rv32_core #(
     .predictionOutput(predictorOutputInner)
   );
 
-  rv32_decoder u_decoder (
+  rv32_decoder #(.LEGACY_HALT(LEGACY_HALT)) u_decoder (
     .decodeContextInput(decodeContextInner), .uopOutput(decodedInner)
   );
 
@@ -534,6 +541,7 @@ module rv32_core #(
   );
 
   rv32_rat u_rat (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .readInput(ratReadInputInner), .readOutput(ratReadOutputInner),
     .renameInput(ratRenameInputInner), .renameOutput(ratRenameOutputInner),
@@ -543,6 +551,7 @@ module rv32_core #(
   );
 
   rv32_prf u_prf (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .allocationInput('{valid: issueFireInner && decodedInner.writesRd,
                       valueValid: issueFireInner && decodedInner.writesRd && issueIsJumpInner,
@@ -559,6 +568,7 @@ module rv32_core #(
   );
 
   rv32_rob u_rob (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .allocInput(robAllocInputInner), .allocReadyOutput(robAllocReadyInner),
     .allocTagOutput(robAllocTagInner),
@@ -600,7 +610,7 @@ module rv32_core #(
                  !globalFlushInner && !haltedInner && !trapInner;
     frontendIqReadyInner = issueFireInner;
 
-    robCommitReadyInner = robCommitStoreInner ? lsuStoreCommitReadyInner : 1'b1;
+    robCommitReadyInner = !haltedInner && (robCommitStoreInner ? lsuStoreCommitReadyInner : 1'b1);
     commitValidOutput = robCommitFireInner;
     commitPcOutput = robCommitPcInner;
     commitInstrOutput = robCommitInstrInner;
@@ -679,6 +689,7 @@ module rv32_core #(
   end
 
   rv32_rs #(.DEPTH(INT_RS_ENTRIES), .AUX_W(1)) u_int_rs (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(intRsAllocInputInner),
@@ -700,6 +711,7 @@ module rv32_core #(
   assign intIssueUseImmInner = intRsIssueOutputInner.useImmediate;
 
   rv32_rs #(.DEPTH(MUL_RS_ENTRIES), .AUX_W(1)) u_mul_rs (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(mulRsAllocInputInner), .allocReadyOutput(mulAllocReadyInner),
@@ -720,6 +732,7 @@ module rv32_core #(
   assign mulIssueUseImmInner = mulRsIssueOutputInner.useImmediate;
 
   rv32_rs #(.DEPTH(DIV_RS_ENTRIES), .AUX_W(1)) u_div_rs (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(divRsAllocInputInner), .allocReadyOutput(divAllocReadyInner),
@@ -740,6 +753,7 @@ module rv32_core #(
   assign divIssueUseImmInner = divRsIssueOutputInner.useImmediate;
 
   rv32_rs #(.DEPTH(BRANCH_RS_ENTRIES), .AUX_W(3)) u_branch_rs (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(branchRsAllocInputInner), .allocReadyOutput(branchAllocReadyInner),
@@ -760,6 +774,7 @@ module rv32_core #(
   assign branchIssueUseImmInner = branchRsIssueOutputInner.useImmediate;
 
   rv32_rs #(.DEPTH(LOAD_RS_ENTRIES), .AUX_W(4)) u_load_rs (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(loadRsAllocInputInner), .allocReadyOutput(loadRsAllocReadyInner),
@@ -769,6 +784,7 @@ module rv32_core #(
     .issueAuxOutput(loadAuxInner), .occupancyOutput(), .issueLaneValidOutput(), .issueLaneOutput(), .issueLaneAuxOutput()
   );
   rv32_rs #(.DEPTH(STORE_ADDR_RS_ENTRIES), .AUX_W(4)) u_store_addr_rs (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(saRsAllocInputInner), .allocReadyOutput(saRsAllocReadyInner),
@@ -778,6 +794,7 @@ module rv32_core #(
   );
   rv32_rs #(.DEPTH(STORE_VALUE_RS_ENTRIES), .AUX_W(3),
             .ISSUE_WIDTH(STORE_VALUE_RS_ENTRIES)) u_store_value_rs (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(svRsAllocInputInner), .allocReadyOutput(svRsAllocReadyInner),
@@ -798,6 +815,7 @@ module rv32_core #(
   assign saRsIssueReadyInner = memIssueReadyInner && !chooseLoadInner;
 
   rv32_alu_unit #(.DEPTH(rv32_pkg::ALU_RESULT_ENTRIES)) u_alu_unit (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .executeInput('{valid: intIssueValidInner,
@@ -818,6 +836,7 @@ module rv32_core #(
   );
 
   rv32_mul u_mul_unit (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .executeInput('{valid: mulIssueValidInner,
@@ -838,6 +857,7 @@ module rv32_core #(
   );
 
   rv32_div u_div_unit (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .executeInput('{valid: divIssueValidInner,
@@ -858,6 +878,7 @@ module rv32_core #(
   );
 
   rv32_bru_unit u_bru_unit (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput), .flushInput(globalFlushInner),
     .flushTagInput(globalFlushTagInner),
     .executeInput('{valid: branchIssueValidInner,
@@ -877,6 +898,7 @@ module rv32_core #(
   );
 
   rv32_agu_unit u_agu_unit (
+    .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .executeInput(memRsIssueOutputInner), .auxiliaryInput(memIssueAuxInner),
@@ -884,7 +906,8 @@ module rv32_core #(
     .auxiliaryOutput(aguResultAuxInner), .robTagOutput()
   );
 
-  rv32_lsu #(.STORE_DATA_LANES(STORE_VALUE_RS_ENTRIES)) u_lsu (
+  rv32_lsu #(.STORE_DATA_LANES(STORE_VALUE_RS_ENTRIES), .TAGGED_DMEM(TAGGED_DMEM)) u_lsu (
+    .coreStoppedInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .loadAllocationInput(lsuLoadAllocationInputInner),
@@ -904,6 +927,7 @@ module rv32_core #(
     .storeRetirementOutput(lsuStoreRetirementOutputInner),
     .dmemRequestOutput(lsuDmemRequestOutputInner), .dmemReqReadyInput(dmemReqReadyInput),
     .dmemResponseInput(lsuDmemResponseInputInner),
+    .dmemReqTransactionOutput(dmemReqTransactionOutput), .dmemRspTransactionInput(dmemRspTransactionInput),
     .lqCountOutput(), .sqCountOutput(sqCountInner)
   );
 
@@ -912,7 +936,8 @@ module rv32_core #(
       haltedInner <= 1'b0;
       trapInner <= 1'b0;
     end else if (robCommitFireInner) begin
-      if (robCommitHaltInner)
+      if (robCommitHaltInner || (robCommitStoreInner &&
+          lsuStoreRetirementOutputInner.address == AXI_EXIT_ADDR))
         haltedInner <= 1'b1;
       if (robCommitExceptionInner)
         trapInner <= 1'b1;

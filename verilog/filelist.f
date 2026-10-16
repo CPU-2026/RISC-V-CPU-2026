@@ -1,11 +1,7 @@
 # RTL paths are relative to this file in verilog/.
-# Native core/modules are usable in standalone tests. student_top is currently
-# an unfinished course wrapper. Use rv32_core as the native lint top and omit
-# student_top.sv until that wrapper is implemented.
 rtl/common/rv32_pkg.sv
 rtl/common/rv32_cla.sv
 rtl/common/rv32_epoch_fifo.sv
-rtl/common/rv32_sram.sv
 rtl/core/rv32_core.sv
 rtl/core/rv32_flush_arbiter.sv
 rtl/frontend/rv32_decoder.sv
@@ -18,6 +14,10 @@ rtl/memory/rv32_lsu.sv
 rtl/memory/rv32_icache.sv
 rtl/memory/rv32_dcache.sv
 rtl/memory/rv32_dmem_backend.sv
+rtl/memory/rv32_dmem.sv
+rtl/memory/rv32_axi_fetch.sv
+rtl/memory/rv32_axi_data.sv
+rtl/memory/rv32_axi_bus.sv
 rtl/predictor/rv32_bpu_direction.sv
 rtl/predictor/rv32_bpu_btb.sv
 rtl/predictor/rv32_bpu_ras.sv

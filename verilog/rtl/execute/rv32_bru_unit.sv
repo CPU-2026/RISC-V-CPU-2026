@@ -1,6 +1,7 @@
 module rv32_bru_unit (
   input  logic                   clkInput,
   input  logic                   rstNInput,
+  input logic freezeInput,
   input  logic                   flushInput,
   input  rv32_pkg::rob_tag_t      flushTagInput,
 
@@ -66,7 +67,7 @@ module rv32_bru_unit (
       misalignedInner <= 1'b0;
       callInner <= 1'b0;
       returnInner <= 1'b0;
-    end else begin
+    end else if (!freezeInput) begin
       validInner <= executeInput.valid && inReadyOutput;
       if (executeInput.valid && inReadyOutput) begin
         tagInner <= executeInput.robTag;

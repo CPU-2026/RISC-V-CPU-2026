@@ -3,6 +3,7 @@ module rv32_flush_arbiter #(
 ) (
   input  logic                         clkInput,
   input  logic                         rstNInput,
+  input logic freezeInput,
 
   input  rv32_pkg::flush_candidate_input_t branchInput,
   input  rv32_pkg::flush_candidate_input_t jumpInput,
@@ -127,7 +128,7 @@ module rv32_flush_arbiter #(
         pcInner[seqIndexInner] <= '0;
         ckptIdInner[seqIndexInner] <= '0;
       end
-    end else begin
+    end else if (!freezeInput) begin
       for (seqIndexInner = 0; seqIndexInner < DEPTH; seqIndexInner = seqIndexInner + 1) begin
         validInner[seqIndexInner] <= validNext[seqIndexInner];
         tagInner[seqIndexInner] <= tagNext[seqIndexInner];

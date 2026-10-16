@@ -29,6 +29,7 @@ module rv32_bpu_btb #(
 ) (
   input  logic                   clkInput,
   input  logic                   rstNInput,
+  input logic freezeInput,
 
   input  logic [31:0]            queryPcInput,
   output rv32_pkg::btb_lookup_output_t lookupOutput,
@@ -141,7 +142,7 @@ module rv32_bpu_btb #(
     if (!rstNInput) begin
       for (seqIndexInner = 0; seqIndexInner < BTB_STORAGE_ENTRIES; seqIndexInner = seqIndexInner + 1)
         btbEntryInner[seqIndexInner] <= '0; // state 0 = invalid, tag/target clear
-    end else begin
+    end else if (!freezeInput) begin
       // One write per entry per cycle. The write qualifiers are the *lineInput*
       // group's, because a source whose lineInput loses arbitration either has its
       // target folded into the winning word (fetch against jump/branch) or

@@ -4,10 +4,14 @@ module rv32_lsu #(
   // Store-queue data ports driven by the storeValue RS.  One lane per RS slot
   // so every store whose data resolves in the same cycle is delivered at once;
   // the RV32IM core instantiates it with STORE_VALUE_RS_ENTRIES.
-  parameter int unsigned STORE_DATA_LANES = 1
+  parameter int unsigned STORE_DATA_LANES = 1,
+  // Bare-core legacy word-memory tests may omit IDs. Cached integration MUST
+  // enable tagged completion: hit-under-miss no longer preserves send order.
+  parameter bit TAGGED_DMEM = 1'b0
 ) (
   input  logic                   clkInput,
   input  logic                   rstNInput,
+  input  logic                   coreStoppedInput,
   input  rv32_pkg::rob_flush_input_t flushInfoInput,
 
   input  rv32_pkg::load_allocation_input_t loadAllocationInput,
@@ -42,6 +46,8 @@ module rv32_lsu #(
   output rv32_pkg::data_memory_request_output_t dmemRequestOutput,
   input  logic                   dmemReqReadyInput,
   input  rv32_pkg::data_memory_response_input_t dmemResponseInput,
+  output rv32_pkg::data_transaction_t dmemReqTransactionOutput,
+  input rv32_pkg::data_transaction_t dmemRspTransactionInput,
 
   output logic [$clog2(LQ_DEPTH+1)-1:0] lqCountOutput,
   output logic [$clog2(SQ_DEPTH+1)-1:0] sqCountOutput
@@ -78,18 +84,33 @@ module rv32_lsu #(
   logic [SQ_INDEX_W-1:0] sqHeadIndexInner;
   logic [SQ_INDEX_W:0] sqRetainedCountInner;
 
-  // Outstanding-load FIFO (depth 4 = D$ REQUEST_CAP). Preserves send order so
-  // word-level responses (no IDs) map to the correct LQ entry. Flush marks
-  // younger entries dropped but keeps them queued to stay in sync with the
-  // D$ FIFO, which still completes cancelled loads (cache fill) without
-  // requiring a separate D$ flush port.
-  logic [1:0] fifoHeadInner, fifoTailInner;
-  logic [2:0] fifoCountInner;
-  logic [LQ_INDEX_W-1:0] fifoIndexInner [4];
-  rob_tag_t fifoTagInner [4];
-  logic fifoDropInner [4];
-  mem_size_e fifoSizeInner [4];
-  logic fifoUnsignedInner [4];
+  // Eight immutable transport owners. In tagged mode slots release independently;
+  // cancelled owners remain live until their exact response returns, even across
+  // LQ/ROB reuse. Width/sign belong to the accepted owner, not the current LQ row.
+  data_transaction_t fifoHeadInner, fifoTailInner;
+  logic [DATA_TRANSACTION_W:0] fifoCountInner;
+  logic [LQ_INDEX_W-1:0] fifoIndexInner [DATA_REQUEST_ENTRIES];
+  rob_tag_t fifoTagInner [DATA_REQUEST_ENTRIES];
+  logic fifoDropInner [DATA_REQUEST_ENTRIES];
+  mem_size_e fifoSizeInner [DATA_REQUEST_ENTRIES];
+  logic fifoUnsignedInner [DATA_REQUEST_ENTRIES];
+  logic fifoValidInner [DATA_REQUEST_ENTRIES];
+  data_transaction_t responseOwnerInner, allocationOwnerInner;
+  always_comb begin
+    logic found;
+    int slot;
+    found = 0;
+    allocationOwnerInner = fifoTailInner;
+    for (int i = 0; i < DATA_REQUEST_ENTRIES; i++) begin
+      slot = (int'(fifoTailInner) + i) & (DATA_REQUEST_ENTRIES-1);
+      if (TAGGED_DMEM && !found && !fifoValidInner[slot]) begin
+        allocationOwnerInner = data_transaction_t'(slot);
+        found = 1;
+      end
+    end
+  end
+  assign responseOwnerInner = TAGGED_DMEM ? dmemRspTransactionInput : fifoHeadInner;
+  assign dmemReqTransactionOutput = allocationOwnerInner;
 
   logic loadAllocFoundInner;
   logic storeAllocFoundInner;
@@ -405,9 +426,9 @@ module rv32_lsu #(
     loadBlockedInner = selectedForwardInner.cacheBlocked;
     selectedLoadLiveInner = loadSelectFoundInner &&
       (!flushInfoInput.valid || rob_is_older(lqTagInner[loadSelectIndexInner], flushInfoInput.robTag));
-    // Multiple loads may be outstanding (D$ queues 4). No single-pending gate.
-    loadNeedsMemoryInner = selectedLoadLiveInner && !loadBlockedInner &&
-                          fifoCountInner < 3'd4;
+    // No new Load after the exit Store retires; committed SQ still progresses.
+    loadNeedsMemoryInner = !coreStoppedInput && selectedLoadLiveInner && !loadBlockedInner &&
+                          int'(fifoCountInner) < DATA_REQUEST_ENTRIES;
 
     storeRetirementOutput = '0;
     storeRetirementOutput.valid = storeCommitMatchInner;
@@ -452,7 +473,7 @@ module rv32_lsu #(
 
     // Width and sign belong to the accepted transaction, never a reused row.
     extendedResponseInner = extend_load(dmemResponseInput.readData,
-      fifoSizeInner[fifoHeadInner], fifoUnsignedInner[fifoHeadInner]);
+      fifoSizeInner[responseOwnerInner], fifoUnsignedInner[responseOwnerInner]);
 
     lqCountOutput = '0;
     for (combIndexInner = 0; combIndexInner < LQ_DEPTH; combIndexInner = combIndexInner + 1)
@@ -471,7 +492,8 @@ module rv32_lsu #(
   always_ff @(posedge clkInput or negedge rstNInput) begin
     if (!rstNInput) begin
       fifoHeadInner <= '0; fifoTailInner <= '0; fifoCountInner <= '0;
-      for (seqIndexInner = 0; seqIndexInner < 4; seqIndexInner = seqIndexInner + 1) begin
+      for (seqIndexInner = 0; seqIndexInner < DATA_REQUEST_ENTRIES; seqIndexInner = seqIndexInner + 1) begin
+        fifoValidInner[seqIndexInner] <= 1'b0;
         fifoIndexInner[seqIndexInner] <= '0;
         fifoTagInner[seqIndexInner] <= '0;
         fifoDropInner[seqIndexInner] <= 1'b0;
@@ -503,6 +525,12 @@ module rv32_lsu #(
         sqDataTagInner[seqIndexInner] <= '0;
         sqDataInner[seqIndexInner] <= '0;
         sqCommittedInner[seqIndexInner] <= 1'b0;
+      end
+    end else if (coreStoppedInput) begin
+      // Software freezes LQ/core at retirement, but continues ticking SQ/cache.
+      if (storeSendSelectedInner && dmemReqReadyInput) begin
+        sqValidInner[sqHeadIndexInner] <= 1'b0;
+        sqHeadSeqInner <= sqHeadSeqInner + 1'b1;
       end
     end else begin
       for (seqIndexInner = 0; seqIndexInner < SQ_DEPTH; seqIndexInner = seqIndexInner + 1) begin
@@ -544,12 +572,11 @@ module rv32_lsu #(
               !sqCommittedInner[seqIndexInner] &&
               rob_is_younger(sqTagInner[seqIndexInner], flushInfoInput.robTag))
             sqValidInner[seqIndexInner] <= 1'b0;
-        // Mark younger outstanding loads dropped; keep order for D$ sync.
-        for (seqIndexInner = 0; seqIndexInner < 4; seqIndexInner = seqIndexInner + 1)
-          if (seqIndexInner < fifoCountInner &&
-              !rob_is_older(fifoTagInner[(fifoHeadInner + seqIndexInner[1:0]) & 2'b11],
-                flushInfoInput.robTag))
-            fifoDropInner[(fifoHeadInner + seqIndexInner[1:0]) & 2'b11] <= 1'b1;
+        // Persistent cancellation; never recycle an outstanding transport early.
+        for (seqIndexInner = 0; seqIndexInner < DATA_REQUEST_ENTRIES; seqIndexInner = seqIndexInner + 1)
+          if (fifoValidInner[seqIndexInner] &&
+              !rob_is_older(fifoTagInner[seqIndexInner], flushInfoInput.robTag))
+            fifoDropInner[seqIndexInner] <= 1'b1;
 
         if (loadResultOutput.valid && loadResultReadyInput)
           lqBroadcastedInner[resultSelectIndexInner] <= 1'b1;
@@ -616,37 +643,39 @@ module rv32_lsu #(
         end
       end
 
-      // Ordered outstanding-load completion + new-accept push. Both may fire
-      // on one edge (including during flush); count/head/tail update once.
+      // Response ID selects the immutable owner; completion and new acceptance
+      // may coexist but allocation only sees OLD free slots.
       begin
         logic doPop, doPush;
-        doPop = dmemResponseInput.valid && fifoCountInner > 0;
+        doPop = dmemResponseInput.valid && fifoValidInner[responseOwnerInner];
         doPush = dmemRequestOutput.valid && dmemReqReadyInput && loadRequestSelectedInner &&
-          (fifoCountInner < 3'd4 || doPop);
+          (int'(fifoCountInner) < DATA_REQUEST_ENTRIES || doPop);
         if (doPop) begin
-          if (!fifoDropInner[fifoHeadInner] &&
+          if (!fifoDropInner[responseOwnerInner] &&
                !(flushInfoInput.valid &&
-                 !rob_is_older(fifoTagInner[fifoHeadInner], flushInfoInput.robTag)) &&
-              lqValidInner[fifoIndexInner[fifoHeadInner]] &&
-              lqTagInner[fifoIndexInner[fifoHeadInner]] == fifoTagInner[fifoHeadInner] &&
-              lqSentInner[fifoIndexInner[fifoHeadInner]] &&
-              !lqResultReadyInner[fifoIndexInner[fifoHeadInner]]) begin
-            lqResultInner[fifoIndexInner[fifoHeadInner]] <= extendedResponseInner;
-            lqResultReadyInner[fifoIndexInner[fifoHeadInner]] <= 1'b1;
+                  !rob_is_older(fifoTagInner[responseOwnerInner], flushInfoInput.robTag)) &&
+               lqValidInner[fifoIndexInner[responseOwnerInner]] &&
+               lqTagInner[fifoIndexInner[responseOwnerInner]] == fifoTagInner[responseOwnerInner] &&
+               lqSentInner[fifoIndexInner[responseOwnerInner]] &&
+               !lqResultReadyInner[fifoIndexInner[responseOwnerInner]]) begin
+             lqResultInner[fifoIndexInner[responseOwnerInner]] <= extendedResponseInner;
+             lqResultReadyInner[fifoIndexInner[responseOwnerInner]] <= 1'b1;
           end
-          fifoHeadInner <= (fifoHeadInner + 2'd1) & 2'b11;
+          fifoValidInner[responseOwnerInner] <= 1'b0;
+          if (!TAGGED_DMEM) fifoHeadInner <= fifoHeadInner + data_transaction_t'(1);
         end
         if (doPush) begin
-          fifoIndexInner[fifoTailInner] <= loadSelectIndexInner;
-          fifoTagInner[fifoTailInner] <= lqTagInner[loadSelectIndexInner];
-          fifoDropInner[fifoTailInner] <= 1'b0;
-          fifoSizeInner[fifoTailInner] <= lqSizeInner[loadSelectIndexInner];
-          fifoUnsignedInner[fifoTailInner] <= lqUnsignedInner[loadSelectIndexInner];
-          fifoTailInner <= (fifoTailInner + 2'd1) & 2'b11;
+          fifoIndexInner[allocationOwnerInner] <= loadSelectIndexInner;
+          fifoTagInner[allocationOwnerInner] <= lqTagInner[loadSelectIndexInner];
+          fifoDropInner[allocationOwnerInner] <= 1'b0;
+          fifoSizeInner[allocationOwnerInner] <= lqSizeInner[loadSelectIndexInner];
+          fifoUnsignedInner[allocationOwnerInner] <= lqUnsignedInner[loadSelectIndexInner];
+          fifoValidInner[allocationOwnerInner] <= 1'b1;
+          fifoTailInner <= allocationOwnerInner + data_transaction_t'(1);
           lqSentInner[loadSelectIndexInner] <= 1'b1;
         end
-        if (doPop && !doPush) fifoCountInner <= fifoCountInner - 3'd1;
-        else if (doPush && !doPop) fifoCountInner <= fifoCountInner + 3'd1;
+        if (doPop && !doPush) fifoCountInner <= fifoCountInner - 1'b1;
+        else if (doPush && !doPop) fifoCountInner <= fifoCountInner + 1'b1;
       end
 
       // One final forwarding write point per row. Full forwarding wins over
@@ -665,11 +694,11 @@ module rv32_lsu #(
   end
 `ifndef SYNTHESIS
   always @(posedge clkInput) if (rstNInput) begin
-    assert (fifoCountInner <= 3'd4);
-    if (dmemResponseInput.valid) assert (fifoCountInner != 0)
+    assert (int'(fifoCountInner) <= DATA_REQUEST_ENTRIES);
+    if (dmemResponseInput.valid) assert (fifoValidInner[responseOwnerInner])
       else $fatal(1, "LSU received a response without an outstanding owner");
     if (dmemRequestOutput.valid && dmemReqReadyInput && loadRequestSelectedInner)
-      assert (fifoCountInner < 3'd4);
+      assert (int'(fifoCountInner) < DATA_REQUEST_ENTRIES);
   end
 `endif
 endmodule

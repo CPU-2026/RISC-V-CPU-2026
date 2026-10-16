@@ -13,16 +13,24 @@ module student_top (
   output logic imemFlushOutput,
   output logic dmemReadValidOutput,
   output logic [31:0] dmemReadAddrOutput,
+  output logic [1:0] dmemReadTransactionOutput,
   input logic dmemReadReadyInput,
   output logic dmemWriteValidOutput,
   output logic [31:0] dmemWriteAddrOutput,
+  output logic [1:0] dmemWriteTransactionOutput,
   output logic [rv32_pkg::DCACHE_LINE_BITS-1:0] dmemWriteDataOutput,
   output logic [3:0] dmemWriteStrobeOutput,
   output logic [1:0] dmemSizeOutput,
   input logic dmemWriteReadyInput,
   input logic dmemRspValidInput,
   input logic [rv32_pkg::DCACHE_LINE_BITS-1:0] dmemRspDataInput,
+  input logic [31:0] dmemRspAddrInput,
+  input logic [1:0] dmemRspTransactionInput,
+  output logic dmemRspReadyOutput,
   input logic dmemWriteDoneInput,
+  input logic [31:0] dmemWriteDoneAddrInput,
+  input logic [1:0] dmemWriteDoneTransactionInput,
+  output logic dmemWriteDoneReadyOutput,
   output logic commitValidOutput,
   output logic [31:0] commitPcOutput,
   output logic [31:0] commitInstrOutput,
@@ -49,10 +57,18 @@ module student_top (
   logic [1:0] coreDmemReqSizeInner;
   logic coreDmemRspValidInner;
   logic [31:0] coreDmemRspDataInner;
+  data_transaction_t coreDmemReqTransactionInner, coreDmemRspTransactionInner;
   logic coreResetNInner;
   assign coreResetNInner = !reset;
 
-  rv32_core u_core (
+  rv32_core #(
+    .LEGACY_HALT(1'b1),
+`ifdef ASSESS_CORE_ONLY
+    .TAGGED_DMEM(1'b0)
+`else
+    .TAGGED_DMEM(1'b1)
+`endif
+  ) u_core (
     .clkInput(clock), .rstNInput(coreResetNInner),
     .imemReqValidOutput(coreImemReqValidInner),
     .imemReqReadyInput(coreImemReadyInner),
@@ -71,6 +87,8 @@ module student_top (
     .dmemReqSizeOutput(coreDmemReqSizeInner),
     .dmemRspValidInput(coreDmemRspValidInner),
     .dmemRspRdataInput(coreDmemRspDataInner),
+    .dmemReqTransactionOutput(coreDmemReqTransactionInner),
+    .dmemRspTransactionInput(coreDmemRspTransactionInner),
     .commitValidOutput(commitValidOutput), .commitPcOutput(commitPcOutput),
     .commitInstrOutput(commitInstrOutput), .commitRdValidOutput(commitRdValidOutput),
     .commitRdOutput(commitRdOutput), .commitRdValueOutput(commitRdValueOutput),
@@ -97,6 +115,11 @@ module student_top (
   assign coreDmemReqReadyInner = coreDmemReqWriteInner ? dmemWriteReadyInput : dmemReadReadyInput;
   assign coreDmemRspValidInner = dmemRspValidInput;
   assign coreDmemRspDataInner = dmemRspDataInput[31:0];
+   assign coreDmemRspTransactionInner = data_transaction_t'(dmemRspTransactionInput);
+  assign dmemReadTransactionOutput = coreDmemReqTransactionInner;
+  assign dmemWriteTransactionOutput = 0;
+  assign dmemRspReadyOutput = 1'b1;
+  assign dmemWriteDoneReadyOutput = 1'b1;
   assign drainDoneOutput = haltedOutput;
 `else
   // Compatibility observation only; HALT is no longer an instruction to drain.
@@ -108,6 +131,7 @@ module student_top (
   dcache_cpu_response_output_t dcacheResponseInner;
   dcache_line_request_output_t dcacheLineRequestInner;
   dcache_line_response_input_t dcacheLineResponseInner;
+  dcache_write_response_input_t dcacheWriteResponseInner;
 
   assign icacheLineResponseInner.valid = imemRspValidInput;
   assign icacheLineResponseInner.address = imemRspAddrInput;
@@ -117,6 +141,7 @@ module student_top (
   assign coreImemRspValidInner = icacheResponseInner.valid;
   assign coreImemRspDataInner = icacheResponseInner.instruction;
   rv32_icache u_icache (
+    .freezeInput(haltedOutput),
     .clkInput(clock), .rstNInput(coreResetNInner), .flushInput(coreImemFlushInner),
     .cpuRequestInput(coreImemRequestInner), .cpuReqReadyOutput(coreImemReadyInner),
     .cpuResponseOutput(icacheResponseInner), .cpuRspReadyInput(coreImemRspReadyInner),
@@ -131,23 +156,33 @@ module student_top (
   assign dcacheRequestInner.writeData = coreDmemReqDataInner;
   assign dcacheRequestInner.writeStrobe = coreDmemReqStrobeInner;
   assign dcacheRequestInner.size = coreDmemReqSizeInner;
+  assign dcacheRequestInner.transaction = coreDmemReqTransactionInner;
   assign coreDmemRspValidInner = dcacheResponseInner.valid;
   assign coreDmemRspDataInner = dcacheResponseInner.readData;
+  assign coreDmemRspTransactionInner = dcacheResponseInner.transaction;
   assign dcacheLineResponseInner.valid = dmemRspValidInput;
   assign dcacheLineResponseInner.data = dmemRspDataInput;
+  assign dcacheLineResponseInner.address = dmemRspAddrInput;
+  assign dcacheLineResponseInner.transaction = dmemRspTransactionInput;
+  assign dcacheWriteResponseInner = '{valid:dmemWriteDoneInput, address:dmemWriteDoneAddrInput,
+    transaction:dmemWriteDoneTransactionInput};
   assign dmemReadValidOutput = dcacheLineRequestInner.readValid;
   assign dmemReadAddrOutput = dcacheLineRequestInner.readAddress;
+  assign dmemReadTransactionOutput = dcacheLineRequestInner.readTransaction;
   assign dmemWriteValidOutput = dcacheLineRequestInner.writeValid;
   assign dmemWriteAddrOutput = dcacheLineRequestInner.writeAddress;
+  assign dmemWriteTransactionOutput = dcacheLineRequestInner.writeTransaction;
   assign dmemWriteDataOutput = dcacheLineRequestInner.writeData;
   assign dmemWriteStrobeOutput = 4'b1111;
   assign dmemSizeOutput = 2'b10;
   rv32_dmem_backend u_dmem_backend (
+    .exitReadyInput(1'b0), .exitValidOutput(), .exitValueOutput(),
     .clkInput(clock), .rstNInput(!reset),
     .cpuRequestInput(dcacheRequestInner), .cpuReqReadyOutput(coreDmemReqReadyInner),
     .cpuResponseOutput(dcacheResponseInner), .memRequestOutput(dcacheLineRequestInner),
     .memReadReadyInput(dmemReadReadyInput), .memWriteReadyInput(dmemWriteReadyInput),
-    .memResponseInput(dcacheLineResponseInner), .memWriteDoneInput(dmemWriteDoneInput),
+    .memResponseInput(dcacheLineResponseInner), .memWriteResponseInput(dcacheWriteResponseInner),
+    .memRspReadyOutput(dmemRspReadyOutput), .memWriteRspReadyOutput(dmemWriteDoneReadyOutput),
     .initializedOutput()
   );
 `endif

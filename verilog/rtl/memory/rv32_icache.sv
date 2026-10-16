@@ -1,10 +1,11 @@
-// Software ICache contract: four ordered placeholders, synchronous SRAM hits,
+// Software ICache contract: eight ordered placeholders, synchronous SRAM hits,
 // an old-head read bypass, and one old miss completed by each accepted refill.
 module rv32_icache #(
   parameter int unsigned SETS = rv32_pkg::ICACHE_SETS,
   parameter int unsigned REQUEST_DEPTH = rv32_pkg::FETCH_REQUEST_ENTRIES
 ) (
   input logic clkInput, rstNInput,
+  input logic freezeInput,
   input logic flushInput,
   input rv32_pkg::icache_cpu_request_input_t cpuRequestInput,
   output logic cpuReqReadyOutput,
@@ -74,14 +75,14 @@ module rv32_icache #(
       end
     end
   end
-  assign memRspReadyOutput = !flushInput && refillFoundInner;
+  assign memRspReadyOutput = !freezeInput && !flushInput && refillFoundInner;
   assign fillFireInner = memResponseInput.valid && memRspReadyOutput;
   assign refillHitInner = fillFireInner &&
     cpuRequestInput.address[31:OFFSET_W] == memResponseInput.address[31:OFFSET_W];
   assign readBlockedInner = fillFireInner && hitInner && !refillHitInner;
   // Matches CPU::comb(): even a hit observes old IMEM fullness. Only accepted
   // same-line refill forwarding bypasses that gate; no full IMEM pop bypass.
-  assign cpuReqReadyOutput = !flushInput &&
+  assign cpuReqReadyOutput = !freezeInput && !flushInput &&
     (countInner < COUNT_W'(REQUEST_DEPTH) || responseFireInner) &&
     (memReqReadyInput || refillHitInner) && !readBlockedInner;
   assign requestFireInner = cpuRequestInput.valid && cpuReqReadyOutput;
@@ -125,7 +126,7 @@ module rv32_icache #(
         requestReadyInner[q] <= 1'b0;
         requestInstructionInner[q] <= '0;
       end
-    end else if (flushInput) begin
+    end else if (!freezeInput && flushInput) begin
       // Logical requests and read identities die; non-speculative cache stays.
       headInner <= '0;
       countInner <= '0;
@@ -134,7 +135,7 @@ module rv32_icache #(
       readLaneInner <= '0;
       for (int q = 0; q < REQUEST_DEPTH; q = q + 1)
         requestReadyInner[q] <= 1'b0;
-    end else begin
+    end else if (!freezeInput) begin
       if (responseFireInner) headInner <= headInner + SLOT_W'(1);
       unique case ({requestFireInner, responseFireInner})
         2'b10: countInner <= countInner + COUNT_W'(1);

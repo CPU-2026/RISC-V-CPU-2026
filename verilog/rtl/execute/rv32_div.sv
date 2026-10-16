@@ -4,6 +4,7 @@
 module rv32_div (
     input  logic                             clkInput,
     input  logic                             rstNInput,
+    input logic freezeInput,
     input  rv32_pkg::rob_flush_input_t       flushInfoInput,
     input  rv32_pkg::execute_request_input_t executeInput,
     output logic                             inReadyOutput,
@@ -249,7 +250,7 @@ module rv32_div (
       resultInner <= '0;
       resultTagInner <= '0;
       resultPhyInner <= '0;
-    end else begin
+    end else if (!freezeInput) begin
       if (resultValidInner && ((executeOutput.valid && outReadyInput) ||
           (flushInfoInput.valid && rob_is_older(flushInfoInput.robTag, resultTagInner))))
         resultValidInner <= 1'b0;

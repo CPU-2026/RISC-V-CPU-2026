@@ -8,6 +8,7 @@ module rv32_rs #(
 ) (
   input  logic                   clkInput,
   input  logic                   rstNInput,
+  input logic freezeInput,
   input  rv32_pkg::rob_flush_input_t flushInfoInput,
 
   input  rv32_pkg::rs_allocation_input_t allocInput,
@@ -201,7 +202,7 @@ module rv32_rs #(
         useImmInner[seqIndexInner] <= 1'b0;
         auxInner[seqIndexInner] <= '0;
       end
-    end else begin
+    end else if (!freezeInput) begin
       for (seqIndexInner = 0; seqIndexInner < DEPTH; seqIndexInner = seqIndexInner + 1) begin
         if (flushInfoInput.valid && busyInner[seqIndexInner] &&
             rob_is_younger(robTagInner[seqIndexInner], flushInfoInput.robTag)) begin
