@@ -19,6 +19,7 @@ module tb_lsu_tagged;
   store_data_input_t storeData [0:0];
   logic [2:0] storeIndex [0:0];
   load_result_output_t result;
+  logic resultReady = 0;
   rv32_lsu #(.TAGGED_DMEM(1'b1)) dut (
     .coreStoppedInput(1'b0),
     .clkInput(clock), .rstNInput(resetN), .flushInfoInput(flush),
@@ -26,7 +27,7 @@ module tb_lsu_tagged;
     .storeAllocationInput(store_allocation_input_t'('0)), .storeAllocReadyOutput(), .storeAllocIndexOutput(),
     .storeDataInput(storeData), .storeDataIndexInput(storeIndex),
     .addressInput(address), .addressIndexInput(addressIndex), .writebackInput('0),
-    .loadResultOutput(result), .loadResultReadyInput(1'b0), .robRetireInput(rob_retirement_input_t'('0)),
+    .loadResultOutput(result), .loadResultReadyInput(resultReady), .robRetireInput(rob_retirement_input_t'('0)),
     .storeCompleteOutput(), .storeCommitInput(store_commit_input_t'('0)), .storeCommitIndexInput(3'b0),
     .storeCommitReadyOutput(), .storeRetirementOutput(),
     .dmemRequestOutput(request), .dmemReqReadyInput(memoryReady), .dmemResponseInput(response),
@@ -70,8 +71,15 @@ module tb_lsu_tagged;
     memoryReady = 0;
     // Complete the third request before the first, preserving its frozen width.
     reply(2,32'habcdff80);
-    assert (dut.lqResultReadyInner[rows[2]] && dut.lqResultInner[rows[2]] == 32'hff80 &&
+    assert (dut.lqResultReadyInner[rows[2]] && dut.lqResultInner[rows[2]] == 32'habcdff80 &&
             !dut.lqResultReadyInner[rows[0]]) else $fatal(1,"out-of-order width/identity failed");
+    // Storage is the raw word; size/sign are applied once on the read-out side.
+    assert (result.valid && result.value == 32'h0000ff80)
+      else $fatal(1,"unsigned read-out extension failed");
+    @(negedge clock);
+    resultReady = 1'b1;
+    @(negedge clock);
+    resultReady = 1'b0;
     @(negedge clock);
     flush = '{valid:1'b1,robTag:rob_tag_t'(2)};
     @(negedge clock);
@@ -87,7 +95,9 @@ module tb_lsu_tagged;
     reply(3,32'hdeadbeef);
     assert (!dut.lqResultReadyInner[rows[4]]) else $fatal(1,"cancelled owner corrupted reused LQ");
     reply(4,32'h80);
-    assert (dut.lqResultReadyInner[rows[4]] && dut.lqResultInner[rows[4]] == 32'hffffff80);
+    assert (dut.lqResultReadyInner[rows[4]] && dut.lqResultInner[rows[4]] == 32'h00000080);
+    assert (result.valid && result.value == 32'hffffff80)
+      else $fatal(1,"signed read-out extension failed");
     reply(0,32'h11223344);
     assert (dut.lqResultReadyInner[rows[0]] && dut.lqResultInner[rows[0]] == 32'h11223344);
     assert (dut.fifoCountInner == 0);

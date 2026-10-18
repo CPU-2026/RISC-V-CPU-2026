@@ -139,7 +139,9 @@ module tb_rob_count;
   logic commitFireOutput;
   rob_status_output_t statusOutput;
   logic [3:0] countOutput;
-  rob_replay_entry_t [7:0] replayOutput;
+  rob_tag_t replayOffsetInput = rob_tag_t'(4);
+  rob_replay_narrow_t [RECOVERY_WIDTH-1:0] replayNarrowOutput;
+  rob_replay_ras_t [RECOVERY_WIDTH-1:0] replayRasOutput;
 
   rv32_rob #(.DEPTH(8)) dut (.storeReadyInput('0), .*);
 
@@ -159,8 +161,8 @@ module tb_rob_count;
     allocInput.valid = 1'b0;
     #1;
     if (!statusOutput.full || statusOutput.empty || countOutput != 4'd8 ||
-        replayOutput[7].robTag != rob_tag_t'(7) ||
-        replayOutput[7].programCounter != 32'd28)
+        replayNarrowOutput[3].robTag != rob_tag_t'(7) ||
+        replayRasOutput[3].programCounter != 32'd28)
       $fatal(1, "parameterized ROB count/replay truncated");
     $display("PASS rob: parameterized count and replay window");
     $finish;

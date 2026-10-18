@@ -3,6 +3,7 @@ rtl/common/rv32_pkg.sv
 rtl/common/rv32_cla.sv
 rtl/common/rv32_epoch_fifo.sv
 rtl/core/rv32_core.sv
+rtl/core/rv32_recovery_cursor.sv
 rtl/core/rv32_flush_arbiter.sv
 rtl/frontend/rv32_decoder.sv
 rtl/frontend/rv32_frontend.sv
@@ -10,6 +11,7 @@ rtl/backend/rv32_rat.sv
 rtl/backend/rv32_prf.sv
 rtl/backend/rv32_rob.sv
 rtl/backend/rv32_rs.sv
+rtl/backend/rv32_cdb_arbiter.sv
 rtl/memory/rv32_lsu.sv
 rtl/memory/rv32_icache.sv
 rtl/memory/rv32_dcache.sv

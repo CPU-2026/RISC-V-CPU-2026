@@ -7,7 +7,8 @@ module rv32_lsu #(
   parameter int unsigned STORE_DATA_LANES = 1,
   // Bare-core legacy word-memory tests may omit IDs. Cached integration MUST
   // enable tagged completion: hit-under-miss no longer preserves send order.
-  parameter bit TAGGED_DMEM = 1'b0
+  parameter bit TAGGED_DMEM = 1'b0,
+  parameter int unsigned WRITEBACK_PORTS = 4
 ) (
   input  logic                   clkInput,
   input  logic                   rstNInput,
@@ -29,7 +30,7 @@ module rv32_lsu #(
   input  logic [(($clog2(LQ_DEPTH) > $clog2(SQ_DEPTH)) ?
                  $clog2(LQ_DEPTH) : $clog2(SQ_DEPTH))-1:0] addressIndexInput,
 
-  input  rv32_pkg::cdb_result_t [3:0] writebackInput,
+  input  rv32_pkg::cdb_result_t [WRITEBACK_PORTS-1:0] writebackInput,
 
   output rv32_pkg::load_result_output_t loadResultOutput,
   input  logic                   loadResultReadyInput,
@@ -67,6 +68,8 @@ module rv32_lsu #(
   logic lqSentInner [LQ_DEPTH];
   logic lqResultReadyInner [LQ_DEPTH];
   logic lqBroadcastedInner [LQ_DEPTH];
+  // Raw 32-bit word, whatever the source. Width/sign live on the row and are
+  // applied once when the result is read out, never at the writers.
   logic [31:0] lqResultInner [LQ_DEPTH];
 
   logic sqValidInner [SQ_DEPTH];
@@ -89,11 +92,11 @@ module rv32_lsu #(
   // LQ/ROB reuse. Width/sign belong to the accepted owner, not the current LQ row.
   data_transaction_t fifoHeadInner, fifoTailInner;
   logic [DATA_TRANSACTION_W:0] fifoCountInner;
+  // Size/sign are not copied per entry: the completion guard proves the row was
+  // never reused, so the row's own fields describe the accepted transaction.
   logic [LQ_INDEX_W-1:0] fifoIndexInner [DATA_REQUEST_ENTRIES];
   rob_tag_t fifoTagInner [DATA_REQUEST_ENTRIES];
   logic fifoDropInner [DATA_REQUEST_ENTRIES];
-  mem_size_e fifoSizeInner [DATA_REQUEST_ENTRIES];
-  logic fifoUnsignedInner [DATA_REQUEST_ENTRIES];
   logic fifoValidInner [DATA_REQUEST_ENTRIES];
   data_transaction_t responseOwnerInner, allocationOwnerInner;
   always_comb begin
@@ -132,6 +135,7 @@ module rv32_lsu #(
   logic lqEarlyForwardInner [LQ_DEPTH];
   logic [31:0] lqEarlyValueInner [LQ_DEPTH];
   store_forward_result_t selectedForwardInner;
+  store_forward_result_t addressedForwardInner;
   integer forwardIndexInner;
 
   logic resultSelectFoundInner;
@@ -142,7 +146,6 @@ module rv32_lsu #(
   logic storeRetireFireInner, storeSendSelectedInner;
   logic loadAddressMatchInner, storeAddressMatchInner;
   logic loadRequestSelectedInner;
-  logic [31:0] extendedResponseInner;
   integer combIndexInner;
   integer seqIndexInner;
   integer storeLaneInner;
@@ -172,9 +175,13 @@ module rv32_lsu #(
   assign storeRetireFireInner = storeCommitMatchInner && robRetireInput.valid &&
     robRetireInput.robTag == storeCommitInput.robTag;
 
-  function automatic logic [SQ_INDEX_W-1:0] sq_order(input logic [SQ_INDEX_W-1:0] indexInput);
-    return indexInput - sqHeadIndexInner;
-  endfunction
+  // Age offset per SQ row, one subtraction each per cycle. Forward queries and
+  // the notify fan-out compare these directly instead of re-deriving the offset
+  // at every call site.
+  logic [SQ_INDEX_W-1:0] sqOrderInner [SQ_DEPTH];
+  for (genvar orderRow = 0; orderRow < SQ_DEPTH; orderRow++) begin : g_sq_order
+    assign sqOrderInner[orderRow] = SQ_INDEX_W'(orderRow) - sqHeadIndexInner;
+  end
 
   function automatic logic [31:0] extend_load(
     input logic [31:0] valueInput,
@@ -192,15 +199,34 @@ module rv32_lsu #(
     end
   endfunction
 
+  // Byte-interval overlap of two accesses. Each one spans at most one word
+  // boundary (size <= 4, offset <= 3), so only same-word and adjacent-word
+  // positions can intersect and 3-bit byte arithmetic suffices. One subtractor
+  // classifies the word delta as 0 / +1 / -1; the two wrap guards keep the
+  // unsigned mod-2^32 ordering of the original 32-bit compare.
+  localparam logic [29:0] LAST_WORD = '1;
   function automatic logic byte_overlap(
     input logic [31:0] loadAddressInput,
     input mem_size_e loadSizeInput,
     input logic [31:0] storeAddressInput,
     input mem_size_e storeSizeInput
   );
-    return loadAddressInput >= storeAddressInput ?
-      loadAddressInput - storeAddressInput < {29'b0, mem_bytes(storeSizeInput)} :
-      storeAddressInput - loadAddressInput < {29'b0, mem_bytes(loadSizeInput)};
+    logic [2:0] loadOffset, storeOffset, loadSpan, storeSpan, loadEnd, storeEnd;
+    logic [29:0] wordDelta;
+    loadOffset = {1'b0, loadAddressInput[1:0]};
+    storeOffset = {1'b0, storeAddressInput[1:0]};
+    loadSpan = {1'b0, mem_bytes(loadSizeInput)};
+    storeSpan = {1'b0, mem_bytes(storeSizeInput)};
+    loadEnd = loadOffset + loadSpan;
+    storeEnd = storeOffset + storeSpan;
+    wordDelta = loadAddressInput[31:2] - storeAddressInput[31:2];
+    if (wordDelta == 30'(0))
+      return loadOffset < storeEnd && storeOffset < loadEnd;
+    if (wordDelta == 30'(1) && storeAddressInput[31:2] != LAST_WORD)
+      return loadOffset + 3'(4) < storeEnd;
+    if (wordDelta == LAST_WORD && loadAddressInput[31:2] != LAST_WORD)
+      return storeOffset + 3'(4) < loadEnd;
+    return 1'b0;
   endfunction
 
   assign storeAddressEventInner = addressInput.valid && addressInput.isStore &&
@@ -247,11 +273,11 @@ module rv32_lsu #(
                  sqAddressInner[s], sqSizeInner[s])))
             result.cacheBlocked = 1'b1;
           if (!addressReady) begin
-            if (!unknownFound || sq_order(SQ_INDEX_W'(s)) > sq_order(youngestUnknownIndex))
+            if (!unknownFound || sqOrderInner[s] > sqOrderInner[youngestUnknownIndex])
               youngestUnknownIndex = SQ_INDEX_W'(s);
             unknownFound = 1'b1;
           end else if (byte_overlap(loadAddressInput, loadSizeInput, address, sqSizeInner[s]) &&
-              (!found || sq_order(SQ_INDEX_W'(s)) > sq_order(youngestIndex))) begin
+              (!found || sqOrderInner[s] > sqOrderInner[youngestIndex])) begin
             found = 1'b1; youngestIndex = SQ_INDEX_W'(s);
             youngestAddress = address; youngestData = data;
             youngestSize = sqSizeInner[s]; youngestReady = dataReady;
@@ -262,7 +288,7 @@ module rv32_lsu #(
       // unknown source AFTER it still blocks forwarding. Cache admission above
       // remains conservative; this relaxation applies only to SQ-sourced data.
       result.blocked = unknownFound &&
-        (!found || sq_order(youngestUnknownIndex) >= sq_order(youngestIndex));
+        (!found || sqOrderInner[youngestUnknownIndex] >= sqOrderInner[youngestIndex]);
       delta = loadAddressInput - youngestAddress;
       if (found && youngestReady && loadAddressInput >= youngestAddress &&
           delta + {29'b0, mem_bytes(loadSizeInput)} <= {29'b0, mem_bytes(youngestSize)}) begin
@@ -290,7 +316,7 @@ module rv32_lsu #(
         sqSizeInner[sourceInput] == loadSizeInput &&
         rob_is_older(sqTagInner[sourceInput], loadTagInput);
       for (int s = 0; s < SQ_DEPTH; s = s + 1) begin
-        if (sqValidInner[s] && sq_order(SQ_INDEX_W'(s)) > sq_order(sourceInput) &&
+        if (sqValidInner[s] && sqOrderInner[s] > sqOrderInner[sourceInput] &&
             rob_is_older(sqTagInner[s], loadTagInput) &&
             (!sqAddressReadyInner[s] || sqAddressInner[s][31:2] == sourceAddressInput[31:2]))
           matched = 1'b0;
@@ -298,6 +324,13 @@ module rv32_lsu #(
       return matched;
     end
   endfunction
+
+  // One query for the LQ row named by addressIndexInput. The per-row loop below
+  // consumes it only on the matching iteration, so eight identical scans (they
+  // differ solely in lqTag/lqSize) collapse into this single instance.
+  always_comb
+    addressedForwardInner = query_store_forward(
+      lqTagInner[addressIndexInput], addressInput.address, lqSizeInner[addressIndexInput]);
 
   // All matching LQ rows may acquire registered results on this edge. CDB
   // selection above still reads only the old result registers, never intents.
@@ -318,27 +351,36 @@ module rv32_lsu #(
                 notify_matches(storeDataIndexInput[lane], sqAddressInner[storeDataIndexInput[lane]],
                   lqTagInner[forwardIndexInner], lqAddressInner[forwardIndexInner], lqSizeInner[forwardIndexInner])) begin
               lqEarlyForwardInner[forwardIndexInner] = 1'b1;
-              lqEarlyValueInner[forwardIndexInner] = extend_load(storeDataInput[lane].value,
-                lqSizeInner[forwardIndexInner], lqUnsignedInner[forwardIndexInner]);
+              lqEarlyValueInner[forwardIndexInner] = storeDataInput[lane].value;
             end
           end
           if (storeAddressEventInner && sqDataReadyInner[addressIndexInput] &&
               notify_matches(SQ_INDEX_W'(addressIndexInput), addressInput.address,
                 lqTagInner[forwardIndexInner], lqAddressInner[forwardIndexInner], lqSizeInner[forwardIndexInner])) begin
             lqEarlyForwardInner[forwardIndexInner] = 1'b1;
-            lqEarlyValueInner[forwardIndexInner] = extend_load(sqDataInner[addressIndexInput],
-              lqSizeInner[forwardIndexInner], lqUnsignedInner[forwardIndexInner]);
+            lqEarlyValueInner[forwardIndexInner] = sqDataInner[addressIndexInput];
           end
         end
         if (loadAddressEventInner && addressIndexInput == $bits(addressIndexInput)'(forwardIndexInner)) begin
-          forwardResult = query_store_forward(lqTagInner[forwardIndexInner], addressInput.address,
-                                              lqSizeInner[forwardIndexInner]);
+          forwardResult = addressedForwardInner;
           lqEarlyForwardInner[forwardIndexInner] = !forwardResult.blocked && (forwardResult.mask & needed) == needed;
-          lqEarlyValueInner[forwardIndexInner] = extend_load(forwardResult.data,
-            lqSizeInner[forwardIndexInner], lqUnsignedInner[forwardIndexInner]);
+          lqEarlyValueInner[forwardIndexInner] = forwardResult.data;
         end
       end
     end
+  end
+
+  cdb_result_t storeAllocWbInner;
+  cdb_result_t sqWbInner [SQ_DEPTH];
+  function automatic cdb_result_t matching_writeback(input phy_tag_t tag);
+    matching_writeback = '0;
+    for (int portIndex = WRITEBACK_PORTS-1; portIndex >= 0; portIndex--)
+      if (writebackInput[portIndex].valid && writebackInput[portIndex].phyTag == tag)
+        matching_writeback = writebackInput[portIndex];
+  endfunction
+  assign storeAllocWbInner = matching_writeback(storeAllocationInput.dataTag);
+  for (genvar row = 0; row < SQ_DEPTH; row++) begin : g_sq_wakeup
+    assign sqWbInner[row] = matching_writeback(sqDataTagInner[row]);
   end
 
   always_comb begin
@@ -347,18 +389,9 @@ module rv32_lsu #(
     // P0 is not a producer identity. The core uses dataTag=0 while its
     // StoreValue RS owns delivery; an unrelated rd=x0 WB must not fill it.
     if (!storeAllocDataReadyResolvedInner && storeAllocationInput.dataTag != '0) begin
-      if (writebackInput[0].valid && (writebackInput[0].phyTag == storeAllocationInput.dataTag)) begin
+      if (storeAllocWbInner.valid) begin
         storeAllocDataReadyResolvedInner = 1'b1;
-        storeAllocDataValueResolvedInner = writebackInput[0].value;
-      end else if (writebackInput[1].valid && (writebackInput[1].phyTag == storeAllocationInput.dataTag)) begin
-        storeAllocDataReadyResolvedInner = 1'b1;
-        storeAllocDataValueResolvedInner = writebackInput[1].value;
-      end else if (writebackInput[2].valid && (writebackInput[2].phyTag == storeAllocationInput.dataTag)) begin
-        storeAllocDataReadyResolvedInner = 1'b1;
-        storeAllocDataValueResolvedInner = writebackInput[2].value;
-      end else if (writebackInput[3].valid && (writebackInput[3].phyTag == storeAllocationInput.dataTag)) begin
-        storeAllocDataReadyResolvedInner = 1'b1;
-        storeAllocDataValueResolvedInner = writebackInput[3].value;
+        storeAllocDataValueResolvedInner = storeAllocWbInner.value;
       end
     end
   end
@@ -393,7 +426,10 @@ module rv32_lsu #(
       (!flushInfoInput.valid || rob_is_older(lqTagInner[resultSelectIndexInner], flushInfoInput.robTag));
     loadResultOutput.robTag = lqTagInner[resultSelectIndexInner];
     loadResultOutput.destinationPhy = lqDestInner[resultSelectIndexInner];
-    loadResultOutput.value = lqResultInner[resultSelectIndexInner];
+    // Size/sign live with the row for its whole residence, so this single
+    // extraction replaces the per-writer copies (25 funnels -> 2).
+    loadResultOutput.value = extend_load(lqResultInner[resultSelectIndexInner],
+      lqSizeInner[resultSelectIndexInner], lqUnsignedInner[resultSelectIndexInner]);
 
     // Combinational qualification of every OLD SQ row. No address/data event
     // bypass and no reporting register: the ROB consumes all bits on this edge.
@@ -471,10 +507,6 @@ module rv32_lsu #(
       loadRequestSelectedInner = 1'b1;
     end
 
-    // Width and sign belong to the accepted transaction, never a reused row.
-    extendedResponseInner = extend_load(dmemResponseInput.readData,
-      fifoSizeInner[responseOwnerInner], fifoUnsignedInner[responseOwnerInner]);
-
     lqCountOutput = '0;
     for (combIndexInner = 0; combIndexInner < LQ_DEPTH; combIndexInner = combIndexInner + 1)
       if (lqValidInner[combIndexInner]) lqCountOutput = lqCountOutput + 1'b1;
@@ -497,8 +529,6 @@ module rv32_lsu #(
         fifoIndexInner[seqIndexInner] <= '0;
         fifoTagInner[seqIndexInner] <= '0;
         fifoDropInner[seqIndexInner] <= 1'b0;
-        fifoSizeInner[seqIndexInner] <= MEM_WORD;
-        fifoUnsignedInner[seqIndexInner] <= 1'b0;
       end
       sqHeadSeqInner <= '0;
       sqTailSeqInner <= '0;
@@ -536,18 +566,9 @@ module rv32_lsu #(
       for (seqIndexInner = 0; seqIndexInner < SQ_DEPTH; seqIndexInner = seqIndexInner + 1) begin
         if (sqValidInner[seqIndexInner] && !sqDataReadyInner[seqIndexInner] &&
             sqDataTagInner[seqIndexInner] != '0) begin
-          if (writebackInput[0].valid && (writebackInput[0].phyTag == sqDataTagInner[seqIndexInner])) begin
+          if (sqWbInner[seqIndexInner].valid) begin
             sqDataReadyInner[seqIndexInner] <= 1'b1;
-            sqDataInner[seqIndexInner] <= writebackInput[0].value;
-          end else if (writebackInput[1].valid && (writebackInput[1].phyTag == sqDataTagInner[seqIndexInner])) begin
-            sqDataReadyInner[seqIndexInner] <= 1'b1;
-            sqDataInner[seqIndexInner] <= writebackInput[1].value;
-          end else if (writebackInput[2].valid && (writebackInput[2].phyTag == sqDataTagInner[seqIndexInner])) begin
-            sqDataReadyInner[seqIndexInner] <= 1'b1;
-            sqDataInner[seqIndexInner] <= writebackInput[2].value;
-          end else if (writebackInput[3].valid && (writebackInput[3].phyTag == sqDataTagInner[seqIndexInner])) begin
-            sqDataReadyInner[seqIndexInner] <= 1'b1;
-            sqDataInner[seqIndexInner] <= writebackInput[3].value;
+            sqDataInner[seqIndexInner] <= sqWbInner[seqIndexInner].value;
           end
         end
       end
@@ -658,7 +679,7 @@ module rv32_lsu #(
                lqTagInner[fifoIndexInner[responseOwnerInner]] == fifoTagInner[responseOwnerInner] &&
                lqSentInner[fifoIndexInner[responseOwnerInner]] &&
                !lqResultReadyInner[fifoIndexInner[responseOwnerInner]]) begin
-             lqResultInner[fifoIndexInner[responseOwnerInner]] <= extendedResponseInner;
+             lqResultInner[fifoIndexInner[responseOwnerInner]] <= dmemResponseInput.readData;
              lqResultReadyInner[fifoIndexInner[responseOwnerInner]] <= 1'b1;
           end
           fifoValidInner[responseOwnerInner] <= 1'b0;
@@ -668,8 +689,6 @@ module rv32_lsu #(
           fifoIndexInner[allocationOwnerInner] <= loadSelectIndexInner;
           fifoTagInner[allocationOwnerInner] <= lqTagInner[loadSelectIndexInner];
           fifoDropInner[allocationOwnerInner] <= 1'b0;
-          fifoSizeInner[allocationOwnerInner] <= lqSizeInner[loadSelectIndexInner];
-          fifoUnsignedInner[allocationOwnerInner] <= lqUnsignedInner[loadSelectIndexInner];
           fifoValidInner[allocationOwnerInner] <= 1'b1;
           fifoTailInner <= allocationOwnerInner + data_transaction_t'(1);
           lqSentInner[loadSelectIndexInner] <= 1'b1;

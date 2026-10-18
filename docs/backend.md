@@ -6,7 +6,7 @@
 IQ → 译码/单发射 → RAT + PRF + ROB + 七池 RS
                                   ↓
                    ALU / MUL / DIV / BRU / AGU
-                     ↓ 四路写回       ↓ 恢复候选
+                     ↓ 两路写回       ↓ 恢复候选
                  PRF/ROB/RS       Flush Arbiter
                      ↓               ↓
                  按序提交       全流水年龄门控与恢复
@@ -28,29 +28,46 @@ IQ → 译码/单发射 → RAT + PRF + ROB + 七池 RS
 
 表中接口组省略 `Input/Output` 后缀，完整名称以源码为准。
 
-发射须 IQ 有效、ROB/目标 RS/LSQ 可分配，写寄存器时还须 PRF 有空闲。每拍至多发射、提交各一条，七池独立派发。ALU/Load/MUL/DIV 各占一路 CDB；BRU 和 Store ready 仅通知 ROB 完成。
+发射须 IQ 有效、ROB/目标 RS/LSQ 可分配，写寄存器时还须 PRF 有空闲。每拍至多发射、提交各一条，七池独立派发；两路 CDB 仲裁见执行时序，BRU 和 Store ready 仅通知 ROB 完成。
 
 ## 重命名与提交
 
 | 模块 | 接口与状态 |
 |---|---|
 | [`rv32_rat`](../verilog/rtl/backend/rv32_rat.sv) | `readInput/readOutput` 组合查两源映射；`renameInput/renameOutput` 建新映射并返回旧物理号；`commitInput` 更新提交映射。复位架构号映射到同号物理寄存器，x0 恒为 0。 |
-| [`rv32_prf`](../verilog/rtl/backend/rv32_prf.sv) | 三组合读口、四写回口；`allocationInput/allocReadyOutput/allocPhyOutput` 分配，`freeInput` 回收。`valueValid/value` 可在分配时预置跳转链接值。 |
-| [`rv32_rob`](../verilog/rtl/backend/rv32_rob.sv) | `allocInput` 保存指令、改名、访存及预测元数据；只有就绪头项可经 `commitReadyInput/commitFireOutput` 退休。`completionInput[6]` 为 ALU/Load/MUL/DIV/BRU/零，异常仅接受 0/4 号口；`storeReadyInput` 为 SQ ready/epoch 位图。 |
+| [`rv32_prf`](../verilog/rtl/backend/rv32_prf.sv) | 三组合读口、core 配置两写回口（模块默认四口）；`allocationInput/allocReadyOutput/allocPhyOutput` 分配，`freeInput` 回收。`valueValid/value` 可在分配时预置跳转链接值。 |
+| [`rv32_rob`](../verilog/rtl/backend/rv32_rob.sv) | `allocInput` 保存指令、改名、访存及预测元数据；只有就绪头项可经 `commitReadyInput/commitFireOutput` 退休。六个完成槽中 core 接 ALU/共享结果/BRU，其余接零，异常仅接受 0/4 号口；`storeReadyInput` 为 SQ ready/epoch 位图。 |
 
-PRF 自由队列复位为 P32..P47，FIFO 使用 epoch+slot 并跳过填充编码。分配读旧队首，本拍回收下拍可用，P0 不分配/回收。恢复停分配，按 ROB 年龄回收年轻 `newPhy`，最后追加同拍提交释放的 `oldPhy`。
+PRF 自由队列复位为 P32..P47，FIFO 使用 epoch+slot 并跳过填充编码。分配读旧队首，本拍回收下拍可用，P0 不分配/回收。恢复停分配和退休，四拍按 ROB 年龄回收年轻 `newPhy`；正常退休的 `oldPhy` 回收不与恢复并发。
 
-ROB 的 `lookupInput[5]/lookupOutput[5]` 都验证完整 tag，前两路另供控制流上下文。`replayOutput` 按 head 顺序提供窗口，消费者须结合存活计数和 tag 验证；RAT 从提交映射重放至恢复边界。ROB 清严格年轻项、尾指针回到边界后一项，更老头项仍可提交。Store 就绪核验旧有效 Store、slot/epoch，恢复拍只接受严格更老项；退休只等 SQ 地址/数据就绪，不等内存接受。
+ROB 的 `lookupInput[5]/lookupOutput[5]` 都验证完整 tag，前两路另供控制流上下文。`replayOutput` 不再按 head 旋转 16 项，而是直出两路窄窗：`replayNarrowWindow`（`robTag/archRd/newPhy`，16 bit×4）供 RAT/PRF，`replayRasWindow`（`robTag/PC/opcode/rd/funct3/rs1`，57 bit×4）供 RAS；消费者按 beat 装载，须结合存活计数和 tag 验证；RAT 从提交映射重放至恢复边界。ROB 在广播拍清严格年轻项、尾指针回到边界后一项；读取基线及四拍重放期间不退休，payload 保持以供 free list 读取已取消后缀。Store 就绪核验旧有效 Store、slot/epoch；退休只等 SQ 地址/数据就绪，不等内存接受。
+
+### 已提交 SRAM 与四拍重放
+
+- 已提交 RAT：`sram_fakeram DEPTH=1, WIDTH=192, WRITE_GRANULARITY=6`，一个宽字容纳全部 32 项；正常退休只写一个 lane。已提交 RAS：`DEPTH=1, WIDTH=512, WRITE_GRANULARITY=32`，正常 call 只写一个 lane。投机 RAT/RAS 和 free list 仍为寄存器。
+- SRAM 无复位；RAT 每项 valid 为零时提供初始同号映射，RAS 每项 valid 为零时提供零内容；栈深保留为寄存器。不是将普通 32×6／16×32 单端口 SRAM 当成多读口。
+- 广播拍 **R**：禁止提交以避免单端口 SRAM 读写冲突，启动同步基线读；ROB/RS/FU/LSU 按原年龄规则取消错路项。`rv32_recovery_cursor` 保存原始 ROB 占用、边界、完整 `nextTag` 与窗口 offset。
+- **R+1..R+4**：RAT、RAS、free list 共用游标，每拍最多处理 4 条（默认 ROB16），第一拍直接从 SRAM 输出起算，不额外插入基线复制拍。RAT/RAS 重放 head 至边界（含两端），free list 遍历原始窗口并只回收严格年轻的 `newPhy`；后续拍从上一拍恢复态继续，游标推进到下一待处理 tag。不足 16 条仍固定四拍。
+- 四拍期间冻结取指、RS/FU、ROB，禁止发射、退休和 CDB 消费；暂停 flush 队列广播，完成后可处理更老的待决恢复。LSU/Cache/AXI **不冻结**：已提交 Store 及在途 Load 返回继续推进，Load 结果留在 LQ 等待授权。前端在广播拍重定向，恢复结束后重新取指。
+- 小容量宽字布局只使用 FakeRAM 拟合，不代表已验证真实工艺宏。该协议改变周期，后续两软件同步已完成；定向测试、功能/IPC 及同步证据见[实验记录](experiments.md#recovery4)，面积/STA 见 [assessment-results.md](assessment-results.md)，不沿用旧单拍恢复验收。
 
 ## 保留站
 
-[`rv32_rs`](../verilog/rtl/backend/rv32_rs.sv) 保存两个源的 ready/tag/value，按 ROB 年龄选择最老就绪项。`allocInput/allocAuxInput` 分配，`writebackInput[4]` 捕获唤醒，`issueOutput/issueReadyInput` 实际派发。写回拍捕获，**下拍才可派发依赖项**。
+[`rv32_rs`](../verilog/rtl/backend/rv32_rs.sv) 保存两个源的 ready/tag/value，按 ROB 年龄选择最老就绪项。`allocInput/allocAuxInput` 分配，`writebackInput[WRITEBACK_PORTS]` 捕获唤醒（默认四口、core 两口），`issueOutput/issueReadyInput` 实际派发。写回拍捕获，**下拍才可派发依赖项**。
 
-恢复禁止新分配，边界保留但不派发，年轻项取消，严格更老项可继续派发。Load/StoreAddr 共用 AGU，aux 保存类别和 LSQ 槽；StoreValue 设置 `ISSUE_WIDTH=2`，最多同拍交付两份数据。core 的 SQ `dataTag=0`，禁用 SQ 直接 CDB 唤醒。
+恢复广播拍禁止新分配，边界保留但不派发，年轻项取消，严格更老项可继续派发；随后四拍重放冻结全部 RS/FU。Load/StoreAddr 共用 AGU，aux 保存类别和 LSQ 槽；StoreValue 设置 `ISSUE_WIDTH=2`，最多同拍交付两份数据。core 的 SQ `dataTag=0`，禁用 SQ 直接 CDB 唤醒。
 
 ## 执行时序
 
-`execute_request_input_t` 携带操作数、操作码、PC、ROB/物理标签。core 将 ALU/MUL/DIV 的输出 ready 固定为 1，但写回仍核验完整 ROB tag 和恢复年龄。
+`execute_request_input_t` 携带操作数、操作码、PC、ROB/物理标签。ALU独占CDB0；
+MUL/DIV/LQ经过完整ROB活动身份与恢复资格检查后，由
+[`rv32_cdb_arbiter`](../verilog/rtl/backend/rv32_cdb_arbiter.sv)组合选择最老者共用CDB1。
+按ROB模年龄比较，不能按tag数值大小排序；有效tag含epoch，平局防御顺序为MUL/DIV/LQ。
+ALU输出ready仍为1，MUL/DIV的outReady及LSU的loadResultReady分别接实际源授权。
+未授权结果保持、MUL逐级反压，LQ获授权才标记已广播、真实ROB退休才释放。
+PRF、七池RS及LSU在core中均实例化`WRITEBACK_PORTS=2`；模块默认四口只兼容旧独立夹具。
+ROB只接ALU、共享结果和独立BRU完成事件，其余旧完成槽接零。不新增结果级，
+无争用写回及下拍依赖派发边界不变，争用失败者等待后续拍。
 
 | 模块 | 功能与边界 |
 |---|---|

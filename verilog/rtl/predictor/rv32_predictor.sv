@@ -21,7 +21,8 @@ module rv32_predictor #(
   input  rv32_pkg::branch_result_input_t branchInput,
   input  rv32_pkg::jump_result_input_t   jumpInput,
   input  rv32_pkg::squash_input_t         squashInput,
-  input  rv32_pkg::rob_predictor_input_t  robInput
+  input  rv32_pkg::rob_predictor_input_t  robInput,
+  input  rv32_pkg::recovery_step_t recoveryInput
 );
   import rv32_pkg::*;
 
@@ -102,6 +103,7 @@ module rv32_predictor #(
     .fetchInfoInput(fetchInfoInput),
     .squashInput(squashInput),
     .robInput(robInput),
+    .recoveryInput(recoveryInput),
     .rasTopOutput(rasTopInner),
     .queryRetTargetOutput(rasRetTargetInner)
   );

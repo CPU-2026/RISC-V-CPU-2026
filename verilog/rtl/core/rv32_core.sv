@@ -77,12 +77,18 @@ module rv32_core #(
   logic prfSrc1ReadyInner, prfSrc2ReadyInner, prfCommitReadyInner;
   logic [31:0] prfSrc1ValueInner, prfSrc2ValueInner, prfCommitValueInner;
   logic [PRF_ENTRIES-1:0] prfReadyVectorInner;
-  rv32_pkg::cdb_result_t [3:0] writebackInputInner;
+  rv32_pkg::cdb_result_t [1:0] writebackInputInner;
+  rv32_pkg::cdb_result_t [2:0] sharedCdbCandidatesInner;
+  rv32_pkg::rob_tag_t [2:0] sharedCdbTagsInner;
+  rv32_pkg::rob_tag_t sharedCdbTagInner;
+  logic [2:0] sharedCdbGrantInner;
+  logic loadResultEligibleInner, mulResultEligibleInner, divResultEligibleInner;
   rv32_pkg::prf_read_input_t [2:0] prfReadInputInner;
   rv32_pkg::prf_read_output_t [2:0] prfReadOutputInner;
 
   rob_tag_t robAllocTagInner, robHeadTagInner;
-  wire rv32_pkg::rob_replay_entry_t [ROB_ENTRIES-1:0] robReplayOutputInner;
+  wire rv32_pkg::rob_replay_narrow_t [RECOVERY_WIDTH-1:0] robReplayNarrowInner;
+  wire rv32_pkg::rob_replay_ras_t [RECOVERY_WIDTH-1:0] robReplayRasInner;
   rv32_pkg::rob_allocation_input_t robAllocInputInner;
   rv32_pkg::rob_completion_t [5:0] robCompletionInputInner;
   rv32_pkg::rob_lookup_input_t [4:0] robLookupInputInner;
@@ -116,6 +122,8 @@ module rv32_core #(
   logic [31:0] globalRedirectPcInner;
   bpu_ckpt_id_t globalFlushCkptIdInner;
   rv32_pkg::squash_input_t flushOutputInner;
+  recovery_step_t recoveryStepInner;
+  logic recoveryBusyInner, pipelineFrozenInner;
   logic branchFlushCandidateInner, jumpFlushCandidateInner;
   logic [31:0] branchFlushPcInner, jumpFlushPcInner;
   logic predictorUpdateValidInner, predictorMispredictInner;
@@ -211,6 +219,7 @@ module rv32_core #(
   rv32_pkg::load_allocation_input_t lsuLoadAllocationInputInner;
   rv32_pkg::store_allocation_input_t lsuStoreAllocationInputInner;
   rv32_pkg::lsu_address_input_t lsuAddressInputInner;
+  rv32_pkg::lsu_address_input_t aguAddressOutputInner;
   rv32_pkg::store_commit_input_t lsuStoreCommitInputInner;
   rv32_pkg::load_result_output_t lsuLoadResultOutputInner;
   rv32_pkg::store_completion_output_t lsuStoreCompleteOutputInner;
@@ -231,20 +240,20 @@ module rv32_core #(
   integer storeLaneInner;
 
   assign aluRobLiveInner = jumpRobLiveInner;
-  assign aluResultLiveInner = aluCdbValidInner && aluRobLiveInner &&
+  assign aluResultLiveInner = !recoveryBusyInner && aluCdbValidInner && aluRobLiveInner &&
                            (!globalFlushInner ||
                             rob_is_older(wbAluTagInner, globalFlushTagInner));
   assign wbAluValidInner = aluResultLiveInner && !aluCdbIsControlInner;
-  assign wbLoadValidInner = loadCdbValidInner && loadRobLiveInner &&
+  assign loadResultEligibleInner = !recoveryBusyInner && loadCdbValidInner && loadRobLiveInner &&
                          (!globalFlushInner ||
                           rob_is_older(wbLoadTagInner, globalFlushTagInner));
-  assign wbMulValidInner = mulCdbValidInner && mulRobLiveInner &&
+  assign mulResultEligibleInner = !recoveryBusyInner && mulCdbValidInner && mulRobLiveInner &&
                         (!globalFlushInner ||
                          rob_is_older(wbMulTagInner, globalFlushTagInner));
-  assign wbDivValidInner = divCdbValidInner && divRobLiveInner &&
+  assign divResultEligibleInner = !recoveryBusyInner && divCdbValidInner && divRobLiveInner &&
                         (!globalFlushInner ||
                          rob_is_older(wbDivTagInner, globalFlushTagInner));
-  assign branchResultLiveInner = bruValidInner && bruConditionalInner && bruRobLiveInner &&
+  assign branchResultLiveInner = !recoveryBusyInner && bruValidInner && bruConditionalInner && bruRobLiveInner &&
                               (!globalFlushInner ||
                                rob_is_older(bruTagInner, globalFlushTagInner));
   assign branchFlushCandidateInner = branchResultLiveInner &&
@@ -259,10 +268,18 @@ module rv32_core #(
   assign predictorUpdateValidInner = branchResultLiveInner ||
                                   (aluResultLiveInner && aluCdbIsControlInner);
   assign predictorMispredictInner = branchFlushCandidateInner || jumpFlushCandidateInner;
-  assign globalFlushInner = flushOutputInner.valid;
+  assign globalFlushInner = flushOutputInner.valid && !recoveryBusyInner && !haltedInner;
+  assign recoveryBusyInner = recoveryStepInner.active;
+  assign pipelineFrozenInner = haltedInner || recoveryBusyInner;
   assign globalFlushTagInner = flushOutputInner.robTag;
   assign globalRedirectPcInner = flushOutputInner.programCounter;
   assign globalFlushCkptIdInner = flushOutputInner.checkpointId;
+  rv32_recovery_cursor u_recovery_cursor (
+    .clkInput(clkInput), .rstNInput(rstNInput), .freezeInput(haltedInner),
+    .startInput(globalFlushInner), .headTagInput(robHeadTagInner),
+    .squashTagInput(globalFlushTagInner), .countInput(robCountInner),
+    .stepOutput(recoveryStepInner)
+  );
   assign robCommitIsCallInner =
     ((robCommitInstrInner[6:0] == OPCODE_JAL) ||
      ((robCommitInstrInner[6:0] == OPCODE_JALR) &&
@@ -281,10 +298,10 @@ module rv32_core #(
     predictorRobInputInner.isHeadCall = robCommitIsCallInner;
     predictorRobInputInner.isHeadReturn = robCommitIsRetInner;
     predictorRobInputInner.headProgramCounter = robCommitPcInner;
-    for (robInputIndexInner = 0; robInputIndexInner < ROB_ENTRIES;
+    for (robInputIndexInner = 0; robInputIndexInner < RECOVERY_WIDTH;
          robInputIndexInner = robInputIndexInner + 1)
-      predictorRobInputInner.replayEntries[robInputIndexInner] =
-        robReplayOutputInner[robInputIndexInner];
+      predictorRobInputInner.replayRasWindow[robInputIndexInner] =
+        robReplayRasInner[robInputIndexInner];
   end
   assign predictorFetchInfoInner = fetchInfoOutputInner;
   assign predictorBranchInputInner = '{
@@ -321,15 +338,23 @@ module rv32_core #(
   assign writebackInputInner[0] = '{valid: wbAluValidInner,
                                      phyTag: wbAluPhyInner,
                                      value: wbAluValueInner};
-  assign writebackInputInner[1] = '{valid: wbLoadValidInner,
-                                     phyTag: wbLoadPhyInner,
-                                     value: wbLoadValueInner};
-  assign writebackInputInner[2] = '{valid: wbMulValidInner,
-                                     phyTag: wbMulPhyInner,
-                                     value: wbMulValueInner};
-  assign writebackInputInner[3] = '{valid: wbDivValidInner,
-                                     phyTag: wbDivPhyInner,
-                                     value: wbDivValueInner};
+  assign sharedCdbCandidatesInner[0] = '{valid: mulResultEligibleInner,
+                                        phyTag: wbMulPhyInner, value: wbMulValueInner};
+  assign sharedCdbCandidatesInner[1] = '{valid: divResultEligibleInner,
+                                        phyTag: wbDivPhyInner, value: wbDivValueInner};
+  assign sharedCdbCandidatesInner[2] = '{valid: loadResultEligibleInner,
+                                        phyTag: wbLoadPhyInner, value: wbLoadValueInner};
+  assign sharedCdbTagsInner[0] = wbMulTagInner;
+  assign sharedCdbTagsInner[1] = wbDivTagInner;
+  assign sharedCdbTagsInner[2] = wbLoadTagInner;
+  rv32_cdb_arbiter u_shared_cdb (
+    .candidateInput(sharedCdbCandidatesInner), .candidateTagInput(sharedCdbTagsInner),
+    .resultOutput(writebackInputInner[1]), .robTagOutput(sharedCdbTagInner),
+    .grantOutput(sharedCdbGrantInner)
+  );
+  assign wbMulValidInner = sharedCdbGrantInner[0];
+  assign wbDivValidInner = sharedCdbGrantInner[1];
+  assign wbLoadValidInner = sharedCdbGrantInner[2];
   assign aluCdbValidInner = aluExecuteOutputInner.valid;
   assign wbAluValueInner = aluExecuteOutputInner.value;
   assign wbAluTagInner = aluExecuteOutputInner.robTag;
@@ -391,7 +416,7 @@ module rv32_core #(
     dataValue: 32'b0
   };
   assign lsuStoreCommitInputInner = '{
-    valid: robCommitValidInner && robCommitStoreInner,
+    valid: robCommitValidInner && robCommitStoreInner && !globalFlushInner && !pipelineFrozenInner,
     robTag: robCommitTagInner
   };
   assign lsuDmemResponseInputInner = '{valid: dmemRspValidInput, readData: dmemRspRdataInput};
@@ -425,15 +450,11 @@ module rv32_core #(
   assign robCompletionInputInner[0] = '{valid: aluResultLiveInner,
                                         robTag: wbAluTagInner,
                                         exception: aluCdbMisalignedInner};
-  assign robCompletionInputInner[1] = '{valid: wbLoadValidInner,
-                                        robTag: wbLoadTagInner,
-                                        exception: 1'b0};
-  assign robCompletionInputInner[2] = '{valid: wbMulValidInner,
-                                        robTag: wbMulTagInner,
-                                        exception: 1'b0};
-  assign robCompletionInputInner[3] = '{valid: wbDivValidInner,
-                                        robTag: wbDivTagInner,
-                                        exception: 1'b0};
+  assign robCompletionInputInner[1] = '{valid: writebackInputInner[1].valid,
+                                         robTag: sharedCdbTagInner,
+                                         exception: 1'b0};
+  assign robCompletionInputInner[2] = '0;
+  assign robCompletionInputInner[3] = '0;
   assign robCompletionInputInner[4] = '{valid: branchResultLiveInner,
                                         robTag: bruTagInner,
                                         exception: bruMisalignedInner};
@@ -495,7 +516,7 @@ module rv32_core #(
   };
 
   rv32_flush_arbiter u_flush_arbiter (
-    .freezeInput(haltedInner),
+    .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .branchInput(branchFlushInputInner),
     .jumpInput(jumpFlushInputInner),
@@ -503,7 +524,7 @@ module rv32_core #(
   );
 
   rv32_frontend #(.RESET_PC(RESET_PC), .LEGACY_HALT(LEGACY_HALT)) u_frontend (
-    .freezeInput(haltedInner),
+    .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .predictorQueryOutput(predictorQueryOutputInner),
     .fetchProgramCounterOutput(predictorPcInner),
@@ -528,6 +549,7 @@ module rv32_core #(
     .jumpInput(predictorJumpInputInner),
     .squashInput(predictorSquashInputInner),
     .robInput(predictorRobInputInner),
+    .recoveryInput(recoveryStepInner),
     .predictionOutput(predictorOutputInner)
   );
 
@@ -546,11 +568,12 @@ module rv32_core #(
     .readInput(ratReadInputInner), .readOutput(ratReadOutputInner),
     .renameInput(ratRenameInputInner), .renameOutput(ratRenameOutputInner),
     .restoreInput(ratRestoreInputInner),
-    .replayInput(robReplayOutputInner),
+    .recoveryInput(recoveryStepInner),
+    .replayInput(robReplayNarrowInner),
     .commitInput(ratCommitInputInner)
   );
 
-  rv32_prf u_prf (
+  rv32_prf #(.WRITEBACK_PORTS(2)) u_prf (
     .freezeInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .allocationInput('{valid: issueFireInner && decodedInner.writesRd,
@@ -560,15 +583,16 @@ module rv32_core #(
     .freeInput('{valid: robCommitFireInner && robCommitWritesInner,
                 physicalRegister: robCommitOldPhyInner}),
     .restoreInput('{valid: globalFlushInner, squashTag: globalFlushTagInner}),
+    .recoveryInput(recoveryStepInner),
     .restoreCountInput(robCountInner),
-    .replayInput(robReplayOutputInner),
+    .replayInput(robReplayNarrowInner),
     .readInput(prfReadInputInner), .readOutput(prfReadOutputInner),
     .writebackInput(writebackInputInner),
     .readyVectorOutput(prfReadyVectorInner), .freeCountOutput()
   );
 
   rv32_rob u_rob (
-    .freezeInput(haltedInner),
+    .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .allocInput(robAllocInputInner), .allocReadyOutput(robAllocReadyInner),
     .allocTagOutput(robAllocTagInner),
@@ -579,7 +603,9 @@ module rv32_core #(
     .commitOutput(robCommitOutputInner), .commitStoreOutput(robCommitStoreInner),
     .commitReadyInput(robCommitReadyInner), .commitFireOutput(robCommitFireOutputInner),
     .statusOutput(robStatusOutputInner), .countOutput(robCountInner),
-    .replayOutput(robReplayOutputInner)
+    .replayOffsetInput(recoveryStepInner.offset),
+    .replayNarrowOutput(robReplayNarrowInner),
+    .replayRasOutput(robReplayRasInner)
   );
 
   always_comb begin
@@ -607,10 +633,13 @@ module rv32_core #(
     issueResourcesReadyInner = robAllocReadyInner && targetRsReadyInner &&
                              (!decodedInner.writesRd || prfAllocReadyInner);
     issueFireInner = bootDoneInner && frontendIqValidInner && issueResourcesReadyInner &&
-                 !globalFlushInner && !haltedInner && !trapInner;
+                  !globalFlushInner && !pipelineFrozenInner && !trapInner;
     frontendIqReadyInner = issueFireInner;
 
-    robCommitReadyInner = !haltedInner && (robCommitStoreInner ? lsuStoreCommitReadyInner : 1'b1);
+    // The read edge must not compete with an architectural SRAM write. Holding
+    // retirement also keeps the head-ordered replay window stable for all beats.
+    robCommitReadyInner = !pipelineFrozenInner && !globalFlushInner &&
+      (robCommitStoreInner ? lsuStoreCommitReadyInner : 1'b1);
     commitValidOutput = robCommitFireInner;
     commitPcOutput = robCommitPcInner;
     commitInstrOutput = robCommitInstrInner;
@@ -681,15 +710,15 @@ module rv32_core #(
     svRsAllocInputInner.useImmediate = 1'b0;
 
     for (storeLaneInner = 0; storeLaneInner < STORE_VALUE_RS_ENTRIES; storeLaneInner = storeLaneInner + 1) begin
-      svRsStoreDataInner[storeLaneInner].valid = svRsIssueLaneValidInner[storeLaneInner];
+      svRsStoreDataInner[storeLaneInner].valid = !recoveryBusyInner && svRsIssueLaneValidInner[storeLaneInner];
       svRsStoreDataInner[storeLaneInner].robTag = svRsIssueLaneInner[storeLaneInner].robTag;
       svRsStoreDataInner[storeLaneInner].value = svRsIssueLaneInner[storeLaneInner].source1Value;
       svRsStoreDataIndexInner[storeLaneInner] = svRsIssueLaneAuxInner[storeLaneInner];
     end
   end
 
-  rv32_rs #(.DEPTH(INT_RS_ENTRIES), .AUX_W(1)) u_int_rs (
-    .freezeInput(haltedInner),
+  rv32_rs #(.DEPTH(INT_RS_ENTRIES), .AUX_W(1), .WRITEBACK_PORTS(2)) u_int_rs (
+    .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(intRsAllocInputInner),
@@ -710,8 +739,8 @@ module rv32_core #(
   assign intIssuePredInner = intRsIssueOutputInner.predictedProgramCounter;
   assign intIssueUseImmInner = intRsIssueOutputInner.useImmediate;
 
-  rv32_rs #(.DEPTH(MUL_RS_ENTRIES), .AUX_W(1)) u_mul_rs (
-    .freezeInput(haltedInner),
+  rv32_rs #(.DEPTH(MUL_RS_ENTRIES), .AUX_W(1), .WRITEBACK_PORTS(2)) u_mul_rs (
+    .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(mulRsAllocInputInner), .allocReadyOutput(mulAllocReadyInner),
@@ -731,8 +760,8 @@ module rv32_core #(
   assign mulIssuePredInner = mulRsIssueOutputInner.predictedProgramCounter;
   assign mulIssueUseImmInner = mulRsIssueOutputInner.useImmediate;
 
-  rv32_rs #(.DEPTH(DIV_RS_ENTRIES), .AUX_W(1)) u_div_rs (
-    .freezeInput(haltedInner),
+  rv32_rs #(.DEPTH(DIV_RS_ENTRIES), .AUX_W(1), .WRITEBACK_PORTS(2)) u_div_rs (
+    .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(divRsAllocInputInner), .allocReadyOutput(divAllocReadyInner),
@@ -752,8 +781,8 @@ module rv32_core #(
   assign divIssuePredInner = divRsIssueOutputInner.predictedProgramCounter;
   assign divIssueUseImmInner = divRsIssueOutputInner.useImmediate;
 
-  rv32_rs #(.DEPTH(BRANCH_RS_ENTRIES), .AUX_W(3)) u_branch_rs (
-    .freezeInput(haltedInner),
+  rv32_rs #(.DEPTH(BRANCH_RS_ENTRIES), .AUX_W(3), .WRITEBACK_PORTS(2)) u_branch_rs (
+    .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(branchRsAllocInputInner), .allocReadyOutput(branchAllocReadyInner),
@@ -773,8 +802,8 @@ module rv32_core #(
   assign branchIssuePredInner = branchRsIssueOutputInner.predictedProgramCounter;
   assign branchIssueUseImmInner = branchRsIssueOutputInner.useImmediate;
 
-  rv32_rs #(.DEPTH(LOAD_RS_ENTRIES), .AUX_W(4)) u_load_rs (
-    .freezeInput(haltedInner),
+  rv32_rs #(.DEPTH(LOAD_RS_ENTRIES), .AUX_W(4), .WRITEBACK_PORTS(2)) u_load_rs (
+    .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(loadRsAllocInputInner), .allocReadyOutput(loadRsAllocReadyInner),
@@ -783,8 +812,8 @@ module rv32_core #(
     .issueOutput(loadRsIssueOutputInner), .issueReadyInput(loadRsIssueReadyInner),
     .issueAuxOutput(loadAuxInner), .occupancyOutput(), .issueLaneValidOutput(), .issueLaneOutput(), .issueLaneAuxOutput()
   );
-  rv32_rs #(.DEPTH(STORE_ADDR_RS_ENTRIES), .AUX_W(4)) u_store_addr_rs (
-    .freezeInput(haltedInner),
+  rv32_rs #(.DEPTH(STORE_ADDR_RS_ENTRIES), .AUX_W(4), .WRITEBACK_PORTS(2)) u_store_addr_rs (
+    .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(saRsAllocInputInner), .allocReadyOutput(saRsAllocReadyInner),
@@ -793,8 +822,8 @@ module rv32_core #(
     .issueAuxOutput(saAuxInner), .occupancyOutput(), .issueLaneValidOutput(), .issueLaneOutput(), .issueLaneAuxOutput()
   );
   rv32_rs #(.DEPTH(STORE_VALUE_RS_ENTRIES), .AUX_W(3),
-            .ISSUE_WIDTH(STORE_VALUE_RS_ENTRIES)) u_store_value_rs (
-    .freezeInput(haltedInner),
+             .ISSUE_WIDTH(STORE_VALUE_RS_ENTRIES), .WRITEBACK_PORTS(2)) u_store_value_rs (
+    .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(svRsAllocInputInner), .allocReadyOutput(svRsAllocReadyInner),
@@ -815,7 +844,7 @@ module rv32_core #(
   assign saRsIssueReadyInner = memIssueReadyInner && !chooseLoadInner;
 
   rv32_alu_unit #(.DEPTH(rv32_pkg::ALU_RESULT_ENTRIES)) u_alu_unit (
-    .freezeInput(haltedInner),
+    .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .executeInput('{valid: intIssueValidInner,
@@ -836,7 +865,7 @@ module rv32_core #(
   );
 
   rv32_mul u_mul_unit (
-    .freezeInput(haltedInner),
+    .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .executeInput('{valid: mulIssueValidInner,
@@ -852,12 +881,12 @@ module rv32_core #(
                    isControl: 1'b0,
                    isCall: 1'b0,
                    isReturn: 1'b0}),
-    .inReadyOutput(mulIssueReadyInner), .outReadyInput(1'b1),
+    .inReadyOutput(mulIssueReadyInner), .outReadyInput(wbMulValidInner),
     .executeOutput(mulExecuteOutputInner)
   );
 
   rv32_div u_div_unit (
-    .freezeInput(haltedInner),
+    .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .executeInput('{valid: divIssueValidInner,
@@ -873,12 +902,12 @@ module rv32_core #(
                    isControl: 1'b0,
                    isCall: 1'b0,
                    isReturn: 1'b0}),
-    .inReadyOutput(divIssueReadyInner), .outReadyInput(1'b1),
+    .inReadyOutput(divIssueReadyInner), .outReadyInput(wbDivValidInner),
     .executeOutput(divExecuteOutputInner)
   );
 
   rv32_bru_unit u_bru_unit (
-    .freezeInput(haltedInner),
+    .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput), .flushInput(globalFlushInner),
     .flushTagInput(globalFlushTagInner),
     .executeInput('{valid: branchIssueValidInner,
@@ -898,15 +927,21 @@ module rv32_core #(
   );
 
   rv32_agu_unit u_agu_unit (
-    .freezeInput(haltedInner),
+    .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .executeInput(memRsIssueOutputInner), .auxiliaryInput(memIssueAuxInner),
-    .inReadyOutput(memIssueReadyInner), .addressOutput(lsuAddressInputInner),
+    .inReadyOutput(memIssueReadyInner), .addressOutput(aguAddressOutputInner),
     .auxiliaryOutput(aguResultAuxInner), .robTagOutput()
   );
 
-  rv32_lsu #(.STORE_DATA_LANES(STORE_VALUE_RS_ENTRIES), .TAGGED_DMEM(TAGGED_DMEM)) u_lsu (
+  always_comb begin
+    lsuAddressInputInner = aguAddressOutputInner;
+    lsuAddressInputInner.valid = aguAddressOutputInner.valid && !recoveryBusyInner;
+  end
+
+  rv32_lsu #(.STORE_DATA_LANES(STORE_VALUE_RS_ENTRIES), .TAGGED_DMEM(TAGGED_DMEM),
+             .WRITEBACK_PORTS(2)) u_lsu (
     .coreStoppedInput(haltedInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
@@ -918,7 +953,7 @@ module rv32_core #(
     .storeDataIndexInput(svRsStoreDataIndexInner),
     .addressInput(lsuAddressInputInner), .addressIndexInput(aguResultAuxInner[2:0]),
     .writebackInput(writebackInputInner),
-    .loadResultOutput(lsuLoadResultOutputInner), .loadResultReadyInput(1'b1),
+    .loadResultOutput(lsuLoadResultOutputInner), .loadResultReadyInput(wbLoadValidInner),
     .robRetireInput('{valid: robCommitFireOutputInner, robTag: robCommitOutputInner.robTag}),
     .storeCompleteOutput(lsuStoreCompleteOutputInner),
     .storeCommitInput(lsuStoreCommitInputInner),
@@ -943,4 +978,21 @@ module rv32_core #(
         trapInner <= 1'b1;
     end
   end
+`ifndef SYNTHESIS
+  always @(posedge clkInput) if (rstNInput && !haltedInner) begin
+    if (globalFlushInner)
+      assert (!robCommitFireInner && !ratCommitInputInner.valid)
+        else $fatal(1, "architectural SRAM read competed with retirement");
+    if (recoveryBusyInner) begin
+      assert (!globalFlushInner && !issueFireInner && !robCommitFireInner &&
+              !writebackInputInner[0].valid && !writebackInputInner[1].valid &&
+              !branchResultLiveInner && !lsuAddressInputInner.valid)
+        else $fatal(1, "pipeline consumed work during recovery");
+      assert (robHeadTagInner == recoveryStepInner.nextTag - recoveryStepInner.offset)
+        else $fatal(1, "ROB head moved during recovery");
+      assert (robCountInner == recoveryStepInner.squashTag - robHeadTagInner + rob_tag_t'(1))
+        else $fatal(1, "ROB recovery window changed during replay");
+    end
+  end
+`endif
 endmodule

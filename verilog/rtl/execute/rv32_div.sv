@@ -211,18 +211,18 @@ module rv32_div (
         (!wantRemainderRegisteredInner && quotientNegativeInner)) ? finishNegatedInner : finishUnsignedInner;
   end
 
-  always_comb begin
-    executeOutput.valid = resultValidInner && (!flushInfoInput.valid ||
-        rob_is_older(resultTagInner, flushInfoInput.robTag));
-    inReadyOutput = !busyInner && (!resultValidInner ||
+  // Output candidates must not depend on their arbitration grant. Keep
+  // ready separate so the shared CDB has no artificial combinational cycle.
+  assign executeOutput.valid = resultValidInner && (!flushInfoInput.valid ||
+      rob_is_older(resultTagInner, flushInfoInput.robTag));
+  assign executeOutput.value = resultInner;
+  assign executeOutput.robTag = resultTagInner;
+  assign executeOutput.destinationPhy = resultPhyInner;
+  assign inReadyOutput = !busyInner && (!resultValidInner ||
         (executeOutput.valid && outReadyInput) ||
         (outReadyInput && flushInfoInput.valid &&
          rob_is_older(flushInfoInput.robTag, resultTagInner))) &&
         (!executeInput.valid || !flushInfoInput.valid || rob_is_older(executeInput.robTag, flushInfoInput.robTag));
-    executeOutput.value = resultInner;
-    executeOutput.robTag = resultTagInner;
-    executeOutput.destinationPhy = resultPhyInner;
-  end
 
   always_ff @(posedge clkInput or negedge rstNInput) begin
     if (!rstNInput) begin

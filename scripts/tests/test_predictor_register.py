@@ -1,4 +1,4 @@
-"""Active register predictor regression; SRAM BTB units remain separate tests."""
+"""Register BTB/direction regression; SRAM RAS recovery has its own tests."""
 from pathlib import Path
 import shutil
 import subprocess
@@ -16,6 +16,7 @@ class PredictorRegisterTests(unittest.TestCase):
                                         dir=temporary_root if temporary_root.is_dir() else None) as directory:
             work = Path(directory)
             sources = [ROOT/'verilog/rtl/common/rv32_pkg.sv',
+                       ROOT/'scripts/ram/sram_fakeram.sv',
                        *[ROOT/'verilog/rtl/predictor'/name for name in (
                             'rv32_bpu_direction.sv', 'rv32_bpu_btb.sv',
                            'rv32_bpu_ras.sv', 'rv32_bpu_checkpoint.sv', 'rv32_predictor.sv')],

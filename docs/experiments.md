@@ -1,6 +1,6 @@
 # 架构实验记录（历史快照）
 
-记录容量、Cache、BTB 的历史对照；决策脉络见 [process.md](process.md)。各节注明实验边界，不同 Cache、预测管线、退出方式或外存模型不得混作单变量对照。原始报告位于未纳入 Git 的 `build/`，不保证随克隆提供。
+记录容量、Cache、BTB 和恢复协议的功能/IPC 对照；决策脉络见 [process.md](process.md)，完整课程顶层 PPA 见 [assessment-results.md](assessment-results.md)。各节注明实验边界，不同 Cache、预测管线、退出方式或外存模型不得混作单变量对照。原始报告位于未纳入 Git 的 `build/`，不保证随克隆提供。
 
 ## 1. 核心容量软件消融
 
@@ -82,15 +82,9 @@ metadata 为 4×16×26（tag/type）、target 为 4×16×30，另有 64 valid＋
 - 查询仅等待本 bank 已接纳的较老 intent，其他 bank 可继续训练；新批次与查询同沿接受时 read-before-write。
 - 回复背压锁存 metadata/target，训练仍推进；一次只接纳一个活动批次，批次间仍可能队首阻塞。没有 pending FIFO 全旁路，也不是四组独立训练 FIFO。
 
-### 历史整核适配（已退出活动路径）
+### 验证与历史整核适配
 
-当时 I$/BTB 成对启动，前端 pending 汇合指令/预测，只有一个未采纳预测；
-查询保存方向/RAS 旧快照，取指接受分配 checkpoint，完整预测采纳才推进 PC/GHR。
-redirect 清预测缓冲，以持久 killed 标志排掉旧响应，同 PC redirect 也不能复活事务。
-4 项完整批次训练 FIFO 不跨拍合并；BRU/JAL 执行和跳转入 FQ 前预留 credit，保持 `FIFO占用＋未兑现预留≤4`，入队前按 ROB 存活/恢复年龄筛选。
-旧整核适配已退役，下列仅为独立模块入口。
-
-仍有效的独立验证/综合入口：
+旧整核中 I$/BTB 成对启动、pending 汇合指令/预测，只有一个未采纳预测；保存方向/RAS 快照，完整预测采纳才推进 PC/GHR，取指接受分配 checkpoint。redirect 以持久 killed 排空旧预测（同 PC 也不可复活）。4 项批次训练 FIFO 不跨拍合并，执行/预译码预留 credit，保持 `FIFO占用＋未兑现预留≤4`，并按 ROB 身份/年龄筛选。该适配已退役，下列仅为仍有效的独立入口：
 
 ```bash
 python3 -B -m unittest discover -s scripts/tests -p 'test_btb_sram.py' -v
@@ -174,3 +168,41 @@ Yosys 0.63 / OpenSTA 3.1.0，原 ASAP7 库摘要、opt、2 ns、INVx1/5 fF、STA
 `faa39fa91078ccc554dc862178e0ec7defeaf7bc35766de34f40dc74043e48c1`，输入/库摘要前后相同。
 报告：`build/synth/btb-sram4-mshr4-20261016-final/cached/opt/`；大型工件原保存在
 `/home/hhslx/.cache/opencode-synth/btb4-mshr4-persistent-20261016/cached/opt/`。
+
+<a id="recovery4"></a>
+
+## 5. 已提交 SRAM＋四拍恢复（2026-10-17）
+
+实现布局、游标与暂停范围统一见 [backend.md](backend.md#已提交-sram-与四拍重放)，PPA 及关键路径只保留在 [assessment-results.md](assessment-results.md#course-ppa)。
+
+初始实验只改 RTL，不改两软件及 golden；基线是开始实验时含未提交改动的实际工作区快照，不是 Git HEAD。**后续两软件同步已完成**：四构建 25/25，且各自对真实 RTL 的 25 例逐拍/独立 ISA 通过，共同 golden 为不含 boot 15,541,955 拍、退休 7,303,489。记录在父工作区 `sync/RECOVERY4-SYNC-20261017.md`，不再将“未同步软件”作为当前结论。
+
+### 定向与课程验收
+
+```bash
+python3 -m unittest scripts.tests.test_recovery4 scripts.tests.test_predictor_register -v
+```
+
+- 20 组模块用例：SRAM 复位屏蔽、完整 RAS 内容、空/满栈、pop-push、四拍游标回绕/暂停、RAT 最年轻映射、free list 逐拍回收及 FIFO 顺序。
+- 真实核心：更老 Load 在恢复第 2 拍返回，7 条正确退休、1 次重定向、4 个重放周期，结果保持且错路退出 Store 未退休；寄存器 BTB/方向预测专项通过。
+- AppImage Yosys 0.33 展开及 FakeRAM 替换识别 `fakeram_asap7_1x6` / `fakeram_asap7_1x32`，不是提交内容退化成触发器。初始产物 `elaboration-final/core/ram/` 仅为宏识别验收，后续完整映射/STA 见 PPA 记录。
+- 初始 `--assert` 课程回归 25/25 输出正确（19 correctness＋6 perf），含 boot 总周期 15,541,980；改前实测 14,827,179→15,541,980（＋4.82%）。初始输出验收不等于后续逐拍验收，二者证据分开。
+
+### 六项课程性能对照
+
+相同课程镜像、外存延迟 10 拍、均校验输出；IPC 分子来自课程 `metrics.json`，周期为框架总周期而非 core 周期。
+
+| 用例 | 单拍恢复 cycles | SRAM＋四拍恢复 cycles |
+|---|---:|---:|
+| median | 14,519 | 16,386 |
+| multiply | 27,468 | 30,374 |
+| qsort | 267,430 | 310,181 |
+| rsort | 331,437 | 331,560 |
+| towers | 9,729 | 10,464 |
+| vvadd | 6,858 | 6,877 |
+| **合计** | **657,441** | **705,842（＋7.36%）** |
+| **几何平均 IPC** | **0.5893803** | **0.5471766（−7.16%）** |
+
+结论：恢复 SRAM 化改善面积，但固定四拍重放损失 IPC，不能称全面性能改善。宽字小容量宏仍为 FakeRAM 拟合，不是实际工艺宏签核。
+
+源码/摘要、初始构建/测试、`final-course-report.json`、`comparison.json` 及性能原始输出在 `/tmp/opencode/recovery4-20261017/`；完整综合、源快照、路径核验与对照在父工作区 `build/recovery4-ppa-20261017/`，定向回归再次 3/3 通过。

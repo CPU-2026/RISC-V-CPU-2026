@@ -1,6 +1,6 @@
 # RISC-V CPU 2026
 
-SystemVerilog **RV32IM 乱序处理器**：单宽取指/发射/提交、七池保留站、乱序执行、四路并行写回、按序提交。
+SystemVerilog **RV32IM 乱序处理器**：单宽取指/发射/提交、七池保留站、乱序执行、两路写回、按序提交。
 
 
 [`student_top.sv`](verilog/rtl/student_top.sv) 已连接实际 core、SRAM I$/D$ 与共享 AXI4-Lite 主机。
@@ -35,7 +35,7 @@ flowchart TB
     ISSUE["RAT / PRF48<br/>重命名与单发射"]
     RS["七池保留站<br/>共 12 槽"]
     EXEC["ALU / MUL / DIV<br/>BRU / AGU"]
-    WB["四路 CDB 写回"]
+    WB["两路 CDB 写回"]
     ROB["ROB16<br/>按序提交"]
     COMMIT["更新提交映射 / 回收旧物理寄存器<br/>提交跟踪 / MMIO 退出 / 异常"]
     LSU["LSU<br/>LQ8 / SQ8"]
@@ -86,7 +86,7 @@ flowchart LR
     SELECT["最老仲裁"]
     AGU["共享 AGU<br/>地址结果级"]
     LSU["LSU<br/>转发 / 消歧"]
-    WB["四路 CDB"]
+    WB["两路 CDB<br/>ALU 独占 / MUL·DIV·LQ 共享"]
     STATE["PRF 写值<br/>ROB 完成"]
     CTRL["控制流结算"]
     ISSUE --> RSI & RSM & RSD & RSB & RSL & RSA & RSV
@@ -106,7 +106,7 @@ flowchart LR
     WB -.->|唤醒| RS
 ```
 
-PRF 使用 3 读/4 写口与 FIFO 空闲队列。MUL 为 Booth → CSA → 最终加法。
+PRF 在 core 中使用 3 读/2 写口与 FIFO 空闲队列。MUL 为 Booth → CSA → 最终加法。
 CDB 同拍写值并捕获唤醒，下拍才派发依赖项；BRU、Store ready 不占 CDB，JAL/JALR 链接值在分配时预置。
 LSU 单源完整覆盖转发，最多 8 个独立运输 owner 按 ID 认领乱序返回；Load 在退休释放 LQ，Store 在内存接受后释放 SQ。
 
@@ -136,11 +136,11 @@ flowchart TB
     FLUSH -.->|逻辑取消| IMEM
 ```
 
-恢复从已提交 RAS 与存活 ROB 重放；已提交 Store 保留，错路 Load 返回排空。总线适配器丢弃旧物理取指事务的迟到响应。
+恢复采用已提交 RAT/RAS 同步 SRAM 基线读 1 拍＋ROB 重放 4 拍，每拍最多处理 4 条，RAT/RAS/free list 共用恢复指针；恢复窗口暂停发射和退休，访存返回继续排空。布局与时序见 [backend.md](docs/backend.md)。已提交 Store 保留，错路 Load 返回排空；总线适配器丢弃旧物理取指事务的迟到响应。
 
 ## 使用与目录
 
-宿主需要 Python 3.10+、GNU Make、G++（C++17）与 binutils。工具配置和完整命令见[课程说明](docs/course.md)。
+宿主需要 Python 3.10+、GNU Make、G++（C++17）与 binutils。工具配置和完整命令见[课程模板](docs/template.md)，本工程补充见[使用与验证](docs/course.md)。
 
 ```bash
 git submodule update --init --recursive
@@ -168,9 +168,4 @@ make synth MODE=opt CLOCK_PERIOD_NS=2.0
 
 ## 文档
 
-- [架构探索过程（八月底至今）](docs/process.md)
-- [课程、配置与验证](docs/course.md)
-- [前端与预测](docs/frontend.md) · [后端与执行](docs/backend.md) · [访存队列](docs/memory.md)
-- [缓存、MSHR 与行接口](docs/cache.md) · [公共类型与信号约定](docs/package.md)
-- [AXI4-Lite 协议](docs/axi4-lite.md) · [SRAM 接口](docs/sram.md)
-- [综合评估方法](docs/assessment.md) · [历史面积与时序](docs/assessment-results.md) · [架构实验](docs/experiments.md)
+完整分类见 [文档索引](docs/README.md)。[课程模板](docs/template.md)与[实现计划](docs/plan.md)保留原文；当前实现以专题文档及对应源码为准。

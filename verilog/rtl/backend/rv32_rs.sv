@@ -4,7 +4,8 @@ module rv32_rs #(
   // Lanes exposed by the wide issue port.  ISSUE_WIDTH == 1 keeps the pool
   // single issue; a pool whose consumer accepts every valid lane in the same
   // cycle (storeValue) passes its DEPTH.
-  parameter int unsigned ISSUE_WIDTH = 1
+  parameter int unsigned ISSUE_WIDTH = 1,
+  parameter int unsigned WRITEBACK_PORTS = 4
 ) (
   input  logic                   clkInput,
   input  logic                   rstNInput,
@@ -15,7 +16,7 @@ module rv32_rs #(
   output logic                   allocReadyOutput,
   input  logic [AUX_W-1:0]       allocAuxInput,
 
-  input  rv32_pkg::cdb_result_t [3:0] writebackInput,
+  input  rv32_pkg::cdb_result_t [WRITEBACK_PORTS-1:0] writebackInput,
 
   output rv32_pkg::rs_issue_output_t issueOutput,
   input  logic                   issueReadyInput,
@@ -63,6 +64,22 @@ module rv32_rs #(
   logic [DEPTH-1:0] laneTakenInner;
   logic laneFoundInner [ISSUE_WIDTH];
   logic [INDEX_W-1:0] laneIndexInner [ISSUE_WIDTH];
+
+  cdb_result_t allocSrc1WbInner, allocSrc2WbInner;
+  cdb_result_t src1WbInner [DEPTH], src2WbInner [DEPTH];
+  function automatic cdb_result_t matching_writeback(input phy_tag_t tag);
+    matching_writeback = '0;
+    // Preserve the original lowest-port priority.
+    for (int portIndex = WRITEBACK_PORTS-1; portIndex >= 0; portIndex--)
+      if (writebackInput[portIndex].valid && writebackInput[portIndex].phyTag == tag)
+        matching_writeback = writebackInput[portIndex];
+  endfunction
+  assign allocSrc1WbInner = matching_writeback(allocInput.source1Tag);
+  assign allocSrc2WbInner = matching_writeback(allocInput.source2Tag);
+  for (genvar row = 0; row < DEPTH; row++) begin : g_wakeup
+    assign src1WbInner[row] = matching_writeback(src1TagInner[row]);
+    assign src2WbInner[row] = matching_writeback(src2TagInner[row]);
+  end
 
   function automatic logic rs_is_older(
     input rob_tag_t candidateInput,
@@ -149,36 +166,18 @@ module rv32_rs #(
     allocSrc1ReadyResolvedInner = allocInput.source1Ready;
     allocSrc1ValueResolvedInner = allocInput.source1Value;
     if (!allocSrc1ReadyResolvedInner) begin
-      if (writebackInput[0].valid && (writebackInput[0].phyTag == allocInput.source1Tag)) begin
+      if (allocSrc1WbInner.valid) begin
         allocSrc1ReadyResolvedInner = 1'b1;
-        allocSrc1ValueResolvedInner = writebackInput[0].value;
-      end else if (writebackInput[1].valid && (writebackInput[1].phyTag == allocInput.source1Tag)) begin
-        allocSrc1ReadyResolvedInner = 1'b1;
-        allocSrc1ValueResolvedInner = writebackInput[1].value;
-      end else if (writebackInput[2].valid && (writebackInput[2].phyTag == allocInput.source1Tag)) begin
-        allocSrc1ReadyResolvedInner = 1'b1;
-        allocSrc1ValueResolvedInner = writebackInput[2].value;
-      end else if (writebackInput[3].valid && (writebackInput[3].phyTag == allocInput.source1Tag)) begin
-        allocSrc1ReadyResolvedInner = 1'b1;
-        allocSrc1ValueResolvedInner = writebackInput[3].value;
+        allocSrc1ValueResolvedInner = allocSrc1WbInner.value;
       end
     end
 
     allocSrc2ReadyResolvedInner = allocInput.source2Ready;
     allocSrc2ValueResolvedInner = allocInput.source2Value;
     if (!allocSrc2ReadyResolvedInner) begin
-      if (writebackInput[0].valid && (writebackInput[0].phyTag == allocInput.source2Tag)) begin
+      if (allocSrc2WbInner.valid) begin
         allocSrc2ReadyResolvedInner = 1'b1;
-        allocSrc2ValueResolvedInner = writebackInput[0].value;
-      end else if (writebackInput[1].valid && (writebackInput[1].phyTag == allocInput.source2Tag)) begin
-        allocSrc2ReadyResolvedInner = 1'b1;
-        allocSrc2ValueResolvedInner = writebackInput[1].value;
-      end else if (writebackInput[2].valid && (writebackInput[2].phyTag == allocInput.source2Tag)) begin
-        allocSrc2ReadyResolvedInner = 1'b1;
-        allocSrc2ValueResolvedInner = writebackInput[2].value;
-      end else if (writebackInput[3].valid && (writebackInput[3].phyTag == allocInput.source2Tag)) begin
-        allocSrc2ReadyResolvedInner = 1'b1;
-        allocSrc2ValueResolvedInner = writebackInput[3].value;
+        allocSrc2ValueResolvedInner = allocSrc2WbInner.value;
       end
     end
   end
@@ -209,33 +208,15 @@ module rv32_rs #(
           busyInner[seqIndexInner] <= 1'b0;
         end else if (busyInner[seqIndexInner]) begin
           if (!src1ReadyInner[seqIndexInner]) begin
-            if (writebackInput[0].valid && (writebackInput[0].phyTag == src1TagInner[seqIndexInner])) begin
+            if (src1WbInner[seqIndexInner].valid) begin
               src1ReadyInner[seqIndexInner] <= 1'b1;
-              src1ValueInner[seqIndexInner] <= writebackInput[0].value;
-            end else if (writebackInput[1].valid && (writebackInput[1].phyTag == src1TagInner[seqIndexInner])) begin
-              src1ReadyInner[seqIndexInner] <= 1'b1;
-              src1ValueInner[seqIndexInner] <= writebackInput[1].value;
-            end else if (writebackInput[2].valid && (writebackInput[2].phyTag == src1TagInner[seqIndexInner])) begin
-              src1ReadyInner[seqIndexInner] <= 1'b1;
-              src1ValueInner[seqIndexInner] <= writebackInput[2].value;
-            end else if (writebackInput[3].valid && (writebackInput[3].phyTag == src1TagInner[seqIndexInner])) begin
-              src1ReadyInner[seqIndexInner] <= 1'b1;
-              src1ValueInner[seqIndexInner] <= writebackInput[3].value;
+              src1ValueInner[seqIndexInner] <= src1WbInner[seqIndexInner].value;
             end
           end
           if (!src2ReadyInner[seqIndexInner]) begin
-            if (writebackInput[0].valid && (writebackInput[0].phyTag == src2TagInner[seqIndexInner])) begin
+            if (src2WbInner[seqIndexInner].valid) begin
               src2ReadyInner[seqIndexInner] <= 1'b1;
-              src2ValueInner[seqIndexInner] <= writebackInput[0].value;
-            end else if (writebackInput[1].valid && (writebackInput[1].phyTag == src2TagInner[seqIndexInner])) begin
-              src2ReadyInner[seqIndexInner] <= 1'b1;
-              src2ValueInner[seqIndexInner] <= writebackInput[1].value;
-            end else if (writebackInput[2].valid && (writebackInput[2].phyTag == src2TagInner[seqIndexInner])) begin
-              src2ReadyInner[seqIndexInner] <= 1'b1;
-              src2ValueInner[seqIndexInner] <= writebackInput[2].value;
-            end else if (writebackInput[3].valid && (writebackInput[3].phyTag == src2TagInner[seqIndexInner])) begin
-              src2ReadyInner[seqIndexInner] <= 1'b1;
-              src2ValueInner[seqIndexInner] <= writebackInput[3].value;
+              src2ValueInner[seqIndexInner] <= src2WbInner[seqIndexInner].value;
             end
           end
         end

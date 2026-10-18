@@ -24,7 +24,7 @@ LQ 有效位分配首个空槽，广播后保留到 ROB 退休；SQ 以 epoch �
 | `loadAllocationInput` / `storeAllocationInput` | ready 握手分配，`loadAllocIndexOutput/storeAllocIndexOutput` 仅此时代表新身份。 |
 | `addressInput/addressIndexInput` | 地址、类型和槽号；完整 tag 须匹配旧活动槽或同拍实际分配项，并核验恢复年龄。 |
 | `storeDataInput/storeDataIndexInput` | 默认一 lane，core 配置两 lane；完整 tag 匹配后拍末置数据 ready。core 数组升序、LSU 端口降序，不能按同数字 lane 假定事件对应。 |
-| `writebackInput[4]` | 非零 dataTag 可 CDB 唤醒、分配拍旁路；core 置 dataTag=0，改由 StoreValue 交付。 |
+| `writebackInput[WRITEBACK_PORTS]` | 默认四口、core 两口；非零 dataTag 可 CDB 唤醒、分配拍旁路。core 置 dataTag=0，改由 StoreValue 交付。 |
 | `loadResultOutput/loadResultReadyInput` | 最老已完成且未广播 Load；握手只置已广播。 |
 | `robRetireInput` | 实际退休释放匹配 LQ，或置 SQ committed。 |
 | `storeCompleteOutput` | 拍初有效、未提交、地址/数据齐的 SQ ready/epoch 位图；ROB 拍末置 ready，下拍才退休。 |
@@ -42,15 +42,19 @@ LQ 有效位分配首个空槽，广播后保留到 ROB 退休；SQ 以 epoch �
 Load 地址交付查询旧 SQ。Store 地址/数据通知使用新到字段与旧态另一字段，同起点、同宽度匹配；两个新字段不互相旁路。合格 LQ 可同拍拍末落值，下拍参与 CDB。
 
 1. **转发**：找最年轻字节重叠 Store，须单源完整覆盖、数据就绪，且比最后未知地址 Store 年轻。不能跳过年轻部分覆盖项，不多源拼接、不与部分内存返回合并。已提交项按 SQ FIFO 次序参与，不用退休后的 ROB tag 排序。
-2. **Cache 准入**：转发失败后，更老未提交 Store 地址未知或有任意字节重叠均阻塞 Load。按真实 1/2/4 B 宽度消歧，返回按冻结的宽度/符号扩展。
+2. **Cache 准入**：转发失败后，更老未提交 Store 地址未知或有任意字节重叠均阻塞 Load。按真实 1/2/4 B 宽度消歧；
+   LQ 存原始 32 bit 字，宽度/符号在该行读出时统一扩展一次（转发、写回两条来源同一份漏斗）。
 3. **发送**：SQ 头已提交或本拍实际退休时优先发送，否则选未阻塞 Load。Store 使用原始字节地址，strobe=`0001/0011/1111`，从该地址起排列。
 
 ## 运输身份与迟到返回
 
-最多 8 个独立 owner，接受时冻结 LQ slot、完整 ROB tag、size、unsigned、drop。实际 cached 顶层 `TAGGED_DMEM=1`，允许乱序返回；`TAGGED_DMEM=0` 只兼容旧有序裸核。
+最多 8 个独立 owner，接受时冻结 LQ slot、完整 ROB tag、drop。宽度/符号不另存副本：返回写回前必须通过
+「行活动 + tag 相同 + 已发送 + 未 READY」四项校验，tag 相同即证明行未被复用，行上冻结的 size/unsigned
+就是该事务的宽度/符号。实际 cached 顶层 `TAGGED_DMEM=1`，允许乱序返回；`TAGGED_DMEM=0` 只兼容旧有序裸核。
 
 - 旧满停收，不能先握手再丢请求；取消不提前复用 owner。
-- 返回只释放对应 owner，写 LQ 须匹配活动、已发送且尚未 READY 的原身份。错路或已转发返回仅释放运输，不能污染复用槽，也不能从新槽读取旧事务宽度/符号。
+- 返回只释放对应 owner，写 LQ 须匹配活动、已发送且尚未 READY 的原身份。错路或已转发返回仅释放运输，
+  不能污染复用槽；上面的四项校验同时保证不会读到新槽的宽度/符号。
 - early restart 只完成一次 LSU 运输；Cache owner/MSHR 仍保留到完整行发布。后续 CDB、依赖派发、LQ 退休边界不变。
 
 验证入口：`scripts/tests/test_lsu_tagged.py`；课程整核记录见 [course.md](course.md)。

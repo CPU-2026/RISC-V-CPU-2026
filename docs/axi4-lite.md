@@ -1,6 +1,18 @@
 # AXI4-Lite 协议与内存约定
 
-课程顶层：[`student_top.sv`](../verilog/rtl/student_top.sv)；外部从机：[`scripts/sim.cpp`](../scripts/sim.cpp)。内部主机队列与退出控制见 [course.md](course.md)。
+课程顶层：[`student_top.sv`](../verilog/rtl/student_top.sv)；外部从机：[`scripts/sim.cpp`](../scripts/sim.cpp)。退出冻结流程见 [course.md](course.md)，优化历史及测量只保留在 [assessment-results.md](assessment-results.md)。
+
+## 当前主机结构
+
+| 模块 | 容量与完成规则 |
+|---|---|
+| AXIFetch | 8 项独立行运输槽，每个 64 B I$ 行拆 16 次 32 bit 读；占用计数及分配/issue/collect epoch 游标推进。完整接收才向 I$ 呈现，恢复取消逻辑请求并排空旧 R，但保留已断言未握手的 AR。 |
+| AXIData | 读写合计 8 条行信用，共享 8×32 B payload/描述符；每 D$ 行 8 次 32 bit 操作，MMIO 仅 1 次完整字写。五个 5 bit epoch 游标推进 AR/R/AW/W/B，AW/W 独立；收齐全部 R/B 才向 D$ 呈现带地址/MSHR ID 的完成，并保持至实际消费再释放槽。 |
+| AXIBus | 64 项 R 归属 FIFO，AR 成功握手才入队；两源竞争且成功接受才翻转轮询，AR 背压锁定选择。 |
+
+AXIData 从旧空闲位图分配，同时一读一写不得别名；旧满不借用本拍释放，最后信用写优先。两个顺序环保留 16 行槽索引以适配 4 bit 序列索引，不表示 16 条信用。AR/AW 复用地址进度字段，MMIO 不改无效尾数据。
+
+两适配器 payload 按 32 bit 字组织、不复位、不在分配时清零，由完整接收/描述符资格屏蔽旧值；仍为寄存器，未新增 SRAM 仲裁。AXI 主机对应软件 `src/AXI/AXI.cpp`；历史 16 信用验证不能当成当前容量配置。
 
 ## 顶层端口
 

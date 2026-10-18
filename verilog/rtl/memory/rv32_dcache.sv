@@ -38,7 +38,6 @@ module rv32_dcache #(
 
   typedef struct packed {
     dcache_cpu_request_input_t request;
-    logic [31:0] raw;
     logic [WAY_W-1:0] way;
     logic [1:0] miss;
     logic hasMiss, active, ready, deferred;
@@ -46,7 +45,6 @@ module rv32_dcache #(
   typedef struct packed {
     logic [31:0] line;
     logic [TAG_W-1:0] victimTag;
-    logic [DCACHE_LINE_BITS-1:0] victimLine;
     logic [REQUEST_W-1:0] owner;
     logic [WAY_W-1:0] way;
     logic [WORD_INDEX_W-1:0] fillWord;
@@ -54,6 +52,10 @@ module rv32_dcache #(
   } miss_entry_t;
   request_entry_t requestInner [REQUEST_DEPTH];
   miss_entry_t missesInner [MSHR_DEPTH];
+  logic [31:0] rawInner [REQUEST_DEPTH];
+  logic [DCACHE_LINE_BITS-1:0] victimPayloadInner [MSHR_DEPTH];
+  logic [OFFSET_W:0] byteEndInner [REQUEST_DEPTH];
+  logic [REQUEST_DEPTH-1:0] storeHazardInner, storeAllocationHazardInner;
   logic [REQUEST_DEPTH-1:0] olderInner [REQUEST_DEPTH];
   logic [COUNT_W-1:0] countInner;
   logic [REQUEST_W-1:0] cursorInner, readIndexInner;
@@ -68,13 +70,30 @@ module rv32_dcache #(
   logic dataWriteBankInner [WAYS][WORDS_PER_LINE];
   logic metaEnableInner [WAYS], metaWriteInner [WAYS];
   logic [META_W-1:0] metaRdataInner [WAYS], metaWdataInner;
+  logic [INDEX_W-1:0] dataAddressBankInner [WAYS][WORDS_PER_LINE];
+  logic [INDEX_W-1:0] metaAddressInner [WAYS];
+  logic [INDEX_W-1:0] lookupAddressInner;
+`ifndef SYNTHESIS
+  // Logical grant address retained for existing read-only test probes. It is
+  // not a hardware broadcast: every enabled physical port is checked below.
   logic [INDEX_W-1:0] sramAddressInner;
+  always_comb begin
+    sramAddressInner = '0;
+    if (rstNInput && fillBeatInner)
+      sramAddressInner = set_of(missesInner[fillMissInner].line);
+    else if (rstNInput && storeInner >= 0)
+      sramAddressInner = set_of(requestInner[storeInner].request.address);
+    else if (rstNInput && lookupInner >= 0)
+      sramAddressInner = set_of(requestInner[lookupInner].request.address);
+  end
+`endif
   logic [REQUEST_DEPTH-1:0] activeInner, releasedInner;
   integer firstInner, hitWayInner, freeMissInner, allocationInner;
-  integer lookupInner, responseInner, storeInner, allocateMissInner;
+  integer lookupInner, lookupCandidateInner, responseInner, storeInner, allocateMissInner;
   integer mergeSlotInner, mergeMissInner, fillMissInner, writeAckInner;
   integer readMissInner, writeMissInner;
   logic fillBeatInner, fillFireInner, firstFillInner, earlyInner, acceptInner;
+  logic [31:0] readHitRawInner;
   logic [WAY_W-1:0] victimWayInner;
 
   function automatic int bytes_for_size(input logic [1:0] sizeInput);
@@ -97,12 +116,24 @@ module rv32_dcache #(
     input logic [DCACHE_LINE_BITS-1:0] lineData,
     input dcache_cpu_request_input_t request
   );
-    logic [DCACHE_LINE_BITS-1:0] shifted;
-    shifted = lineData >> (32'(request.address[OFFSET_W-1:0]) << 3);
+    // Byte-granular extract as word-select + 4-way byte rotate. Bit-identical to
+    // lineData >> (offset*8): the 64-bit zero pad reproduces the shift's
+    // fill-with-zero past the line end, and the size case truncates the window.
+    logic [DCACHE_LINE_BITS+63:0] padded;
+    logic [63:0] pair;
+    logic [31:0] win;
+    padded = {64'b0, lineData};
+    pair = padded[{request.address[OFFSET_W-1:2], 2'b00} * 8 +: 64];
+    unique case (request.address[1:0])
+      2'd0: win = pair[31:0];
+      2'd1: win = {pair[39:32], pair[31:8]};
+      2'd2: win = {pair[47:32], pair[31:16]};
+      default: win = {pair[55:32], pair[31:24]};
+    endcase
     case (request.size)
-      MEM_BYTE: return {24'b0, shifted[7:0]};
-      MEM_HALF: return {16'b0, shifted[15:0]};
-      default: return shifted[31:0];
+      MEM_BYTE: return {24'b0, win[7:0]};
+      MEM_HALF: return {16'b0, win[15:0]};
+      default: return win;
     endcase
   endfunction
   function automatic logic [DCACHE_LINE_BITS-1:0] sram_line(input int way);
@@ -149,26 +180,29 @@ module rv32_dcache #(
     for (int m = 0; m < MSHR_DEPTH; m++)
       if (missesInner[m].valid && missesInner[m].line[OFFSET_W+:INDEX_W] == address[OFFSET_W+:INDEX_W]) set_locked = 1;
   endfunction
-  function automatic logic store_hazard(input int slot, input logic allocatingMiss);
-    logic overlap;
-    logic [31:0] loadBytes, storeBytes;
-    loadBytes = requestInner[slot].request.size == MEM_BYTE ? 32'd1 :
-      requestInner[slot].request.size == MEM_HALF ? 32'd2 : 32'd4;
-    store_hazard = 0;
-    for (int s = 0; s < REQUEST_DEPTH; s++) begin
-      storeBytes = requestInner[s].request.size == MEM_BYTE ? 32'd1 :
-        requestInner[s].request.size == MEM_HALF ? 32'd2 : 32'd4;
-      overlap = requestInner[slot].request.address >= requestInner[s].request.address ?
-        requestInner[slot].request.address - requestInner[s].request.address <
-          storeBytes :
-        requestInner[s].request.address - requestInner[slot].request.address <
-          loadBytes;
-      if (requestInner[s].active && requestInner[s].request.write && olderInner[s][slot] &&
-          (overlap || (allocatingMiss && requestInner[s].request.address[OFFSET_W+:INDEX_W] ==
-                                             requestInner[slot].request.address[OFFSET_W+:INDEX_W])))
-        store_hazard = 1;
+  // One shared hazard network. Legal requests stay within one cache line, so
+  // overlap needs a line equality and small offset comparisons, not per-pair
+  // full-width subtraction. Miss allocation additionally preserves set order.
+  always_comb begin : store_hazards
+    for (int i = 0; i < REQUEST_DEPTH; i++)
+      byteEndInner[i] = (OFFSET_W+1)'(requestInner[i].request.address[OFFSET_W-1:0]) +
+        (OFFSET_W+1)'(bytes_for_size(requestInner[i].request.size)-1);
+    storeHazardInner = '0;
+    storeAllocationHazardInner = '0;
+    for (int i = 0; i < REQUEST_DEPTH; i++) begin
+      for (int s = 0; s < REQUEST_DEPTH; s++) begin
+        if (requestInner[s].active && requestInner[s].request.write && olderInner[s][i]) begin
+          if (requestInner[i].request.address[31:OFFSET_W] == requestInner[s].request.address[31:OFFSET_W] &&
+              (OFFSET_W+1)'(requestInner[i].request.address[OFFSET_W-1:0]) <= byteEndInner[s] &&
+              (OFFSET_W+1)'(requestInner[s].request.address[OFFSET_W-1:0]) <= byteEndInner[i])
+            storeHazardInner[i] = 1;
+          if (requestInner[s].request.address[OFFSET_W+:INDEX_W] == requestInner[i].request.address[OFFSET_W+:INDEX_W])
+            storeAllocationHazardInner[i] = 1;
+        end
+      end
     end
-  endfunction
+    storeAllocationHazardInner |= storeHazardInner;
+  end
   function automatic logic victim_hazard(input int miss);
     victim_hazard = 0;
     for (int m = 0; m < MSHR_DEPTH; m++)
@@ -246,6 +280,11 @@ module rv32_dcache #(
           metaRdataInner[w][TAG_W-1:0] == requestInner[readIndexInner].request.address[31:OFFSET_W+INDEX_W])
         hitWayInner = w;
     victimWayInner = select_victim(set_of(requestInner[readIndexInner].request.address));
+    // One shared read-hit extractor. The eight request rows differ only in
+    // offset/size and exactly one row owns the granted SRAM read, so the
+    // per-row copies of this funnel carried seven redundant instances.
+    readHitRawInner = extract_raw(sram_line(hitWayInner >= 0 ? hitWayInner : 0),
+                                  requestInner[readIndexInner].request);
     writeAckInner = -1;
     id = int'(memWriteResponseInput.transaction);
     if (memWriteResponseInput.valid && missesInner[id].valid && missesInner[id].dirty &&
@@ -269,7 +308,7 @@ module rv32_dcache #(
     earlyInner = fillBeatInner && !requestInner[owner].request.write && !missesInner[fillMissInner].responded;
     candidates = 0;
     for (int i = 0; i < REQUEST_DEPTH; i++)
-      if (requestInner[i].active && !requestInner[i].request.write && !store_hazard(i, 0) &&
+      if (requestInner[i].active && !requestInner[i].request.write && !storeHazardInner[i] &&
           (requestInner[i].ready || (readValidInner && int'(readIndexInner) == i && hitWayInner >= 0)))
         candidates[i] = 1;
     responseInner = earlyInner ? owner : oldest_request(candidates);
@@ -279,8 +318,8 @@ module rv32_dcache #(
       cpuResponseOutput.transaction = requestInner[responseInner].request.transaction;
       if (earlyInner) cpuResponseOutput.readData = extract_raw(memResponseInput.data, requestInner[responseInner].request);
       else if (readValidInner && int'(readIndexInner) == responseInner && hitWayInner >= 0)
-        cpuResponseOutput.readData = extract_raw(sram_line(hitWayInner), requestInner[responseInner].request);
-      else cpuResponseOutput.readData = requestInner[responseInner].raw;
+        cpuResponseOutput.readData = readHitRawInner;
+      else cpuResponseOutput.readData = rawInner[responseInner];
     end
     storeInner = -1;
     if (!fillBeatInner && firstInner >= 0 && requestInner[firstInner].request.write &&
@@ -288,14 +327,14 @@ module rv32_dcache #(
         (requestInner[firstInner].ready || (readValidInner && int'(readIndexInner) == firstInner && hitWayInner >= 0)))
       storeInner = firstInner;
     allocateMissInner = -1;
-    if (readValidInner && hitWayInner < 0 && !store_hazard(int'(readIndexInner), 1) &&
+    if (readValidInner && hitWayInner < 0 && !storeAllocationHazardInner[readIndexInner] &&
         find_miss(line_of(requestInner[readIndexInner].request.address)) < 0 &&
         !set_locked(requestInner[readIndexInner].request.address)) allocateMissInner = freeMissInner;
     candidates = 0;
     for (int i = 0; i < REQUEST_DEPTH; i++) begin
       id = find_miss(line_of(requestInner[i].request.address));
       if (!readValidInner && requestInner[i].active && !requestInner[i].ready &&
-          !requestInner[i].hasMiss && !requestInner[i].request.write && !store_hazard(i, 1) && id >= 0 &&
+          !requestInner[i].hasMiss && !requestInner[i].request.write && !storeAllocationHazardInner[i] && id >= 0 &&
           !requestInner[missesInner[id].owner].request.write && missesInner[id].fillWord == 0 &&
           !missesInner[id].responded && fillMissInner != id) candidates[i] = 1;
     end
@@ -303,20 +342,24 @@ module rv32_dcache #(
     mergeMissInner = mergeSlotInner >= 0 ? find_miss(line_of(requestInner[mergeSlotInner].request.address)) : -1;
     candidates = 0;
     for (int i = 0; i < REQUEST_DEPTH; i++)
-      if (!readValidInner && !fillBeatInner && storeInner < 0 && requestInner[i].active &&
+      if (requestInner[i].active &&
            !requestInner[i].ready && !requestInner[i].hasMiss && i != mergeSlotInner &&
            requestInner[i].request.address != AXI_EXIT_ADDR &&
-          !set_locked(requestInner[i].request.address) && !store_hazard(i, 0) &&
+          !set_locked(requestInner[i].request.address) && !storeHazardInner[i] &&
           find_miss(line_of(requestInner[i].request.address)) < 0 &&
           (!requestInner[i].request.write || i == firstInner) &&
           (!requestInner[i].deferred || (i == firstInner && freeMissInner >= 0)) &&
           (anyMiss || i == firstInner)) candidates[i] = 1;
-    lookupInner = oldest_request(candidates);
+    lookupCandidateInner = oldest_request(candidates);
+    lookupInner = !readValidInner && !fillBeatInner && storeInner < 0 ? lookupCandidateInner : -1;
+    // Only lookupInner authorizes a read. With no candidate the truncated -1
+    // selects a legal, inactive request row; its address is never consumed.
+    lookupAddressInner = set_of(requestInner[REQUEST_W'(lookupCandidateInner)].request.address);
     readable = 0;
     writable = 0;
     for (int m = 0; m < MSHR_DEPTH; m++)
       if (missesInner[m].valid) begin
-        if (!missesInner[m].readSent && !victim_hazard(m) && !store_hazard(int'(missesInner[m].owner), 1)) readable[m] = 1;
+        if (!missesInner[m].readSent && !victim_hazard(m) && !storeAllocationHazardInner[missesInner[m].owner]) readable[m] = 1;
         if (missesInner[m].dirty && !missesInner[m].writeSent) writable[m] = 1;
       end
     readMissInner = oldest_miss(readable);
@@ -331,7 +374,7 @@ module rv32_dcache #(
       memRequestOutput.writeValid = rstNInput;
       memRequestOutput.writeAddress = victim_address(writeMissInner);
       memRequestOutput.writeTransaction = 2'(writeMissInner);
-      memRequestOutput.writeData = missesInner[writeMissInner].victimLine;
+      memRequestOutput.writeData = victimPayloadInner[writeMissInner];
     end
     releasedInner = 0;
     if (responseInner >= 0 && (!fillBeatInner || responseInner != owner)) releasedInner[responseInner] = 1;
@@ -342,7 +385,6 @@ module rv32_dcache #(
 
   always_comb begin : sram_ports
     int way, owner, globalByte;
-    sramAddressInner = '0;
     metaWdataInner = '0;
     way = 0;
     owner = 0;
@@ -350,9 +392,14 @@ module rv32_dcache #(
     for (int w = 0; w < WAYS; w++) begin
       metaEnableInner[w] = 0;
       metaWriteInner[w] = 0;
+      metaAddressInner[w] = lookupAddressInner;
       for (int b = 0; b < WORDS_PER_LINE; b++) begin
         dataEnableBankInner[w][b] = 0;
         dataWriteBankInner[w][b] = 0;
+        // Inactive ports need not follow the globally granted operation.
+        // Local overrides keep the late fill/store grant off other banks'
+        // address muxes instead of broadcasting one net to every SRAM lane.
+        dataAddressBankInner[w][b] = lookupAddressInner;
         dataMaskBankInner[w][b] = 0;
         dataWdataBankInner[w][b] = 0;
       end
@@ -360,12 +407,12 @@ module rv32_dcache #(
     if (rstNInput && fillBeatInner) begin
       way = int'(missesInner[fillMissInner].way);
       owner = int'(missesInner[fillMissInner].owner);
-      sramAddressInner = set_of(missesInner[fillMissInner].line);
       for (int b = 0; b < WORDS_PER_LINE; b++)
         if (b >= int'(missesInner[fillMissInner].fillWord) &&
             b < int'(missesInner[fillMissInner].fillWord) + FILL_WORDS_PER_BEAT) begin
           dataEnableBankInner[way][b] = 1;
           dataWriteBankInner[way][b] = 1;
+          dataAddressBankInner[way][b] = set_of(missesInner[fillMissInner].line);
           dataMaskBankInner[way][b] = '1;
           dataWdataBankInner[way][b] = memResponseInput.data[b*32+:32];
           for (int i = 0; i < 4; i++) begin
@@ -378,26 +425,27 @@ module rv32_dcache #(
       if (fillFireInner) begin
         metaEnableInner[way] = 1;
         metaWriteInner[way] = 1;
+        metaAddressInner[way] = set_of(missesInner[fillMissInner].line);
         metaWdataInner = {requestInner[owner].request.write, missesInner[fillMissInner].line[31:OFFSET_W+INDEX_W]};
       end
     end else if (rstNInput && storeInner >= 0) begin
       way = readValidInner && int'(readIndexInner) == storeInner && hitWayInner >= 0 ?
         hitWayInner : int'(requestInner[storeInner].way);
-      sramAddressInner = set_of(requestInner[storeInner].request.address);
       for (int i = 0; i < 4; i++) begin
         globalByte = int'(requestInner[storeInner].request.address[OFFSET_W-1:0]) + i;
         if (i < bytes_for_size(requestInner[storeInner].request.size) && requestInner[storeInner].request.writeStrobe[i]) begin
           dataEnableBankInner[way][globalByte >> 2] = 1;
           dataWriteBankInner[way][globalByte >> 2] = 1;
+          dataAddressBankInner[way][globalByte >> 2] = set_of(requestInner[storeInner].request.address);
           dataMaskBankInner[way][globalByte >> 2][globalByte & 3] = 1;
           dataWdataBankInner[way][globalByte >> 2][(globalByte & 3)*8+:8] = requestInner[storeInner].request.writeData[i*8+:8];
         end
       end
       metaEnableInner[way] = 1;
       metaWriteInner[way] = 1;
+      metaAddressInner[way] = set_of(requestInner[storeInner].request.address);
       metaWdataInner = {1'b1, requestInner[storeInner].request.address[31:OFFSET_W+INDEX_W]};
     end else if (rstNInput && lookupInner >= 0) begin
-      sramAddressInner = set_of(requestInner[lookupInner].request.address);
       for (int w = 0; w < WAYS; w++) begin
         metaEnableInner[w] = 1;
         for (int b = 0; b < WORDS_PER_LINE; b++) dataEnableBankInner[w][b] = 1;
@@ -407,14 +455,24 @@ module rv32_dcache #(
   for (genvar w = 0; w < WAYS; w++) begin : g_way
     for (genvar b = 0; b < WORDS_PER_LINE; b = b + 1) begin : g_data_bank
       sram_fakeram #(.DEPTH(SETS), .WIDTH(32), .WRITE_GRANULARITY(8)) u_data (
-        .clk(clkInput), .en(dataEnableBankInner[w][b]), .we(dataWriteBankInner[w][b]), .addr(sramAddressInner),
+        .clk(clkInput), .en(dataEnableBankInner[w][b]), .we(dataWriteBankInner[w][b]), .addr(dataAddressBankInner[w][b]),
         .wdata(dataWdataBankInner[w][b]), .wmask(dataMaskBankInner[w][b]), .rdata(dataRdataBankInner[w][b])
       );
+`ifndef SYNTHESIS
+      always @(posedge clkInput) if (rstNInput && dataEnableBankInner[w][b])
+        assert (dataAddressBankInner[w][b] == sramAddressInner)
+          else $fatal(1, "DCache local data address disagrees with grant");
+`endif
     end
     sram_fakeram #(.DEPTH(SETS), .WIDTH(META_W), .WRITE_GRANULARITY(META_W)) u_metadata (
-      .clk(clkInput), .en(metaEnableInner[w]), .we(metaWriteInner[w]), .addr(sramAddressInner),
+      .clk(clkInput), .en(metaEnableInner[w]), .we(metaWriteInner[w]), .addr(metaAddressInner[w]),
       .wdata(metaWdataInner), .wmask(1'b1), .rdata(metaRdataInner[w])
     );
+`ifndef SYNTHESIS
+    always @(posedge clkInput) if (rstNInput && metaEnableInner[w])
+      assert (metaAddressInner[w] == sramAddressInner)
+        else $fatal(1, "DCache local metadata address disagrees with grant");
+`endif
   end
 
   always_ff @(posedge clkInput or negedge rstNInput) begin
@@ -451,13 +509,11 @@ module rv32_dcache #(
             if (firstFillInner && !requestInner[missesInner[fillMissInner].owner].request.write &&
                 requestInner[i].hasMiss && int'(requestInner[i].miss) == fillMissInner &&
                  REQUEST_W'(i) != missesInner[fillMissInner].owner) begin
-              requestInner[i].raw <= extract_raw(memResponseInput.data, requestInner[i].request);
               requestInner[i].ready <= 1;
               requestInner[i].deferred <= 0;
               requestInner[i].hasMiss <= 0;
             end else if (readValidInner && readIndexInner == REQUEST_W'(i)) begin
               if (hitWayInner >= 0) begin
-                requestInner[i].raw <= extract_raw(sram_line(hitWayInner), requestInner[i].request);
                 requestInner[i].ready <= 1;
                 requestInner[i].way <= WAY_W'(hitWayInner);
               end else begin
@@ -483,7 +539,7 @@ module rv32_dcache #(
             owner:readIndexInner, way:victimWayInner, valid:1'b1,
             victimTag:readWayMaskInner[victimWayInner] ? metaRdataInner[victimWayInner][TAG_W-1:0] : TAG_W'(0),
             dirty:readWayMaskInner[victimWayInner] && metaRdataInner[victimWayInner][TAG_W],
-            victimLine:sram_line(int'(victimWayInner)), default:'0};
+            default:'0};
         end else if (fillFireInner && fillMissInner == m) missesInner[m].valid <= 0;
         else if (missesInner[m].valid) begin
           if (memRequestOutput.readValid && memReadReadyInput && readMissInner == m) missesInner[m].readSent <= 1;
@@ -504,6 +560,24 @@ module rv32_dcache #(
             validInner[s][w] <= 0;
           else if (fillFireInner && set_of(missesInner[fillMissInner].line) == INDEX_W'(s) && missesInner[fillMissInner].way == WAY_W'(w))
             validInner[s][w] <= 1;
+        end
+      end
+    end
+  end
+  // Wide payloads have no reset/allocation clear. Ready/dirty ownership gates
+  // every use, and each payload is overwritten before that generation uses it.
+  always_ff @(posedge clkInput) begin
+    if (rstNInput) begin
+      for (int m = 0; m < MSHR_DEPTH; m++)
+        if (allocateMissInner == m) victimPayloadInner[m] <= sram_line(int'(victimWayInner));
+      for (int i = 0; i < REQUEST_DEPTH; i++) begin
+        if (requestInner[i].active && !releasedInner[i]) begin
+          if (firstFillInner && !requestInner[missesInner[fillMissInner].owner].request.write &&
+              requestInner[i].hasMiss && int'(requestInner[i].miss) == fillMissInner &&
+              REQUEST_W'(i) != missesInner[fillMissInner].owner)
+            rawInner[i] <= extract_raw(memResponseInput.data, requestInner[i].request);
+          else if (readValidInner && readIndexInner == REQUEST_W'(i) && hitWayInner >= 0)
+            rawInner[i] <= readHitRawInner;
         end
       end
     end

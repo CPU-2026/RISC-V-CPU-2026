@@ -54,13 +54,13 @@ I$ 行为 512 bit、offset 6 bit、index 4 bit、tag 22 bit；D$ 行为 256 bit�
 - **early restart**：完整 256 bit 回复和脏写完成均就绪，首个合格回填拍按原地址/宽度提取 Load 字节，即使目标在最后一对 bank。响应只发生一次，释放 LSU 运输 owner，但不释放 Cache owner/MSHR，也不消费行回复。
 - 前 3 拍不安装 tag/dirty、不释放 owner；第 4 拍写最后一对 bank、更新 metadata/valid/PLRU，消费回复并释放 owner。Store miss 字节在对应 bank 拍合并，不推迟到末拍，Store 不形成 Load 响应。
 - Store hit 只写对应路和实际触及的 bank/字节并置 dirty；写/禁用周期旧 SRAM 输出不作为新查询。
-- 响应数据源按已选请求 `needMemory` 选择整行回复或命中 SRAM，不将高扇出 fill 资格串入数据选择；valid=0 时 readData 无约定。返回 raw 字节，符号扩展由 LSU 冻结身份完成。
+- 响应数据源按已选请求 `needMemory` 选择整行回复或命中 SRAM，不将高扇出 fill 资格串入数据选择；valid=0 时 readData 无约定。返回 raw 字节，符号扩展由 LSU 在 LQ 行的冻结宽度/符号上、读出侧统一完成一次。
 
 ### 三种身份
 
 | 身份 | 位宽 / 生命周期 |
 |---|---|
-| CPU 运输 ID | 3 bit；LSU 8 项 owner 冻结 LQ slot、ROB tag、宽度、符号、drop；D$ 原样返回 |
+| CPU 运输 ID | 3 bit；LSU 8 项 owner，D$ 原样返回；认证和冻结字段见下方 LSU 说明 |
 | MSHR ID | 2 bit；行读/写请求、回复与写完成；完整运输和行发布后才复用 |
 | 行执行器物理 slot | 4 bit；验证环境 `rv32_dmem` 的 16 项混合 FIFO，不是上述事务 ID |
 
@@ -82,7 +82,7 @@ LSU 的 owner 冻结、drop 与乱序返回认证见 [memory.md](memory.md#运�
 行接口含读/写各自 ID、返回地址/ID 与独立消费握手；intent 仅在 `valid && ready` 接受后标记 sent，
 回复保持到实际消费，不使用旧式无 ID 单拍脉冲。`idleOutput` 不是课程退出条件。
 
-MMIO 不查询/分配 Cache 行；旁路排序与退出完成条件见 [course.md](course.md#退出与复位)。
+MMIO 不查询/分配 Cache 行；旁路排序与退出完成条件见 [course.md](course.md#活动路径与退出)。
 
 独立 assessment 的旧 HALT 边界见 [assessment.md](assessment.md#课程顶层与独立范围)；未落外存的 dirty 行不能冒充已完成写回。
 
@@ -104,4 +104,4 @@ python3 -B scripts/check_dcache_sync.py
 
 前端/转换测试比较原始与转换 RTL 的两路 SRAM、valid、PLRU 和接口，并用独立字节参考核验 Load。
 数据侧对拍只读同级软件源码，包含满 16 信用、写完成越过旧读、4 MSHR、同行合并、hit-under-miss 与乱序返回。
-当前整核验证见 [course.md](course.md#当前验证记录)，历史 4 请求槽数据侧报告见 [experiments.md](experiments.md#4-四-mshr-数据侧快照2026-10-16早于当前课程顶层)。
+整核分阶段验证见 [course.md](course.md#当前验证记录)，历史 4 请求槽数据侧报告见 [experiments.md](experiments.md#4-四-mshr-数据侧快照2026-10-16早于当前课程顶层)。

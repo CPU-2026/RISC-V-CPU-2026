@@ -55,6 +55,6 @@ redirect：清逻辑请求与队列，恢复预测状态
 
 [`rv32_bpu_ras`](../verilog/rtl/predictor/rv32_bpu_ras.sv) 为非环形有界栈：空 pop、满 push 保持。JALR 的 push=`rd∈{x1,x5}`、pop=`rs1∈{x1,x5}`，双 link 含同寄存器均先 pop 后 push；JAL 仅按 rd 判断 push。容量检查使用 pop 后深度，查询读取旧栈顶，空栈目标为 0。
 
-内部深度为 `$clog2(RAS_ENTRIES+1)` 位，公开 16 位深度输出补零。已提交栈、普通投机更新和恢复候选独立计算：恢复从拍初完整已提交栈重放存活 ROB（含头项及边界），不读当拍提交后的下一态，也不由 `willCommit/squash.valid` 使能。最后由 squash 选择恢复候选，优先于早期取指；同拍提交头项恰好重放一次，不增加恢复拍数。
+内部深度为 `$clog2(RAS_ENTRIES+1)` 位，公开 16 位深度输出补零。已提交栈为同步 SRAM、深度为寄存器；恢复从已提交完整内容重放存活 ROB，不只恢复栈指针。布局、四拍重放及暂停范围统一见 [backend.md](backend.md#已提交-sram-与四拍重放)。
 
 [`rv32_bpu_checkpoint`](../verilog/rtl/predictor/rv32_bpu_checkpoint.sv) 只保存 **8 位 GHR**，不保存 RAS。`checkpointInput` 负责取指写入、分支历史查询与恢复；`checkpointOutput` 返回历史和下一个 ID。独立 `nextCheckpointIdOutput` 避免 ID 依赖 fetchAccepted 总线。恢复仲裁时序见 [backend.md](backend.md)。

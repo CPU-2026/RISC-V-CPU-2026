@@ -22,11 +22,14 @@ make synth ABC_DRIVING_CELL=BUFx2_ASAP7_75t_R ABC_LOAD_FF=1.0
 
 | `--scope` | 电路范围 | 外部接口 |
 |---|---|---|
-| `core` | `rv32_core`，含预测器、前后端、执行单元和 LSU | 32 bit 逻辑取指/访存；数据放在行数据端口的低 32 bit |
+| `core` | 当前课程参数的 `rv32_core`，含预测器、前后端、执行单元和 LSU | 原生 32 bit 取指/访存、完整事务 ID 与取指预测元数据 |
 | `cached` | core + I$/D$；显式 `LEGACY_HALT=1`，HALT 退休立即结束、不排空 | I$/D$ 行接口；D$ 带地址/ID 的读写独立完成 |
 | `dcache` | 仅 D$ | CPU 请求/响应；独立行读/写请求、回复及写完成 |
 
 所有内存响应及 ready 均保留为顶层输入，没有常量化。从机不进入网表。
+`core` 使用 `verilog/assessment/core_top.sv`，与课程核心一致地设置
+`TAGGED_DMEM=1`、`LEGACY_HALT=0`，完整保留核心输出，避免旧入口截断事务 ID
+或裁掉未观察的预测元数据逻辑。该范围不包含 Cache、AXI 与 MMIO 总线适配器。
 `core/cached` 顶层保留全部提交跟踪输出，面积和接口时序包含这些可观察输出的开销。
 复位为高有效 `reset`，连接到内部低有效复位；STA 设置 `reset=0`。
 
@@ -125,6 +128,27 @@ python3 -B -m unittest discover -s scripts/tests -v
 
 `python3 scripts/assessment_paths.py build/assessment/core/opt` 可将关键路径
 与保留下来的 RTL 网络名及源码位置关联，并生成 `rtl-critical-path.txt`。
+
+该入口也支持普通课程`synth.py`的`opt/frontend/converted.v`布局，无需替换课程顶层：
+
+```bash
+python3 scripts/assessment_paths.py ../build/axi-data-pool-20261017/synth-course/opt --all-paths
+```
+
+执行前核对转换文件与原始RTL的SHA-256；一次重读真实STA网表，输出全部已报告setup路径的
+`rtl-critical-paths.json`及逐路径文本，记录保留信号别名、扇出、寄存器D/Q与可核验的源位置。
+默认仍只解析第0条路径，`--path-index N`可选单条。没有可靠源属性的映射门只标为内部网，
+不凭名字猜RTL归属。最差路径与模块面积应分别看展平opt和保留层次diagnose，不能混用。
+
+若最终`clean -purge`已删除RTL公开别名，但有同次综合的`generic.json`，脚本可通过
+同名FF及相同`src`属性桥接到检查点中的逻辑寄存器位，补充`register_state`记录。
+注意映射单元可能只有QN端口，逻辑寄存器名不是QN信号未反相的声明。检查点结构依赖
+不等于最终网表的STA分段时延，不能把generic门级数混作映射后关键路径门数。
+
+当前课程顶层的层次诊断可复用已核对的同一`opt/elaborated.json`：对普通`synth.py`使用
+`--mode diagnose --no-hieropt --elaborated-json ... --out ...`，保持filelist、库与时序约束不变。
+不要改用`assess.py --scope cached`来替代完整AXI课程边界。完成后用`module_area.py`
+的`--flat-report`检查两报告的源码/库/工具身份一致，再导出互斥模块面积。
 
 只准备转换文件、检查综合入口：
 

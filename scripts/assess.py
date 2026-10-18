@@ -59,11 +59,12 @@ def main():
         else:
             sources = [path for path in read_sources(root / "verilog" / "filelist.f")
                        if path.name not in ("student_top.sv", "rv32_sram.sv")]
-            sources += [RAM_SOURCE, root / "verilog" / "assessment" / "student_top.sv"]
+            top = "core_top.sv" if args.scope == "core" else "student_top.sv"
+            sources += [RAM_SOURCE, root / "verilog" / "assessment" / top]
         destination = args.out.resolve() / args.scope
         out = args.work_dir.resolve() / args.scope if args.work_dir else destination
         out.mkdir(parents=True, exist_ok=True)
-        defines = ("SYNTHESIS", "ASSESS_CORE_ONLY") if args.scope == "core" else ("SYNTHESIS",)
+        defines = ("SYNTHESIS",)
         converted, frontend = convert_sources(sv2v, sources, out, defines=defines)
         filelist = out / "filelist.f"
         filelist.write_text("converted.v\n")

@@ -14,7 +14,7 @@ module tb_predictor_register;
     .clkInput(clock), .rstNInput(resetN), .freezeInput(freeze), .queryPcInput(pc),
     .predictionOutput(prediction), .fetchAcceptInput(accepted),
     .fetchInfoInput(fetchInfo), .branchInput(branchInfo), .jumpInput(jumpInfo),
-    .squashInput(squash), .robInput(robInfo)
+    .squashInput(squash), .robInput(robInfo), .recoveryInput('0)
   );
   initial begin
     logic [7:0] history;

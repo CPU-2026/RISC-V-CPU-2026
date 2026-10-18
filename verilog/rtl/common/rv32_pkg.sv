@@ -12,7 +12,7 @@ package rv32_pkg;
   parameter int unsigned FQ_ENTRIES   = 2;
   parameter int unsigned IQ_ENTRIES   = 2;
   parameter int unsigned FETCH_REQUEST_ENTRIES = 8;
-  parameter int unsigned AXI_FETCH_LINE_ENTRIES = 16;
+  parameter int unsigned AXI_FETCH_LINE_ENTRIES = 8;
   parameter int unsigned DATA_REQUEST_ENTRIES = 8;
   localparam int DATA_TRANSACTION_W = $clog2(DATA_REQUEST_ENTRIES);
   typedef logic [DATA_TRANSACTION_W-1:0] data_transaction_t;
@@ -66,6 +66,19 @@ package rv32_pkg;
   typedef logic [ROB_TAG_W-1:0] rob_tag_t;
   typedef logic [PHY_TAG_W-1:0] phy_tag_t;
   typedef logic [BPU_CKPT_ID_W-1:0] bpu_ckpt_id_t;
+
+  // One synchronous baseline read, followed by exactly four replay beats.
+  localparam int unsigned RECOVERY_BEATS = 4;
+  localparam int unsigned RECOVERY_WIDTH = (ROB_ENTRIES + RECOVERY_BEATS - 1) / RECOVERY_BEATS;
+  typedef struct packed {
+    logic active;
+    logic first;
+    logic last;
+    rob_tag_t offset;       // Offset in the frozen, head-ordered replay window.
+    rob_tag_t nextTag;      // Full identity of the next slot to recover.
+    rob_tag_t squashTag;
+    rob_tag_t liveCount;    // PRE-squash occupancy, including the canceled suffix.
+  } recovery_step_t;
 
   typedef enum logic [3:0] {
     UOP_NONE,
@@ -520,13 +533,24 @@ package rv32_pkg;
     rob_tag_t headTag;
   } rob_status_output_t;
 
+  // Replay window: RECOVERY_WIDTH consecutive entries starting at the absolute
+  // slot head+offset, slot-selected inside the ROB so consumers need no second
+  // index. Two shapes, one per consumer class, instead of the full 16-entry
+  // rotated window (1280b) that every consumer then had to mux again.
+  typedef struct packed {
+    rob_tag_t robTag;
+    logic [4:0] archRd;
+    phy_tag_t newPhy;
+  } rob_replay_narrow_t;
+
   typedef struct packed {
     rob_tag_t robTag;
     logic [31:0] programCounter;
-    logic [31:0] instruction;
-    logic [4:0] archRd;
-    phy_tag_t newPhy;
-  } rob_replay_entry_t;
+    logic [6:0] opcode;
+    logic [4:0] rd;
+    logic [2:0] funct3;
+    logic [4:0] rs1;
+  } rob_replay_ras_t;
 
   typedef struct packed {
     logic willCommit;
@@ -534,7 +558,7 @@ package rv32_pkg;
     logic isHeadCall;
     logic isHeadReturn;
     logic [31:0] headProgramCounter;
-    rob_replay_entry_t [ROB_ENTRIES-1:0] replayEntries;
+    rob_replay_ras_t [RECOVERY_WIDTH-1:0] replayRasWindow;
   } rob_predictor_input_t;
 
   typedef struct packed {

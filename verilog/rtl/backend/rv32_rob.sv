@@ -20,7 +20,9 @@ module rv32_rob #(
   output rv32_pkg::rob_status_output_t statusOutput,
   output logic [$clog2(DEPTH+1)-1:0] countOutput,
 
-  output rv32_pkg::rob_replay_entry_t [DEPTH-1:0] replayOutput
+  input  rv32_pkg::rob_tag_t     replayOffsetInput,
+  output rv32_pkg::rob_replay_narrow_t [rv32_pkg::RECOVERY_WIDTH-1:0] replayNarrowOutput,
+  output rv32_pkg::rob_replay_ras_t    [rv32_pkg::RECOVERY_WIDTH-1:0] replayRasOutput
 );
   import rv32_pkg::*;
 
@@ -105,18 +107,30 @@ module rv32_rob #(
     end
   endgenerate
 
+  // Replay window = the RECOVERY_WIDTH entries at absolute slot head+offset+lane.
+  // Rotating all DEPTH entries here and re-indexing them in every consumer cost
+  // two mux layers; consumers always read the same expression (head+offset+lane).
   genvar replayIndexInner;
   generate
-    for (replayIndexInner = 0; replayIndexInner < DEPTH;
+    for (replayIndexInner = 0; replayIndexInner < RECOVERY_WIDTH;
          replayIndexInner = replayIndexInner + 1) begin : gen_replay_window
       logic [SLOT_W-1:0] replaySlotInner;
 
-      assign replaySlotInner = headInner[SLOT_W-1:0] + SLOT_W'(replayIndexInner);
-      assign replayOutput[replayIndexInner].robTag = tagInner[replaySlotInner];
-      assign replayOutput[replayIndexInner].programCounter = pcInner[replaySlotInner];
-      assign replayOutput[replayIndexInner].instruction = instrInner[replaySlotInner];
-      assign replayOutput[replayIndexInner].archRd = archRdInner[replaySlotInner];
-      assign replayOutput[replayIndexInner].newPhy = newPhyInner[replaySlotInner];
+      assign replaySlotInner = headInner[SLOT_W-1:0] + SLOT_W'(replayOffsetInput) +
+                               SLOT_W'(replayIndexInner);
+      assign replayNarrowOutput[replayIndexInner] = '{
+        robTag: tagInner[replaySlotInner],
+        archRd: archRdInner[replaySlotInner],
+        newPhy: newPhyInner[replaySlotInner]
+      };
+      assign replayRasOutput[replayIndexInner] = '{
+        robTag: tagInner[replaySlotInner],
+        programCounter: pcInner[replaySlotInner],
+        opcode: instrInner[replaySlotInner][6:0],
+        rd: instrInner[replaySlotInner][11:7],
+        funct3: instrInner[replaySlotInner][14:12],
+        rs1: instrInner[replaySlotInner][19:15]
+      };
     end
   endgenerate
 

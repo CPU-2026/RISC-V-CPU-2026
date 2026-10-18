@@ -15,7 +15,7 @@ checkpoint容量须与包定义及ID宽度一致，当前预算ROB16+I$8+FQ2+IQ2
 | `LQ_ENTRIES` / `SQ_ENTRIES` | 8 / 8 | load/store 队列默认槽数。 |
 | `BPU_CKPT_ENTRIES` / `BPU_CKPT_ID_W` | 32 / 5 | 预测历史检查点数 / `bpu_ckpt_id_t` 宽度。 |
 | `FETCH_REQUEST_ENTRIES` / `RAS_ENTRIES` | 8 / 16 | 取指请求容量 / 返回栈深度。 |
-| `AXI_FETCH_LINE_ENTRIES` | 16 | 独立AXIFetch行运输队列，不是I$请求槽数。 |
+| `AXI_FETCH_LINE_ENTRIES` | 8 | 独立AXIFetch行运输队列，不是I$请求槽数；与 `FETCH_REQUEST_ENTRIES` 同深，运输占用不可能超过8。 |
 | `DATA_REQUEST_ENTRIES` / `DATA_TRANSACTION_W` | 8 / 3 | D$请求/LSU运输owner容量与CPU运输ID宽度。 |
 | `CACHE_LINE_BYTES` / `CACHE_LINE_BITS` | 64 / 512 | I$行字节数 / 数据位宽。 |
 | `DCACHE_LINE_BYTES` / `DCACHE_LINE_BITS` | 32 / 256 | D$行宽，独立于I$。 |
@@ -43,7 +43,7 @@ checkpoint容量须与包定义及ID宽度一致，当前预算ROB16+I$8+FQ2+IQ2
 | `direction_*`、`branch_training_input_t`、`btb_*`、`checkpoint_*`、`rob_predictor_input_t` | 方向历史、目标、快照及 RAS 重放。 |
 | `rat_*`、`prf_*`、`rs_*` | 改名、物理寄存器及保留站；见 [backend.md](backend.md)。 |
 | `cdb_result_t` | `{valid,phyTag,value}`，执行结果广播。 |
-| `rob_*`、`flush_candidate_input_t`、`squash_input_t` | 分配、完成、提交、存活查询与恢复；replay 携带 `robTag/PC/instruction/archRd/newPhy`。 |
+| `rob_*`、`flush_candidate_input_t`、`squash_input_t` | 分配、完成、提交、存活查询与恢复；窄 replay 窗口布局见 [backend.md](backend.md#重命名与提交)。 |
 | `alu_operation_*`、`branch_operation_*`、`execute_*`、`alu_execute_output_t`、`bru_execute_output_t` | 组合运算与带身份执行结果。 |
 | `load_allocation_input_t`、`store_allocation_input_t`、`store_data_input_t`、`lsu_address_input_t` | LSQ 分配、数据及带完整 tag 的地址交付；见 [memory.md](memory.md)。 |
 | `store_commit_input_t`、`store_completion_output_t`、`load_result_output_t` | Store 退休提议、ready/epoch 位图及 Load 写回。 |
