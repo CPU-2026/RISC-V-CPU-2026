@@ -90,7 +90,10 @@ module rv32_axi_fetch (
         if (pushInner) linesInner[tailInner] <= '{valid:1'b1, address:requestInput.address, default:'0};
         if (pushInner) tailSeqInner <= tailSeqInner + 1'b1;
         if (consumeInner) headInner <= headInner + 1'b1;
-        countInner <= countInner + (SLOT_W+1)'(pushInner) - (SLOT_W+1)'(consumeInner);
+        // Prepare both one-step alternatives before late push qualification.
+        countInner <= pushInner ?
+          (consumeInner ? countInner : countInner + (SLOT_W+1)'(1)) :
+          (consumeInner ? countInner - (SLOT_W+1)'(1) : countInner);
       end
     end
   end

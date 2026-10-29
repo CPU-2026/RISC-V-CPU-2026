@@ -9,9 +9,8 @@ module tb_recovery4_core;
   logic [31:0] imemAddress, imemResponseData = 0;
   logic dmemValid, dmemWrite, dmemResponseValid, pendingRead = 0;
   logic [31:0] dmemAddress;
-  logic halted, trapped, committed, rdValid, memValid;
-  logic [31:0] committedPc, rdValue, memAddress, memData;
-  logic [4:0] rd;
+  logic halted, trapped;
+  retirement_trace_t [COMMIT_WIDTH-1:0] retirement;
   int retired = 0, flushes = 0, walkCycles = 0;
   bit receivedDuringWalk = 0, sawResult = 0, sawExit = 0;
 
@@ -34,7 +33,7 @@ module tb_recovery4_core;
   assign imemReady = !imemResponseValid || imemResponseReady;
   assign dmemResponseValid = pendingRead && dut.recoveryStepInner.active &&
     dut.recoveryStepInner.offset == 4;
-  rv32_core dut (
+  rv32_core #(.FETCH_WIDTH(1)) dut (
     .clkInput(clock), .rstNInput(resetN),
     .imemReqValidOutput(imemValid), .imemReqReadyInput(imemReady), .imemReqAddrOutput(imemAddress),
     .imemRspValidInput(imemResponseValid), .imemRspDataInput(imemResponseData),
@@ -43,10 +42,10 @@ module tb_recovery4_core;
     .dmemReqAddrOutput(dmemAddress), .dmemReqWdataOutput(), .dmemReqWstrbOutput(), .dmemReqSizeOutput(),
     .dmemRspValidInput(dmemResponseValid), .dmemRspRdataInput(32'd77),
     .dmemReqTransactionOutput(), .dmemRspTransactionInput('0),
-    .commitValidOutput(committed), .commitPcOutput(committedPc), .commitInstrOutput(),
-    .commitRdValidOutput(rdValid), .commitRdOutput(rd), .commitRdValueOutput(rdValue),
-    .commitMemValidOutput(memValid), .commitMemAddrOutput(memAddress), .commitMemDataOutput(memData),
-    .commitMemWstrbOutput(), .haltedOutput(halted), .trapOutput(trapped)
+    .commitValidOutput(), .commitPcOutput(), .commitInstrOutput(),
+    .commitRdValidOutput(), .commitRdOutput(), .commitRdValueOutput(),
+    .commitMemValidOutput(), .commitMemAddrOutput(), .commitMemDataOutput(),
+    .commitMemWstrbOutput(), .retirementOutput(retirement), .haltedOutput(halted), .trapOutput(trapped)
   );
 
   always @(posedge clock) if (resetN) begin
@@ -67,19 +66,21 @@ module tb_recovery4_core;
     end
     if (dut.globalFlushInner) flushes++;
     if (dut.recoveryBusyInner) walkCycles++;
-    if (committed) begin
-      assert (committedPc == (retired < 4 ? 32'(retired*4) : 32'(64+(retired-4)*4)))
-        else $fatal(1, "unexpected retirement pc=%0d number=%0d", committedPc, retired);
-      retired++;
-    end
-    if (rdValid && rd == 10) begin
-      assert (rdValue == 77) else $fatal(1, "lost pending Load response");
-      sawResult <= 1;
-    end
-    if (memValid) begin
-      assert (committedPc == 72 && memAddress == AXI_EXIT_ADDR && memData == 77)
-        else $fatal(1, "wrong-path Store retired");
-      sawExit <= 1;
+    for (int lane = 0; lane < COMMIT_WIDTH; lane++) begin
+      if (retirement[lane].valid) begin
+        assert (retirement[lane].pc == (retired < 4 ? 32'(retired*4) : 32'(64+(retired-4)*4)))
+          else $fatal(1, "unexpected retirement pc=%0d number=%0d", retirement[lane].pc, retired);
+        retired++;
+      end
+      if (retirement[lane].rdValid && retirement[lane].rd == 10) begin
+        assert (retirement[lane].value == 77) else $fatal(1, "lost pending Load response");
+        sawResult <= 1;
+      end
+      if (retirement[lane].store) begin
+        assert (retirement[lane].pc == 72 && retirement[lane].address == AXI_EXIT_ADDR && retirement[lane].data == 77)
+          else $fatal(1, "wrong-path Store retired");
+        sawExit <= 1;
+      end
     end
   end
 

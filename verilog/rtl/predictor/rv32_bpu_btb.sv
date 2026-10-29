@@ -9,7 +9,7 @@
 // tag hit together with the index is a full PC identity match for the 4-byte
 // aligned addresses this core uses. `target[1:0]` is not stored: architectural
 // jump targets are 4-byte aligned (JALR clears bit 0 in the ALU and a
-// misaligned JAL/JALR traps in the BRU), so it is reconstructed as zero.
+// aligned instruction targets are guaranteed by the input contract), so it is reconstructed as zero.
 //
 // Three training sources share the table and keep the fixed priority
 // `fetch predecode > jump CDB > conditional BRU`. They train two field groups
@@ -18,12 +18,9 @@
 //   tag + state : fetch lineInput  > jump lineInput    > branch lineInput
 //   target      : fetch static JAL > jump target > branch target
 //
-// A fetch JALR/RET lineInput carries no static target, so it must not hide a
-// resolved target from a lower-priority source landing on the same lineInput; that
-// case folds the lower-priority target into the fetch word. Because the entry
-// is a single 56-bit register, the two groups are composed into one word
-// before the flop, which keeps `fetch > jump > branch` per entry at one write
-// per entry per cycle.
+// A fetch JALR/RET carries no static target. Tag/state and target therefore
+// arbitrate independently PER ENTRY. A missing target write holds the resident
+// field directly, without an extra indexed target read/merge/writeback port.
 module rv32_bpu_btb #(
   parameter int unsigned BTB_ENTRIES = 64
 ) (
@@ -67,13 +64,7 @@ module rv32_bpu_btb #(
   logic [BTB_INDEX_W-1:0] jumpBtbIdxInner;
   logic branchLineWriteInner, branchTargetWriteInner;
   logic [BTB_INDEX_W-1:0] branchBtbIdxInner;
-  logic fetchJumpSameInner, fetchBranchSameInner, jumpBranchSameInner;
-
-  logic [BTB_TGT_W-1:0] fetchTgtNext;
   logic [BTB_STATE_W-1:0] fetchStateNext;
-  logic [BTB_ENTRY_W-1:0] fetchEntryNext, jumpEntryNext, branchEntryNext;
-
-  integer seqIndexInner;
 
   always_comb begin
     queryP2Inner = queryPcInput >> 2;
@@ -107,53 +98,32 @@ module rv32_bpu_btb #(
     branchTargetWriteInner = branchLineWriteInner;
     branchBtbIdxInner = trainingInput.branch.programCounter[BTB_INDEX_W+1:2];
 
-    fetchJumpSameInner = fetchLineWriteInner && jumpLineWriteInner &&
-                      (fetchBtbIdxInner == jumpBtbIdxInner);
-    fetchBranchSameInner = fetchLineWriteInner && branchLineWriteInner &&
-                        (fetchBtbIdxInner == branchBtbIdxInner);
-    jumpBranchSameInner = jumpLineWriteInner && branchLineWriteInner &&
-                       (jumpBtbIdxInner == branchBtbIdxInner);
-
-    // Composed target field for the fetch lineInput: its own static JAL target when
-    // it has one, otherwise the resolved target of the jump or branch source
-    // that lands on the same index, otherwise the resident target.
-    fetchTgtNext = btbEntryInner[fetchBtbIdxInner][BTB_TGT_LSB+:BTB_TGT_W];
-    if (fetchTargetWriteInner)
-      fetchTgtNext = trainingInput.jalTarget[31:2];
-    else if (jumpTargetWriteInner && fetchJumpSameInner)
-      fetchTgtNext = trainingInput.jumpTarget[31:2];
-    else if (branchTargetWriteInner && fetchBranchSameInner)
-      fetchTgtNext = trainingInput.branch.nextProgramCounter[31:2];
     fetchStateNext = trainingInput.isReturn ? BTB_STATE_RET : BTB_STATE_UNCOND;
-    fetchEntryNext = {trainingInput.fetchProgramCounter[31:BTB_INDEX_W+2], fetchTgtNext,
-                        fetchStateNext};
-
-    // A jump trains both groups: it is unconditional and always has a resolved
-    // target on the CDB.
-    jumpEntryNext = {trainingInput.jumpProgramCounter[31:BTB_INDEX_W+2], trainingInput.jumpTarget[31:2],
-                       trainingInput.jumpIsReturn ? BTB_STATE_RET : BTB_STATE_UNCOND};
-
-    // Only a taken conditional allocates a lineInput, and it is never a return.
-    branchEntryNext = {trainingInput.branch.programCounter[31:BTB_INDEX_W+2], trainingInput.branch.nextProgramCounter[31:2],
-                         BTB_STATE_COND};
   end
 
-  always_ff @(posedge clkInput or negedge rstNInput) begin
-    if (!rstNInput) begin
-      for (seqIndexInner = 0; seqIndexInner < BTB_STORAGE_ENTRIES; seqIndexInner = seqIndexInner + 1)
-        btbEntryInner[seqIndexInner] <= '0; // state 0 = invalid, tag/target clear
-    end else if (!freezeInput) begin
-      // One write per entry per cycle. The write qualifiers are the *lineInput*
-      // group's, because a source whose lineInput loses arbitration either has its
-      // target folded into the winning word (fetch against jump/branch) or
-      // loses both groups outright (`jumpBranchSameInner` blocks the branch lineInput
-      // and its target alike), so the target group needs no separate guard.
-      if (fetchLineWriteInner)
-        btbEntryInner[fetchBtbIdxInner] <= fetchEntryNext;
-      if (jumpLineWriteInner && !fetchJumpSameInner)
-        btbEntryInner[jumpBtbIdxInner] <= jumpEntryNext;
-      if (branchLineWriteInner && !fetchBranchSameInner && !jumpBranchSameInner)
-        btbEntryInner[branchBtbIdxInner] <= branchEntryNext;
+  for (genvar row = 0; row < BTB_STORAGE_ENTRIES; row++) begin : g_entry_write
+    always_ff @(posedge clkInput or negedge rstNInput) begin
+      if (!rstNInput) btbEntryInner[row] <= '0;
+      else if (!freezeInput) begin
+        if (fetchLineWriteInner && fetchBtbIdxInner == BTB_INDEX_W'(row)) begin
+          btbEntryInner[row][BTB_TAG_LSB+:BTB_TAG_W] <= trainingInput.fetchProgramCounter[31:BTB_INDEX_W+2];
+          btbEntryInner[row][BTB_STATE_LSB+:BTB_STATE_W] <= fetchStateNext;
+        end else if (jumpLineWriteInner && jumpBtbIdxInner == BTB_INDEX_W'(row)) begin
+          btbEntryInner[row][BTB_TAG_LSB+:BTB_TAG_W] <= trainingInput.jumpProgramCounter[31:BTB_INDEX_W+2];
+          btbEntryInner[row][BTB_STATE_LSB+:BTB_STATE_W] <= trainingInput.jumpIsReturn ? BTB_STATE_RET : BTB_STATE_UNCOND;
+        end else if (branchLineWriteInner && branchBtbIdxInner == BTB_INDEX_W'(row)) begin
+          btbEntryInner[row][BTB_TAG_LSB+:BTB_TAG_W] <= trainingInput.branch.programCounter[31:BTB_INDEX_W+2];
+          btbEntryInner[row][BTB_STATE_LSB+:BTB_STATE_W] <= BTB_STATE_COND;
+        end
+        // A target-less fetch must not suppress a lower-priority resolved
+        // target at this index. Different indices still update in parallel.
+        if (fetchTargetWriteInner && fetchBtbIdxInner == BTB_INDEX_W'(row))
+          btbEntryInner[row][BTB_TGT_LSB+:BTB_TGT_W] <= trainingInput.jalTarget[31:2];
+        else if (jumpTargetWriteInner && jumpBtbIdxInner == BTB_INDEX_W'(row))
+          btbEntryInner[row][BTB_TGT_LSB+:BTB_TGT_W] <= trainingInput.jumpTarget[31:2];
+        else if (branchTargetWriteInner && branchBtbIdxInner == BTB_INDEX_W'(row))
+          btbEntryInner[row][BTB_TGT_LSB+:BTB_TGT_W] <= trainingInput.branch.nextProgramCounter[31:2];
+      end
     end
   end
 `ifndef SYNTHESIS

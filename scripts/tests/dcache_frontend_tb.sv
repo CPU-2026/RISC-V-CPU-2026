@@ -182,7 +182,7 @@ module tb_dcache_frontend;
   endtask
   initial begin
     int readsBefore, writesBefore;
-    assert (DCACHE_SETS * DCACHE_WAYS * DCACHE_LINE_BYTES == 4096);
+    assert (DCACHE_SETS * DCACHE_WAYS * DCACHE_LINE_BYTES == 8192);
     for (int a = 0; a < 32768; a++) begin
       memory[a] = 8'(a ^ (a >> 8) ^ 'h5a);
       expectedMemory[a] = memory[a];

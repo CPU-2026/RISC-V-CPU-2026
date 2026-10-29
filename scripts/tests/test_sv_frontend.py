@@ -14,7 +14,7 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 from fakeram import RAM_SOURCE
-from sv_frontend import convert_sources, explicit_port_patterns, select_frontend
+from sv_frontend import convert_sources, explicit_port_patterns, factor_registered_axi_outputs, select_frontend
 
 
 class FrontendTests(unittest.TestCase):
@@ -65,6 +65,44 @@ class FrontendTests(unittest.TestCase):
         self.assertFalse((self.work / "frontend" / "converted.v").exists())
         self.assertTrue((self.work / "frontend" / "sv2v.log").exists())
 
+    def test_typed_patterns_inside_generate_indentation(self):
+        child=self.work/"child.sv"
+        child.write_text("module rv32_child(input rv32_pkg::request_t requestInput); endmodule\n")
+        top=self.work/"top.sv"
+        text=("module student_top;\n  if (1) begin : g_four\n"
+              "    rv32_child #(.WIDTH(4)) four (.requestInput('{valid:1'b1, data:32'b0}));\n"
+              "\trv32_child tabbed (.requestInput('{valid:1'b0, data:32'b0}));\n"
+              "  end\nendmodule\n")
+        top.write_text(text)
+        staged,changes=explicit_port_patterns([child,top],self.work/"sources")
+        self.assertEqual(top.read_text(),text)
+        self.assertEqual(len(changes),2)
+        self.assertEqual(staged[1].read_text().count("rv32_pkg::request_t'('{"),2)
+
+    def test_registered_axi_outputs_factor_only_staged_copy(self):
+        original=ROOT/"verilog/rtl/memory/rv32_axi_data.sv"
+        text=original.read_text()
+        staged,_=explicit_port_patterns([original],self.work/"sources")
+        changes=factor_registered_axi_outputs(staged)
+        self.assertEqual(original.read_text(),text)
+        self.assertEqual(len(changes),1)
+        result=staged[0].read_text()
+        self.assertIn("always_comb begin : registered_axi_responses",result)
+        for name in ("readReadyOutput","writeReadyOutput","exitReadyOutput"):
+            self.assertEqual(result.count("assign "+name+" ="),1)
+        begin=text.index("    responseOutput = '")
+        end=text.index("    masterOutput = '0;",begin)
+        self.assertIn(text[begin:end],result)
+
+    def test_axi_response_factor_rejects_unknown_equations(self):
+        source=self.work/"rv32_axi_data.sv"
+        text=(ROOT/"verilog/rtl/memory/rv32_axi_data.sv").read_text()
+        text=text.replace("responseOutput = '{valid:rstNInput", "responseOutput = '{valid:requestInput.readValid && rstNInput")
+        source.write_text(text)
+        with self.assertRaisesRegex(ValueError,"unknown AXI registered response"):
+            factor_registered_axi_outputs([source])
+        self.assertEqual(source.read_text(),text)
+
     @unittest.skipUnless(shutil.which("sv2v") and shutil.which("verilator"),
                          "requires sv2v and Verilator")
     def test_real_dcache_conversion_and_cycle_equivalence(self):
@@ -85,7 +123,7 @@ class FrontendTests(unittest.TestCase):
         text, replacements = re.subn(r"\bmodule rv32_dcache\b", "module rv32_dcache_converted", converted.read_text())
         self.assertEqual(replacements, 1)
         renamed.write_text(text)
-        self.run_logged(["verilator", "--binary", "--timing", "--assert", "-Wno-fatal", "--unroll-count", "1024",
+        self.run_logged(["verilator", "--binary", "--timing", "--assert", "-Wno-fatal", "--unroll-count", "1024", "--unroll-stmts", "100000",
                          "-j", "1", "--top-module", "tb_dcache_frontend", "--Mdir", str(self.work / "obj"),
                          *map(str, sources), str(renamed), str(RAM_SOURCE), str(SCRIPTS / "tests/dcache_frontend_tb.sv")],
                         "verilator.log")

@@ -1,6 +1,7 @@
 // Software main-tree nonblocking SRAM D$: eight TOTAL request credits (including
 // MSHR owners), four misses, pre-first-fill same-line Load merging. All decisions
-// read old state. Fill > Store > lookup on real single-port SRAMs.
+// read old state, except an idle accepted Load may launch its SRAM read.
+// Fill > Store > lookup on real single-port SRAMs.
 // CPU transaction names an immutable LSU transport owner, NOT an MSHR or LQ row.
 // Cancelled transports still complete once; the LSU suppresses their writeback.
 module rv32_dcache #(
@@ -60,6 +61,10 @@ module rv32_dcache #(
   logic [COUNT_W-1:0] countInner;
   logic [REQUEST_W-1:0] cursorInner, readIndexInner;
   logic readValidInner;
+  logic acceptLookupInner;
+  logic [OFFSET_W-1:0] readLookupAddressInner;
+  logic [1:0] readLookupSizeInner;
+  dcache_cpu_request_input_t readLookupRequestInner;
   logic [WAYS-1:0] readWayMaskInner;
   logic validInner [SETS][WAYS];
   logic [PLRU_W-1:0] plruInner [SETS];
@@ -85,15 +90,27 @@ module rv32_dcache #(
       sramAddressInner = set_of(requestInner[storeInner].request.address);
     else if (rstNInput && lookupInner >= 0)
       sramAddressInner = set_of(requestInner[lookupInner].request.address);
+    else if (rstNInput && acceptLookupInner)
+      sramAddressInner = set_of(cpuRequestInput.address);
   end
 `endif
   logic [REQUEST_DEPTH-1:0] activeInner, releasedInner;
   integer firstInner, hitWayInner, freeMissInner, allocationInner;
   integer lookupInner, lookupCandidateInner, responseInner, storeInner, allocateMissInner;
+  integer normalResponseInner;
   integer mergeSlotInner, mergeMissInner, fillMissInner, writeAckInner;
   integer readMissInner, writeMissInner;
   logic fillBeatInner, fillFireInner, firstFillInner, earlyInner, acceptInner;
   logic [31:0] readHitRawInner;
+  logic [MSHR_DEPTH-1:0] fillCanRespondInner;
+  data_transaction_t fillTransactionInner [MSHR_DEPTH];
+  data_transaction_t normalTransactionInner;
+  data_transaction_t bufferedTransactionInner, hitTransactionInner;
+  logic [REQUEST_DEPTH-1:0] normalWinnerInner;
+  logic [REQUEST_DEPTH-1:0] normalBufferedMaskInner, normalBufferedWinnerInner;
+  logic [REQUEST_DEPTH-1:0] normalHitEligibleInner;
+  logic normalHitWinsInner;
+  logic [31:0] normalReadDataInner;
   logic [WAY_W-1:0] victimWayInner;
 
   function automatic int bytes_for_size(input logic [1:0] sizeInput);
@@ -184,9 +201,6 @@ module rv32_dcache #(
   // overlap needs a line equality and small offset comparisons, not per-pair
   // full-width subtraction. Miss allocation additionally preserves set order.
   always_comb begin : store_hazards
-    for (int i = 0; i < REQUEST_DEPTH; i++)
-      byteEndInner[i] = (OFFSET_W+1)'(requestInner[i].request.address[OFFSET_W-1:0]) +
-        (OFFSET_W+1)'(bytes_for_size(requestInner[i].request.size)-1);
     storeHazardInner = '0;
     storeAllocationHazardInner = '0;
     for (int i = 0; i < REQUEST_DEPTH; i++) begin
@@ -238,9 +252,16 @@ module rv32_dcache #(
   endfunction
   /* verilator lint_on SELRANGE */
 
+  // Metadata accompanies the existing synchronous SRAM read, not a new
+  // pipeline stage. Only address/size are consumed by hit extraction.
+  assign readLookupRequestInner = '{address:{{(32-OFFSET_W){1'b0}}, readLookupAddressInner}, size:readLookupSizeInner, default:'0};
   assign initializedOutput = rstNInput;
   assign cpuReqReadyOutput = rstNInput && countInner < COUNT_W'(REQUEST_DEPTH);
   assign acceptInner = cpuRequestInput.valid && cpuReqReadyOutput;
+  // Empty means there is no older Store, request, or MSHR owner. This is
+  // acceptance -> synchronous read only, never request -> response bypass.
+  assign acceptLookupInner = acceptInner && countInner == 0 && !readValidInner &&
+    !cpuRequestInput.write && cpuRequestInput.address != AXI_EXIT_ADDR;
   assign idleOutput = rstNInput && countInner == 0 && !readValidInner;
 
   // Allocation is not on the response/LSU-selection path. Keeping it separate
@@ -254,11 +275,21 @@ module rv32_dcache #(
     end
   end
 
+  // These narrow identities/qualifiers depend only on OLD MSHR/request state.
+  // Prepare each fill branch before the late line-response qualification, not
+  // after fillMiss -> owner -> request selection. Payload extraction is shared.
+  for (genvar miss = 0; miss < MSHR_DEPTH; miss++) begin : gen_fill_response
+    assign fillCanRespondInner[miss] = !requestInner[missesInner[miss].owner].request.write &&
+      !missesInner[miss].responded;
+    assign fillTransactionInner[miss] = requestInner[missesInner[miss].owner].request.transaction;
+  end
+
   always_comb begin : plan
     logic [REQUEST_DEPTH-1:0] candidates;
+    logic [REQUEST_DEPTH-1:0] lookupActive;
     logic [3:0] readable, writable;
-    logic anyMiss;
-    int id, owner;
+    logic anyMiss, continueHit, responsePrior;
+    int id, owner, lookupFirst;
     activeInner = 0;
     freeMissInner = -1;
     hitWayInner = -1;
@@ -284,7 +315,7 @@ module rv32_dcache #(
     // offset/size and exactly one row owns the granted SRAM read, so the
     // per-row copies of this funnel carried seven redundant instances.
     readHitRawInner = extract_raw(sram_line(hitWayInner >= 0 ? hitWayInner : 0),
-                                  requestInner[readIndexInner].request);
+                                  readLookupRequestInner);
     writeAckInner = -1;
     id = int'(memWriteResponseInput.transaction);
     if (memWriteResponseInput.valid && missesInner[id].valid && missesInner[id].dirty &&
@@ -305,21 +336,56 @@ module rv32_dcache #(
     memWriteRspReadyOutput = rstNInput && writeAckInner >= 0;
     owner = fillMissInner >= 0 ? int'(missesInner[fillMissInner].owner) : 0;
     firstFillInner = fillBeatInner && missesInner[fillMissInner].fillWord == 0;
-    earlyInner = fillBeatInner && !requestInner[owner].request.write && !missesInner[fillMissInner].responded;
-    candidates = 0;
-    for (int i = 0; i < REQUEST_DEPTH; i++)
-      if (requestInner[i].active && !requestInner[i].request.write && !storeHazardInner[i] &&
-          (requestInner[i].ready || (readValidInner && int'(readIndexInner) == i && hitWayInner >= 0)))
-        candidates[i] = 1;
-    responseInner = earlyInner ? owner : oldest_request(candidates);
+    earlyInner = fillBeatInner && fillCanRespondInner[memResponseInput.transaction];
+    // Buffered eligibility uses only old request/hazard state. Do its
+    // age arbitration before the late SRAM tag-hit qualification arrives.
+    normalBufferedMaskInner = '0;
+    for (int row = 0; row < REQUEST_DEPTH; row++)
+      if (requestInner[row].active && !requestInner[row].request.write &&
+          !storeHazardInner[row] && requestInner[row].ready)
+        normalBufferedMaskInner[row] = 1'b1;
+    normalBufferedWinnerInner = '0;
+    normalHitEligibleInner = '0;
+    responsePrior = 1'b0;
+    for (int row = 0; row < REQUEST_DEPTH; row++) begin
+      responsePrior = 1'b0;
+      for (int peer = 0; peer < REQUEST_DEPTH; peer++)
+        if (normalBufferedMaskInner[peer] && olderInner[peer][row]) responsePrior = 1'b1;
+      normalBufferedWinnerInner[row] = normalBufferedMaskInner[row] && !responsePrior;
+      // A late hit needs only the precomputed "no older buffered row" bit.
+      // If its own row was already ready, both alternatives name that row.
+      normalHitEligibleInner[row] = readValidInner && readIndexInner == REQUEST_W'(row) &&
+        requestInner[row].active && !requestInner[row].request.write &&
+        !storeHazardInner[row] && !responsePrior;
+    end
+    normalHitWinsInner = hitWayInner >= 0 && (|normalHitEligibleInner);
+    normalWinnerInner = normalHitWinsInner ? normalHitEligibleInner : normalBufferedWinnerInner;
+    normalResponseInner = -1;
+    bufferedTransactionInner = '0;
+    hitTransactionInner = '0;
+    normalReadDataInner = '0;
+    for (int row = 0; row < REQUEST_DEPTH; row++) begin
+      if (normalWinnerInner[row]) normalResponseInner = row;
+      bufferedTransactionInner |= requestInner[row].request.transaction &
+        {$bits(data_transaction_t){normalBufferedWinnerInner[row]}};
+      hitTransactionInner |= requestInner[row].request.transaction &
+        {$bits(data_transaction_t){normalHitEligibleInner[row]}};
+      normalReadDataInner |= rawInner[row] & {32{normalBufferedWinnerInner[row]}};
+    end
+    normalTransactionInner = normalHitWinsInner ? hitTransactionInner : bufferedTransactionInner;
+    responseInner = earlyInner ? owner : normalResponseInner;
     cpuResponseOutput = '0;
-    if (responseInner >= 0) begin
+    if (earlyInner || (|normalWinnerInner)) begin
       cpuResponseOutput.valid = rstNInput;
-      cpuResponseOutput.transaction = requestInner[responseInner].request.transaction;
-      if (earlyInner) cpuResponseOutput.readData = extract_raw(memResponseInput.data, requestInner[responseInner].request);
-      else if (readValidInner && int'(readIndexInner) == responseInner && hitWayInner >= 0)
+      cpuResponseOutput.transaction = earlyInner ? fillTransactionInner[memResponseInput.transaction] :
+        normalTransactionInner;
+      // earlyInner already authenticates this MSHR: avoid normal-response/validity muxes in the payload index.
+      if (earlyInner) cpuResponseOutput.readData = extract_raw(memResponseInput.data, requestInner[missesInner[memResponseInput.transaction].owner].request);
+      // An eligible hit wins iff the selected normal response is this read.
+      // Avoid indexing the late winner vector through readIndex a second time.
+      else if (normalHitWinsInner)
         cpuResponseOutput.readData = readHitRawInner;
-      else cpuResponseOutput.readData = rawInner[responseInner];
+      else cpuResponseOutput.readData = normalReadDataInner;
     end
     storeInner = -1;
     if (!fillBeatInner && firstInner >= 0 && requestInner[firstInner].request.write &&
@@ -340,21 +406,30 @@ module rv32_dcache #(
     end
     mergeSlotInner = oldest_request(candidates);
     mergeMissInner = mergeSlotInner >= 0 ? find_miss(line_of(requestInner[mergeSlotInner].request.address)) : -1;
+    // A: start another synchronous read while consuming an actually delivered
+    // old hit; misses, held results, fills and Store writes keep old priority.
+    continueHit = readValidInner && hitWayInner >= 0 && !fillBeatInner &&
+      !requestInner[readIndexInner].request.write && responseInner == int'(readIndexInner);
+    lookupActive = activeInner;
+    if (!fillBeatInner && responseInner >= 0) lookupActive[responseInner] = 1'b0;
+    lookupFirst = oldest_request(lookupActive);
     candidates = 0;
     for (int i = 0; i < REQUEST_DEPTH; i++)
       if (requestInner[i].active &&
+           !(readValidInner && int'(readIndexInner) == i) &&
            !requestInner[i].ready && !requestInner[i].hasMiss && i != mergeSlotInner &&
            requestInner[i].request.address != AXI_EXIT_ADDR &&
           !set_locked(requestInner[i].request.address) && !storeHazardInner[i] &&
           find_miss(line_of(requestInner[i].request.address)) < 0 &&
           (!requestInner[i].request.write || i == firstInner) &&
           (!requestInner[i].deferred || (i == firstInner && freeMissInner >= 0)) &&
-          (anyMiss || i == firstInner)) candidates[i] = 1;
+           (anyMiss || i == firstInner || i == lookupFirst)) candidates[i] = 1;
     lookupCandidateInner = oldest_request(candidates);
-    lookupInner = !readValidInner && !fillBeatInner && storeInner < 0 ? lookupCandidateInner : -1;
+    lookupInner = (!readValidInner || continueHit) && !fillBeatInner && storeInner < 0 ? lookupCandidateInner : -1;
     // Only lookupInner authorizes a read. With no candidate the truncated -1
     // selects a legal, inactive request row; its address is never consumed.
-    lookupAddressInner = set_of(requestInner[REQUEST_W'(lookupCandidateInner)].request.address);
+    lookupAddressInner = countInner == 0 ? set_of(cpuRequestInput.address) :
+      set_of(requestInner[REQUEST_W'(lookupCandidateInner)].request.address);
     readable = 0;
     writable = 0;
     for (int m = 0; m < MSHR_DEPTH; m++)
@@ -445,7 +520,7 @@ module rv32_dcache #(
       metaWriteInner[way] = 1;
       metaAddressInner[way] = set_of(requestInner[storeInner].request.address);
       metaWdataInner = {1'b1, requestInner[storeInner].request.address[31:OFFSET_W+INDEX_W]};
-    end else if (rstNInput && lookupInner >= 0) begin
+    end else if (rstNInput && (lookupInner >= 0 || acceptLookupInner)) begin
       for (int w = 0; w < WAYS; w++) begin
         metaEnableInner[w] = 1;
         for (int b = 0; b < WORDS_PER_LINE; b++) dataEnableBankInner[w][b] = 1;
@@ -481,8 +556,14 @@ module rv32_dcache #(
       cursorInner <= 0;
       readIndexInner <= 0;
       readValidInner <= 0;
+      readLookupAddressInner <= '0;
+      readLookupSizeInner <= '0;
       readWayMaskInner <= 0;
-      for (int i = 0; i < REQUEST_DEPTH; i++) begin requestInner[i] <= '0; olderInner[i] <= 0; end
+      for (int i = 0; i < REQUEST_DEPTH; i++) begin
+        requestInner[i] <= '0;
+        olderInner[i] <= 0;
+        byteEndInner[i] <= '0;
+      end
       for (int m = 0; m < MSHR_DEPTH; m++) missesInner[m] <= '0;
       for (int s = 0; s < SETS; s++) begin
         plruInner[s] <= 0;
@@ -491,14 +572,31 @@ module rv32_dcache #(
     end else begin
       countInner <= COUNT_W'(int'(countInner) + int'(acceptInner) - $countones(releasedInner));
       if (allocationInner >= 0) cursorInner <= REQUEST_W'(allocationInner + 1);
-      readValidInner <= lookupInner >= 0;
-      if (lookupInner >= 0) begin
+      readValidInner <= lookupInner >= 0 || acceptLookupInner;
+      if (acceptLookupInner) begin
+        readIndexInner <= REQUEST_W'(allocationInner);
+        readLookupAddressInner <= cpuRequestInput.address[OFFSET_W-1:0];
+        readLookupSizeInner <= cpuRequestInput.size;
+        for (int w = 0; w < WAYS; w++)
+          readWayMaskInner[w] <= validInner[set_of(cpuRequestInput.address)][w];
+      end else if (lookupInner >= 0) begin
         readIndexInner <= REQUEST_W'(lookupInner);
+        // Candidate index is independent of the late grant qualification;
+        // lookupInner>=0 guarantees it names this same old active request.
+        readLookupAddressInner <= requestInner[REQUEST_W'(lookupCandidateInner)].request.address[OFFSET_W-1:0];
+        readLookupSizeInner <= requestInner[REQUEST_W'(lookupCandidateInner)].request.size;
         for (int w = 0; w < WAYS; w++)
           readWayMaskInner[w] <= validInner[set_of(requestInner[lookupInner].request.address)][w];
       end
       for (int i = 0; i < REQUEST_DEPTH; i++) begin
-        if (i == allocationInner) requestInner[i] <= '{request:cpuRequestInput, active:1'b1, default:'0};
+        if (i == allocationInner) begin
+          requestInner[i] <= '{request:cpuRequestInput, active:1'b1, default:'0};
+          // Request address/size are immutable until this slot is reallocated.
+          // Compute its inclusive byte end on the SAME allocation edge, not
+          // on the critical response/Store-hazard qualification path.
+          byteEndInner[i] <= (OFFSET_W+1)'(cpuRequestInput.address[OFFSET_W-1:0]) +
+            (OFFSET_W+1)'(bytes_for_size(cpuRequestInput.size)-1);
+        end
         else begin
           requestInner[i].active <= requestInner[i].active && !releasedInner[i];
           if (releasedInner[i]) begin
@@ -582,6 +680,46 @@ module rv32_dcache #(
       end
     end
   end
+`ifndef SYNTHESIS
+  always @(posedge clkInput) if (rstNInput) begin
+    if (acceptLookupInner) begin
+      assert (acceptInner && allocationInner >= 0 && activeInner == 0 &&
+              !readValidInner && !fillBeatInner && storeInner < 0 && lookupInner < 0)
+        else $fatal(1, "DCache accepted read conflicts with older work");
+      for (int m = 0; m < MSHR_DEPTH; m++)
+        assert (!missesInner[m].valid)
+          else $fatal(1, "DCache empty request credits conceal an MSHR owner");
+    end
+    if (lookupInner >= 0) assert (lookupInner == lookupCandidateInner)
+      else $fatal(1, "DCache lookup metadata grant mismatch");
+    if (readValidInner)
+      assert (readLookupAddressInner == requestInner[readIndexInner].request.address[OFFSET_W-1:0] &&
+              readLookupSizeInner == requestInner[readIndexInner].request.size)
+        else $fatal(1, "DCache read snapshot diverged");
+  end
+`endif
+`ifndef SYNTHESIS
+  always @(posedge clkInput) if (rstNInput) begin
+    assert ($onehot0(normalWinnerInner)) else $fatal(1, "DCache response winner not unique");
+    assert ((normalResponseInner < 0) == !(|normalWinnerInner))
+      else $fatal(1, "DCache response winner lost");
+    if (normalResponseInner >= 0)
+      assert (normalWinnerInner[normalResponseInner])
+        else $fatal(1, "DCache response age mismatch");
+  end
+`endif
+`ifndef SYNTHESIS
+  always @(posedge clkInput) if (rstNInput) begin
+    logic [REQUEST_DEPTH-1:0] originalCandidates;
+    originalCandidates = normalBufferedMaskInner;
+    for (int row = 0; row < REQUEST_DEPTH; row++)
+      if (requestInner[row].active && !requestInner[row].request.write && !storeHazardInner[row] &&
+          readValidInner && readIndexInner == REQUEST_W'(row) && hitWayInner >= 0)
+        originalCandidates[row] = 1'b1;
+    assert (normalResponseInner == oldest_request(originalCandidates))
+      else $fatal(1,"DCache factored late-hit age mismatch");
+  end
+`endif
 `ifndef SYNTHESIS
   initial begin
     assert ((WAYS == 1 || WAYS == 2 || WAYS == 4) && SETS > 1 && (SETS & (SETS-1)) == 0 &&

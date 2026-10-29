@@ -1,4 +1,13 @@
-module student_top (
+module student_top #(
+    parameter int unsigned FETCH_WIDTH = rv32_pkg::FETCH_WIDTH,
+    parameter int unsigned COMMIT_WIDTH = rv32_pkg::COMMIT_WIDTH,
+    parameter int unsigned DECODE_WIDTH = rv32_pkg::DECODE_WIDTH,
+    parameter int unsigned RENAME_WIDTH = rv32_pkg::RENAME_WIDTH,
+    parameter int unsigned FQ_DEPTH = rv32_pkg::default_fq_entries(DECODE_WIDTH),
+    parameter int unsigned IQ_DEPTH = rv32_pkg::default_iq_entries(DECODE_WIDTH),
+    // Trailing parameter preserves legacy positional parameter ordering.
+    parameter int unsigned ISSUE_WIDTH = RENAME_WIDTH
+) (
     input  wire        clock,
     input  wire        reset,    // 高电平复位，初始化时保持 5 周期高电平
 
@@ -34,6 +43,12 @@ module student_top (
     logic haltedInner, trapInner;
     logic imemReadyInner, imemResponseValidInner, imemResponseReadyInner, imemFlushInner;
     logic [31:0] imemInstructionInner;
+    logic [31:0] imemSecondInstructionInner;
+    logic [127:0] imemPacketInstructionsInner;
+    logic [2:0] imemFetchCountInner;
+    logic [31:0] imemFetchPcInner;
+    logic imemSecondRequestInner;
+    icache_fetch_hint_t imemFetchHintInner;
     icache_cpu_request_input_t imemRequestInner;
     icache_cpu_response_output_t icacheResponseInner;
     cache_line_request_output_t fetchRequestInner;
@@ -56,11 +71,17 @@ module student_top (
     axi_slave_t slaveInner, fetchSlaveInner, dataSlaveInner;
     assign resetNInner = !reset;
 
-    rv32_core #(.TAGGED_DMEM(1'b1), .LEGACY_HALT(1'b0)) u_core (
+    rv32_core #(.TAGGED_DMEM(1'b1), .LEGACY_HALT(1'b0),
+                .FETCH_WIDTH(FETCH_WIDTH), .COMMIT_WIDTH(COMMIT_WIDTH),
+                .DECODE_WIDTH(DECODE_WIDTH), .RENAME_WIDTH(ISSUE_WIDTH), .ISSUE_WIDTH(ISSUE_WIDTH),
+                .FQ_DEPTH(FQ_DEPTH), .IQ_DEPTH(IQ_DEPTH)) u_core (
       .clkInput(clock), .rstNInput(resetNInner),
-      .imemReqValidOutput(), .imemReqAddrOutput(), .imemCacheRequestOutput(imemRequestInner),
+      .imemReqValidOutput(), .imemReqAddrOutput(imemFetchPcInner), .imemCacheRequestOutput(imemRequestInner),
       .imemReqReadyInput(imemReadyInner), .imemRspValidInput(imemResponseValidInner),
       .imemRspDataInput(imemInstructionInner), .imemRspReadyOutput(imemResponseReadyInner),
+      .imemRspSecondDataInput(imemSecondInstructionInner), .imemFetchHintInput(imemFetchHintInner),
+      .imemSecondRequestOutput(imemSecondRequestInner),
+      .imemRspPacketDataInput(imemPacketInstructionsInner), .imemFetchCountOutput(imemFetchCountInner),
       .imemFlushOutput(imemFlushInner),
       .dmemReqValidOutput(dmemValidInner), .dmemReqReadyInput(dmemReadyInner),
       .dmemReqWriteOutput(dmemWriteInner), .dmemReqAddrOutput(dmemAddressInner),
@@ -71,12 +92,17 @@ module student_top (
       .commitValidOutput(), .commitPcOutput(), .commitInstrOutput(),
       .commitRdValidOutput(), .commitRdOutput(), .commitRdValueOutput(),
       .commitMemValidOutput(), .commitMemAddrOutput(), .commitMemDataOutput(), .commitMemWstrbOutput(),
+      .retirementOutput(),
       .haltedOutput(haltedInner), .trapOutput(trapInner)
     );
     assign imemResponseValidInner = icacheResponseInner.valid;
     assign imemInstructionInner = icacheResponseInner.instruction;
-    rv32_icache u_icache (
+    rv32_icache #(.FETCH_WIDTH(FETCH_WIDTH)) u_icache (
       .clkInput(clock), .rstNInput(resetNInner), .freezeInput(haltedInner),
+      .secondInput(imemSecondRequestInner), .secondInstructionOutput(imemSecondInstructionInner),
+      .packetInstructionsOutput(imemPacketInstructionsInner),
+      .predecodeAddressInput(imemFetchPcInner),
+      .predecodeOutput(imemFetchHintInner),
       .flushInput(imemFlushInner), .cpuRequestInput(imemRequestInner),
       .cpuReqReadyOutput(imemReadyInner), .cpuResponseOutput(icacheResponseInner),
       .cpuRspReadyInput(imemResponseReadyInner), .memRequestOutput(fetchRequestInner),

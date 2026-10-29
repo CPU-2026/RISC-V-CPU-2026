@@ -33,14 +33,28 @@ module rv32_axi_data (
     logic mmio;
   } entry_t;
   entry_t entriesInner [DEPTH];
+  logic [DEPTH-1:0] lineCompleteInner, writeCompleteInner;
+  // Classify completion BEFORE the order-ring/descriptor selection. The
+  // selected queue head now chooses one bit instead of a multi-bit counter
+  // and MMIO flag followed by a late equality comparator. This adds no state
+  // and deliberately preserves the old-counter (not current B/R) contract.
+  for (genvar slot = 0; slot < DEPTH; slot++) begin : g_completion
+    assign lineCompleteInner[slot] = entriesInner[slot].collected == WORD_W'(WORDS);
+    assign writeCompleteInner[slot] = entriesInner[slot].mmio ?
+      entriesInner[slot].collected == WORD_W'(1) : lineCompleteInner[slot];
+  end
   logic [3:0] readOrderInner [ORDER_ROWS], writeOrderInner [ORDER_ROWS];
   wire [3:0] readIssueSlotInner = readOrderInner[readIssueSeqInner[3:0]];
   wire [3:0] readCollectSlotInner = readOrderInner[readCollectSeqInner[3:0]];
   wire [3:0] awIssueSlotInner = writeOrderInner[awIssueSeqInner[3:0]];
   wire [3:0] wIssueSlotInner = writeOrderInner[wIssueSeqInner[3:0]];
   wire [3:0] writeCollectSlotInner = writeOrderInner[writeCollectSeqInner[3:0]];
-  wire [3:0] readHeadSlotInner = readOrderInner[readHeadInner];
-  wire [3:0] writeHeadSlotInner = writeOrderInner[writeHeadInner];
+  localparam int SLOT_W = $clog2(DEPTH);
+  logic [SLOT_W-1:0] readHeadOwnerInner, writeHeadOwnerInner;
+  // Mirror the ring head at its update edge, avoiding order->descriptor
+  // indirection in every completion/payload consumer, including empty state.
+  wire [3:0] readHeadSlotInner = 4'(readHeadOwnerInner);
+  wire [3:0] writeHeadSlotInner = 4'(writeHeadOwnerInner);
   // DEPTH shared lines, organized by 32-bit word. Payload is deliberately not
   // reset: descriptors gate visibility and every read word is received before
   // a line is exposed. This is register storage, not an SRAM interface change.
@@ -100,14 +114,14 @@ module rv32_axi_data (
       int'(requestInput.writeValid || exitValidInput) < DEPTH;
     exitReadyOutput = rstNInput && readCountInner == 0 && writeCountInner == 0;
     responseOutput = '{valid:rstNInput && readCountInner != 0 &&
-      entriesInner[readHeadSlotInner].collected == WORD_W'(WORDS),
+      lineCompleteInner[readHeadSlotInner],
       address:entriesInner[readHeadSlotInner].address, transaction:entriesInner[readHeadSlotInner].transaction,
       data:'0};
     for (int wordIndex = 0; wordIndex < WORDS; wordIndex++)
       if (responseOutput.valid)
         responseOutput.data[wordIndex*32+:32] = payloadInner[readHeadSlotInner][wordIndex];
     writeResponseOutput = '{valid:rstNInput && writeCountInner != 0 &&
-      entriesInner[writeHeadSlotInner].collected == (entriesInner[writeHeadSlotInner].mmio ? WORD_W'(1) : WORD_W'(WORDS)),
+      writeCompleteInner[writeHeadSlotInner],
       address:entriesInner[writeHeadSlotInner].address, transaction:entriesInner[writeHeadSlotInner].transaction};
     masterOutput = '0;
     masterOutput.arValid = rstNInput && readIssueInner >= 0;
@@ -191,6 +205,23 @@ module rv32_axi_data (
       dataBusyInner <= (dataBusyInner & ~releasedInner) | allocatedInner;
     end
   end
+  // Mirror ownership at the edge which first exposes a head, not a cycle
+  // later. A final pop plus enqueue must bypass the old order-ring contents.
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) begin
+      readHeadOwnerInner <= '0;
+      writeHeadOwnerInner <= '0;
+    end else begin
+      if (pushReadInner && (readCountInner == 0 || (popReadInner && readCountInner == 1)))
+        readHeadOwnerInner <= SLOT_W'(readSlotInner);
+      else if (popReadInner)
+        readHeadOwnerInner <= SLOT_W'(readOrderInner[4'(readHeadInner + 4'd1)]);
+      if (pushWriteInner && (writeCountInner == 0 || (popWriteInner && writeCountInner == 1)))
+        writeHeadOwnerInner <= SLOT_W'(writeSlotInner);
+      else if (popWriteInner)
+        writeHeadOwnerInner <= SLOT_W'(writeOrderInner[4'(writeHeadInner + 4'd1)]);
+    end
+  end
   always_ff @(posedge clkInput) begin
     if (rstNInput) begin
       for (int slot = 0; slot < DEPTH; slot++) begin
@@ -209,6 +240,10 @@ module rv32_axi_data (
   always @(posedge clkInput) if (rstNInput) begin
     logic [DEPTH-1:0] owners;
     owners = '0;
+    assert (4'(readHeadOwnerInner) == readOrderInner[readHeadInner])
+      else $fatal(1, "AXI read head owner cache diverged");
+    assert (4'(writeHeadOwnerInner) == writeOrderInner[writeHeadInner])
+      else $fatal(1, "AXI write head owner cache diverged");
     assert (int'(readCountInner) + int'(writeCountInner) <= DEPTH);
     assert ($countones(dataBusyInner) == int'(readCountInner) + int'(writeCountInner));
     assert (readTailSeqInner[3:0] == 4'(readHeadInner + 4'(readCountInner)));

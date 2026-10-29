@@ -1,9 +1,11 @@
 module rv32_predictor #(
   parameter int unsigned BHT_ENTRIES = 256,
-  parameter int unsigned BTB_ENTRIES = 64,
+  parameter int unsigned BTB_ENTRIES = 32,
   parameter int unsigned RAS_ENTRIES = rv32_pkg::RAS_ENTRIES,
   parameter int unsigned CONDSEEN_ENTRIES = 512,
-  parameter int unsigned CKPT_ENTRIES = rv32_pkg::BPU_CKPT_ENTRIES
+  parameter int unsigned CKPT_ENTRIES = rv32_pkg::BPU_CKPT_ENTRIES,
+  parameter int unsigned COMMIT_WIDTH = 1,
+  parameter int unsigned FETCH_WIDTH = 1
 ) (
   input  logic                         clkInput,
   input  logic                         rstNInput,
@@ -14,6 +16,8 @@ module rv32_predictor #(
 
   // A checkpoint is allocated only when the frontend accepts this query.
   input  logic                         fetchAcceptInput,
+  input logic fetchPredictInput,
+  input logic fetchSecondInput,
 
   // Accepted fetch classification and execution-stage training arrive as
   // producer-owned payloads so related fields cannot be miswired separately.
@@ -21,15 +25,23 @@ module rv32_predictor #(
   input  rv32_pkg::branch_result_input_t branchInput,
   input  rv32_pkg::jump_result_input_t   jumpInput,
   input  rv32_pkg::squash_input_t         squashInput,
-  input  rv32_pkg::rob_predictor_input_t  robInput,
-  input  rv32_pkg::recovery_step_t recoveryInput
+  input  rv32_pkg::rob_predictor_input_t [COMMIT_WIDTH-1:0] robInput,
+  input  rv32_pkg::recovery_step_t recoveryInput,
+  input logic [2:0] fetchCountInput
 );
   import rv32_pkg::*;
+  if (FETCH_WIDTH != 1 && FETCH_WIDTH != 2 && FETCH_WIDTH != 4) begin : g_invalid_fetch_width
+    initial $fatal(1, "FETCH_WIDTH must be 1, 2 or 4");
+  end
+  if (COMMIT_WIDTH != 1 && COMMIT_WIDTH != 2 && COMMIT_WIDTH != 4) begin : g_invalid_commit_width
+    initial $fatal(1, "COMMIT_WIDTH must be 1, 2 or 4");
+  end
 
   logic dirTakenInner, dirUseGlobalInner, dirCondseenInner;
   logic [7:0] dirGhrInner;
   logic [7:0] branchGhrInner;
   direction_prediction_output_t directionOutputInner;
+  direction_context_t queryDirectionContextInner, branchDirectionContextInner;
 
   logic btbHitInner, btbUncondInner, btbRetInner;
   logic [31:0] btbTgtInner;
@@ -58,13 +70,15 @@ module rv32_predictor #(
                   programCounter: branchInput.programCounter,
                   nextProgramCounter: branchInput.nextProgramCounter,
                   taken: branchInput.taken,
-                  globalHistory: branchGhrInner}),
-    .historyInput('{fetchAccepted: fetchAcceptInput,
+                   globalHistory: branchGhrInner}),
+    .branchContextInput(branchDirectionContextInner),
+    .historyInput('{fetchAccepted: fetchAcceptInput && (FETCH_WIDTH == 1 || fetchPredictInput),
                    squashValid: squashInput.valid,
                      queryShift: queryShiftInner,
                      queryShiftValue: queryShiftValueInner,
                    recoveryHistory: ckptSquashGhrInner}),
-    .predictionOutput(directionOutputInner)
+    .predictionOutput(directionOutputInner),
+    .queryContextOutput(queryDirectionContextInner)
   );
   assign dirTakenInner = directionOutputInner.directionTaken;
   assign dirUseGlobalInner = directionOutputInner.useGlobal;
@@ -96,7 +110,7 @@ module rv32_predictor #(
   assign btbTgtInner = btbLookupOutputInner.target;
 
   rv32_bpu_ras #(
-    .RAS_ENTRIES(RAS_ENTRIES)
+    .RAS_ENTRIES(RAS_ENTRIES), .COMMIT_WIDTH(COMMIT_WIDTH)
   ) u_ras (
     .freezeInput(freezeInput),
     .clkInput(clkInput), .rstNInput(rstNInput),
@@ -109,15 +123,19 @@ module rv32_predictor #(
   );
 
   rv32_bpu_checkpoint #(
-    .CKPT_ENTRIES(CKPT_ENTRIES)
+    .CKPT_ENTRIES(CKPT_ENTRIES), .FETCH_WIDTH(FETCH_WIDTH)
   ) u_checkpoint (
     .freezeInput(freezeInput),
     .clkInput(clkInput), .rstNInput(rstNInput),
+    .secondAcceptedInput(fetchSecondInput),
+    .acceptedCountInput(fetchCountInput),
     .checkpointInput('{fetchAccepted: fetchAcceptInput,
                       squash: squashInput,
                       branchCheckpointId: branchInput.checkpointId,
                       globalHistory: dirGhrInner}),
     .checkpointOutput(checkpointOutputInner),
+    .queryContextInput(queryDirectionContextInner),
+    .branchContextOutput(branchDirectionContextInner),
     .nextCheckpointIdOutput(predictionOutput.checkpointId)
   );
   assign branchGhrInner = checkpointOutputInner.branchHistory;

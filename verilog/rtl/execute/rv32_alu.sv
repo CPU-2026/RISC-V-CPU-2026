@@ -6,20 +6,21 @@ module rv32_alu (
 
   logic [31:0] operandBInner;
   logic [31:0] sumAddInner;
-  logic [31:0] sumSubInner;
+  logic subtractInner;
+  logic [31:0] arithmeticOperandBInner;
   logic [31:0] sumAuipcInner;
-  logic unusedCoutAddInner, unusedCoutAuipcInner, unusedBorrowInner;
+  logic unusedCoutAddInner, unusedCoutAuipcInner;
 
   assign operandBInner = aluInput.useImmediate ? aluInput.immediate : aluInput.rightOperand;
 
-  rv32_add #(.WIDTH(32)) u_add (
-    .aInput(aluInput.leftOperand), .bInput(operandBInner), .cinInput(1'b0),
-    .sumOutput(sumAddInner), .coutOutput(unusedCoutAddInner)
-  );
+  // SUB uses two's complement B and carry-in; ADD/JALR keep ordinary B.
+  // Sharing the carry network also removes a second load on late source A.
+  assign subtractInner = (aluInput.operation == OP_SUB);
+  assign arithmeticOperandBInner = operandBInner ^ {32{subtractInner}};
 
-  rv32_sub #(.WIDTH(32)) u_sub (
-    .aInput(aluInput.leftOperand), .bInput(operandBInner),
-    .diffOutput(sumSubInner), .borrowOutput(unusedBorrowInner)
+  rv32_add #(.WIDTH(32)) u_add (
+    .aInput(aluInput.leftOperand), .bInput(arithmeticOperandBInner), .cinInput(subtractInner),
+    .sumOutput(sumAddInner), .coutOutput(unusedCoutAddInner)
   );
 
   rv32_add #(.WIDTH(32)) u_auipc (
@@ -30,7 +31,7 @@ module rv32_alu (
   always_comb begin
     unique case (aluInput.operation)
       OP_ADD:   aluOutput.value = sumAddInner;
-      OP_SUB:   aluOutput.value = sumSubInner;
+      OP_SUB:   aluOutput.value = sumAddInner;
       OP_SLL:   aluOutput.value = aluInput.leftOperand << operandBInner[4:0];
       OP_SLT:   aluOutput.value = {31'b0, $signed(aluInput.leftOperand) < $signed(operandBInner)};
       OP_SLTU:  aluOutput.value = {31'b0, aluInput.leftOperand < operandBInner};

@@ -43,7 +43,6 @@ module rv32_alu_unit #(
   rob_tag_t    tagInner [DEPTH];
   phy_tag_t    phyInner [DEPTH];
   logic        controlInner [DEPTH];
-  logic        controlMisalignedInner [DEPTH];
   logic        validInner [DEPTH];
 
   logic               headFoundInner;
@@ -73,15 +72,28 @@ module rv32_alu_unit #(
     // Oldest valid entry wins the result bus (reference headValue/headRobTag).
     headFoundInner = 1'b0;
     headIndexInner = '0;
-    for (combIndexInner = 0; combIndexInner < DEPTH; combIndexInner = combIndexInner + 1) begin
-      if (validInner[combIndexInner] &&
+    for (int headRow = 0; headRow < DEPTH; headRow++) begin
+      if (validInner[headRow] &&
           (!headFoundInner ||
-           rob_is_older(tagInner[combIndexInner], tagInner[headIndexInner]))) begin
+           rob_is_older(tagInner[headRow], tagInner[headIndexInner]))) begin
         headFoundInner = 1'b1;
-        headIndexInner = combIndexInner[INDEX_W-1:0];
+        headIndexInner = INDEX_W'(headRow);
       end
     end
 
+  end
+
+  // Raw registered results must be independent of the downstream grant. Keep
+  // them out of the capacity block to avoid result -> grant -> capacity ->
+  // result process-level feedback when two ALUs share a CDB.
+  assign executeOutput.valid = headFoundInner;
+  assign executeOutput.value = valueInner[headIndexInner];
+  assign executeOutput.robTag = tagInner[headIndexInner];
+  assign executeOutput.destinationPhy = phyInner[headIndexInner];
+  assign executeOutput.isControl = controlInner[headIndexInner];
+  assign executeOutput.controlMisaligned = 1'b0;
+
+  always_comb begin
     // This cycle's releases, computed once from the committed bitmap.  The
     // sequential block below reuses the very same signals, so a slot admitted by
     // allocation is guaranteed to be released this cycle.
@@ -107,26 +119,20 @@ module rv32_alu_unit #(
       end
     end
 
-    pushHereInner = executeInput.valid && allocFoundInner;
-    pushFlushedInner = flushInfoInput.valid &&
-        !rob_is_older(executeInput.robTag, flushInfoInput.robTag);
     // The reference gates dispatch on capacity alone and drops a squashed push,
     // so acceptance does not depend on the incoming op's age.
     inReadyOutput = allocFoundInner;
-
-    // Raw result visibility is retained; the core authenticates output age.
-    executeOutput.valid = headFoundInner;
-    executeOutput.value = valueInner[headIndexInner];
-    executeOutput.robTag = tagInner[headIndexInner];
-    executeOutput.destinationPhy = phyInner[headIndexInner];
-    executeOutput.isControl = controlInner[headIndexInner];
-    executeOutput.controlMisaligned = controlMisalignedInner[headIndexInner];
 
     occupancyOutput = '0;
     for (combIndexInner = 0; combIndexInner < DEPTH; combIndexInner = combIndexInner + 1)
       if (validInner[combIndexInner])
         occupancyOutput = occupancyOutput + 1'b1;
   end
+
+  // New work does not affect visibility/acceptance of OLD registered results.
+  assign pushHereInner = executeInput.valid && allocFoundInner;
+  assign pushFlushedInner = flushInfoInput.valid &&
+    !rob_is_older(executeInput.robTag, flushInfoInput.robTag);
 
   always_ff @(posedge clkInput or negedge rstNInput) begin
     if (!rstNInput) begin
@@ -136,7 +142,6 @@ module rv32_alu_unit #(
         tagInner[seqIndexInner] <= '0;
         phyInner[seqIndexInner] <= '0;
         controlInner[seqIndexInner] <= 1'b0;
-        controlMisalignedInner[seqIndexInner] <= 1'b0;
       end
     end else if (!freezeInput) begin
       // Single assignment per slot, priority push > flush > grant > keep.  A
@@ -148,8 +153,6 @@ module rv32_alu_unit #(
           tagInner[seqIndexInner] <= executeInput.robTag;
           phyInner[seqIndexInner] <= executeInput.destinationPhy;
           controlInner[seqIndexInner] <= executeInput.isControl;
-          controlMisalignedInner[seqIndexInner] <=
-              executeInput.isControl && (aluResultInner[1:0] != 2'b00);
           validInner[seqIndexInner] <= !pushFlushedInner;
         end else if (flushedInner[seqIndexInner]) begin
           validInner[seqIndexInner] <= 1'b0;

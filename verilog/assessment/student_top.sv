@@ -62,6 +62,7 @@ module student_top (
   assign coreResetNInner = !reset;
 
   rv32_core #(
+    .FETCH_WIDTH(1),
     .LEGACY_HALT(1'b1),
 `ifdef ASSESS_CORE_ONLY
     .TAGGED_DMEM(1'b0)

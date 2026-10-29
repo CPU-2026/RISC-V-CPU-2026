@@ -33,7 +33,7 @@ module tb_cpu;
 
   logic imemRspReadyOutput, imemFlushOutput;
   rv32_pkg::icache_cpu_request_input_t imemCacheRequestOutput;
-  rv32_core dut (.*);
+  rv32_core #(.FETCH_WIDTH(1)) dut (.*);
   function automatic logic [31:0] instruction(input logic [31:0] pc);
     case (pc)
       0: return 32'h04000093;

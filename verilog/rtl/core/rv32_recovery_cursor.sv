@@ -13,9 +13,14 @@ module rv32_recovery_cursor (
   logic activeInner;
   logic [1:0] beatInner;
   rob_tag_t offsetInner, nextTagInner, squashTagInner, countInner;
+  logic lastBeatInner;
+  // Visit the ENTIRE original live window, including the canceled suffix for
+  // PRF recycling. The architectural SRAM still gets its original read edge
+  // and at least one replay beat. Empty beats beyond the old tail are omitted.
+  assign lastBeatInner = offsetInner + rob_tag_t'(RECOVERY_WIDTH) >= countInner;
 
   assign stepOutput = '{active: activeInner, first: beatInner == 0,
-    last: beatInner == 2'd3, offset: offsetInner, nextTag: nextTagInner,
+    last: lastBeatInner, offset: offsetInner, nextTag: nextTagInner,
     squashTag: squashTagInner, liveCount: countInner};
 
   always_ff @(posedge clkInput or negedge rstNInput) begin
@@ -37,7 +42,7 @@ module rv32_recovery_cursor (
       end else if (activeInner) begin
         nextTagInner <= nextTagInner + rob_tag_t'(RECOVERY_WIDTH);
         offsetInner <= offsetInner + rob_tag_t'(RECOVERY_WIDTH);
-        if (beatInner == 2'd3)
+        if (lastBeatInner)
           activeInner <= 1'b0;
         else
           beatInner <= beatInner + 2'd1;

@@ -15,14 +15,8 @@
 
 ## 当前集成状态
 
-当前保留的实现包含两个原生顶层模块：
-
-* `cpu_top`：无 Cache 的顶层模块，采用分离的指令/数据 ready-valid 接口
-* `cpu_cached_top`：包含 Cache 的顶层模块，采用 128-bit Cache Line 内存接口
-
-这两个模块目前都**不是课程框架要求的 `student_top` AXI4-Lite 顶层模块**。
-
-因此，在增加相应的适配层（Adapter）之前，课程官方提供的以下流程暂时无法直接运行：
+课程顶层为 `rtl/student_top.sv`，使用 AXI4-Lite、高电平复位和 MMIO Store 退出，
+SRAM 由课程 FakeRAM 模型实现。默认入口支持：
 
 ```bash
 make build
@@ -31,12 +25,18 @@ make perf
 make synth
 ```
 
-适配层需要完成至少以下工作：
+2026-10-29 用户明确要求采用已验证的最高 IPC 候选，默认配置改为：
 
-* 提供课程框架要求的 **AXI4-Lite 接口**
-* 适配课程框架使用的 **高电平有效复位（Active-High Reset）**
-* 实现通过 **MMIO Store** 触发程序退出的机制
-* 将现有 SRAM 接口适配为与 **FakeRAM** 兼容的 SRAM 实现
+* fetch4 / decode4 / ordered-allocation4 / commit4；分配宽度不是四个执行口。
+* ROB32 / PRF64 / 预测检查点64 / FQ8 / IQ8；DCache 8 KiB。
+* 双 ALU、单 AGU；ALU0→CDB0、ALU1→CDB1，Load/MUL/DIV→共享 CDB2。
+* 默认值在 `rtl/common/rv32_pkg.sv`，普通 `make build` / `make perf` 无需额外宽度宏。
+
+该候选此前通过 native lint 和原始六项 perf 的独立退休 ISA 检查，历史几何 IPC 为
+0.859877973781；这不是课程默认 Slave 下的新测量，也不代表达到 IPC>0.865 或面积/频率门槛。
+本次切换的备份、来源核验和复验记录位于
+`../../sync/evidence/superscalar4-production-adoption-20261029-r01/`。
+**尚无本配置的有效最终面积/Fmax，切换不恢复已暂停的正式 PPA。**
 
 目前官方的：
 

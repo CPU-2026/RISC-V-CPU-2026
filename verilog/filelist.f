@@ -1,15 +1,24 @@
 # RTL paths are relative to this file in verilog/.
 rtl/common/rv32_pkg.sv
+rtl/common/rv32_issue_config.sv
 rtl/common/rv32_cla.sv
 rtl/common/rv32_epoch_fifo.sv
+rtl/common/rv32_prefix_fifo.sv
+rtl/common/rv32_fetch_packet_fifo.sv
 rtl/core/rv32_core.sv
 rtl/core/rv32_recovery_cursor.sv
 rtl/core/rv32_flush_arbiter.sv
 rtl/frontend/rv32_decoder.sv
+rtl/frontend/rv32_decode_issue_queue.sv
 rtl/frontend/rv32_frontend.sv
 rtl/backend/rv32_rat.sv
+rtl/backend/rv32_rat_lanes.sv
 rtl/backend/rv32_prf.sv
+rtl/backend/rv32_prf_lanes.sv
 rtl/backend/rv32_rob.sv
+rtl/backend/rv32_rob_lanes.sv
+rtl/backend/rv32_rename_plan.sv
+rtl/backend/rv32_rename_four.sv
 rtl/backend/rv32_rs.sv
 rtl/backend/rv32_cdb_arbiter.sv
 rtl/memory/rv32_lsu.sv

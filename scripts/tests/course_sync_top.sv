@@ -7,7 +7,7 @@ module course_sync_top (
   input logic arready, rvalid, awready, wready, bvalid,
   input logic [31:0] rdata,
   input logic [1:0] rresp, bresp,
-  output logic [31:0] observe [57]
+   output logic [31:0] observe [57 + (9 * rv32_pkg::COMMIT_WIDTH)]
 );
   student_top dut (.*);
   always_comb begin
@@ -68,5 +68,16 @@ module course_sync_top (
     observe[54] = 32'(dut.dcacheResponseInner.valid);
     observe[55] = dut.dcacheResponseInner.readData;
     observe[56] = 32'(dut.dataResponseReadyInner);
+    for (int lane = 0; lane < rv32_pkg::COMMIT_WIDTH; lane++) begin
+      observe[57 + 9*lane] = 32'(dut.u_core.retirementOutput[lane].valid);
+      observe[58 + 9*lane] = dut.u_core.retirementOutput[lane].pc;
+      observe[59 + 9*lane] = 32'(dut.u_core.retirementOutput[lane].rdValid);
+      observe[60 + 9*lane] = 32'(dut.u_core.retirementOutput[lane].rd);
+      observe[61 + 9*lane] = dut.u_core.retirementOutput[lane].value;
+      observe[62 + 9*lane] = 32'(dut.u_core.retirementOutput[lane].store);
+      observe[63 + 9*lane] = dut.u_core.retirementOutput[lane].address;
+      observe[64 + 9*lane] = dut.u_core.retirementOutput[lane].data;
+      observe[65 + 9*lane] = 32'(dut.u_core.retirementOutput[lane].strobe);
+    end
   end
 endmodule

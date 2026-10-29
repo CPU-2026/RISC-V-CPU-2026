@@ -70,7 +70,9 @@ def explicit_port_patterns(sources, directory):
             for start, end, replacement in reversed(replacements):
                 block = block[:start] + replacement + block[end:]
             return block
-        rewritten = re.sub(r"^  (rv32_\w+)\s+.*?\);", instance, text, flags=re.MULTILINE | re.DOTALL)
+        # Instances inside generate branches have deeper indentation. Restrict
+        # the match to horizontal whitespace, not exactly two leading spaces.
+        rewritten = re.sub(r"^[ \t]+(rv32_\w+)\s+.*?\);", instance, text, flags=re.MULTILINE | re.DOTALL)
         if path.name == "rv32_prf.sv":
             # Avoid sv2v's nonconstant replication width in this typed '0.
             rewritten = rewritten.replace("& ROB_AGE_MASK) != '0)",
@@ -79,6 +81,53 @@ def explicit_port_patterns(sources, directory):
         target.write_text(rewritten)
         staged.append(target)
     return staged, changes
+
+
+def factor_registered_axi_outputs(staged):
+    """Separate known independent output equations in generated copies only.
+
+    Flattening structs otherwise makes Verilator group exit admission and old
+    response payloads into one false combinational cycle. Move RHSs verbatim;
+    do not suppress UNOPTFLAT, change a handshake, or touch production RTL.
+    """
+    expected = """    responseOutput = '{valid:rstNInput && readCountInner != 0 &&
+      lineCompleteInner[readHeadSlotInner],
+      address:entriesInner[readHeadSlotInner].address, transaction:entriesInner[readHeadSlotInner].transaction,
+      data:'0};
+    for (int wordIndex = 0; wordIndex < WORDS; wordIndex++)
+      if (responseOutput.valid)
+        responseOutput.data[wordIndex*32+:32] = payloadInner[readHeadSlotInner][wordIndex];
+    writeResponseOutput = '{valid:rstNInput && writeCountInner != 0 &&
+      writeCompleteInner[writeHeadSlotInner],
+      address:entriesInner[writeHeadSlotInner].address, transaction:entriesInner[writeHeadSlotInner].transaction};
+"""
+    changes = []
+    for path in staged:
+        if path.name != "rv32_axi_data.sv":
+            continue
+        text = path.read_text()
+        start = text.index("    writeReadyOutput = rstNInput")
+        middle = text.index("    responseOutput = '", start)
+        end = text.index("    masterOutput = '0;", middle)
+        responses = text[middle:end]
+        if responses != expected:
+            raise ValueError("unknown AXI registered response equations; review before factoring staged copy")
+        readiness, count = re.subn(r"^    (writeReadyOutput|readReadyOutput|exitReadyOutput) =",
+                                  r"  assign \1 =", text[start:middle], flags=re.MULTILINE)
+        if count != 3:
+            raise ValueError("unknown AXI admission equations; review before factoring staged copy")
+        marker = "  assign pushWriteInner ="
+        if text.count(marker) != 1:
+            raise ValueError("unknown AXI output block boundary")
+        rewritten = text[:start] + text[end:]
+        rewritten = rewritten.replace(marker,
+            "  always_comb begin : registered_axi_responses\n" + responses + "  end\n" + readiness + marker)
+        before = hashlib.sha256(path.read_bytes()).hexdigest()
+        path.write_text(rewritten)
+        changes.append({"source": str(path), "before_sha256": before,
+                        "after_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        "operation": "Separate registered response block and continuous admission; original RHSs verbatim"})
+    return changes
 
 
 def convert_sources(sv2v, sources, directory, *, top="student_top", defines=("SYNTHESIS",)):
@@ -90,6 +139,7 @@ def convert_sources(sv2v, sources, directory, *, top="student_top", defines=("SY
     rejects every surviving latch, undriven signal and unmapped cell.
     """
     staged, changes = explicit_port_patterns(sources, directory / "sources")
+    factorizations = factor_registered_axi_outputs(staged)
     command = [sv2v, *[arg for define in defines for arg in ("-D", define)],
                "--exclude=Always", f"--top={top}", *map(str, staged)]
     converted = directory / "converted.v"
@@ -105,6 +155,7 @@ def convert_sources(sv2v, sources, directory, *, top="student_top", defines=("SY
         "sv2v": subprocess.check_output([sv2v, "--version"], text=True).strip(),
         "conversion_command": command,
         "explicit_port_patterns": changes,
+        "registered_output_factorization": factorizations,
         "combinational_lowering": "always_comb -> always @*; surviving latches rejected",
         "converted_sha256": hashlib.sha256(converted.read_bytes()).hexdigest(),
     }

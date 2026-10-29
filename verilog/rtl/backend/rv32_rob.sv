@@ -1,5 +1,7 @@
 module rv32_rob #(
-  parameter int unsigned DEPTH = rv32_pkg::ROB_ENTRIES
+  parameter int unsigned DEPTH = rv32_pkg::ROB_ENTRIES,
+  parameter int unsigned COMMIT_WIDTH = 1,
+  parameter int unsigned RENAME_WIDTH = 1
 ) (
   input  logic                   clkInput,
   input  logic                   rstNInput,
@@ -8,15 +10,18 @@ module rv32_rob #(
   input  rv32_pkg::rob_allocation_input_t allocInput,
   output logic                   allocReadyOutput,
   output rv32_pkg::rob_tag_t     allocTagOutput,
+  input  rv32_pkg::rob_allocation_input_t allocSecondInput,
+  output logic allocSecondReadyOutput,
+  output rv32_pkg::rob_tag_t allocSecondTagOutput,
   input  rv32_pkg::rob_completion_t [5:0] completionInput,
   input  rv32_pkg::store_completion_output_t storeReadyInput,
   input  rv32_pkg::rob_flush_input_t flushInput,
   input  rv32_pkg::rob_lookup_input_t [4:0] lookupInput,
   output rv32_pkg::rob_lookup_output_t [4:0] lookupOutput,
-  output rv32_pkg::rob_commit_output_t commitOutput,
-  output logic                   commitStoreOutput,
-  input  logic                   commitReadyInput,
-  output logic                   commitFireOutput,
+  output rv32_pkg::rob_commit_output_t [COMMIT_WIDTH-1:0] commitOutput,
+  output logic [COMMIT_WIDTH-1:0] commitStoreOutput,
+  input  logic [COMMIT_WIDTH-1:0] commitReadyInput,
+  output logic [COMMIT_WIDTH-1:0] commitFireOutput,
   output rv32_pkg::rob_status_output_t statusOutput,
   output logic [$clog2(DEPTH+1)-1:0] countOutput,
 
@@ -25,6 +30,12 @@ module rv32_rob #(
   output rv32_pkg::rob_replay_ras_t    [rv32_pkg::RECOVERY_WIDTH-1:0] replayRasOutput
 );
   import rv32_pkg::*;
+  if (RENAME_WIDTH != 1 && RENAME_WIDTH != 2) begin : g_invalid_rename_width
+    initial $fatal(1, "RENAME_WIDTH must be 1 or 2");
+  end
+  if (COMMIT_WIDTH != 1 && COMMIT_WIDTH != 2) begin : g_invalid_commit_width
+    initial $fatal(1, "COMMIT_WIDTH must be 1 or 2");
+  end
 
   localparam int unsigned SLOT_W = $clog2(DEPTH);
   localparam int unsigned COUNT_W = $clog2(DEPTH + 1);
@@ -41,7 +52,6 @@ module rv32_rob #(
   logic storeInner [DEPTH];
   logic [2:0] sqIndexInner [DEPTH];
   logic haltInner [DEPTH];
-  logic exceptionInner [DEPTH];
   logic [31:0] predictedPcInner [DEPTH];
   bpu_ckpt_id_t predictorCkptIdInner [DEPTH];
   logic isRetInner [DEPTH];
@@ -61,14 +71,43 @@ module rv32_rob #(
   logic unusedCoutHeadInner, unusedCoutTailInner;
   logic unusedCoutCountUpInner, unusedBorrowCountDownInner;
   logic unusedBorrowFlushCommitInner;
-  logic [DEPTH-1:0] readySetInner, exceptionSetInner;
+  logic [DEPTH-1:0] readySetInner;
   logic [DEPTH-1:0] storeBitmapReadyInner;
+  logic [COUNT_W-1:0] commitCountInner;
+  logic allocFireInner, allocSecondFireInner;
+  logic [COUNT_W-1:0] allocCountInner;
+  logic [SLOT_W-1:0] secondSlotInner;
+  assign allocFireInner = allocInput.valid && allocReadyOutput;
+  assign allocSecondReadyOutput = RENAME_WIDTH == 2 && !flushInput.valid && int'(countInner) <= DEPTH-2;
+  assign allocSecondTagOutput = tailInner + rob_tag_t'(1);
+  assign secondSlotInner = tailSlotInner + SLOT_W'(1);
+  assign allocSecondFireInner = RENAME_WIDTH == 2 && allocFireInner && allocSecondInput.valid && allocSecondReadyOutput;
+  assign allocCountInner = COUNT_W'(allocFireInner) + COUNT_W'(allocSecondFireInner);
+  // Compile-time selection: single retirement has no second-lane prefix or
+  // commit-count adder. The dual path retains the validated age-order fold.
+  generate if (COMMIT_WIDTH == 1) begin : g_single_commit
+    assign commitCountInner = COUNT_W'(commitFireOutput[0]);
+    assign commitFireOutput[0] = commitOutput[0].valid && commitReadyInput[0];
+  end else begin : g_dual_commit
+    always_comb begin
+      commitCountInner = '0;
+      for (int lane = 0; lane < COMMIT_WIDTH; lane++)
+        commitCountInner = commitCountInner + COUNT_W'(commitFireOutput[lane]);
+    end
+    always_comb begin : commit_prefix
+      logic open;
+      open = 1'b1;
+      for (int lane = 0; lane < COMMIT_WIDTH; lane++) begin
+        commitFireOutput[lane] = open && commitOutput[lane].valid && commitReadyInput[lane];
+        open = commitFireOutput[lane];
+      end
+    end
+  end endgenerate
 
   // Merge completion intents per physical row. The bitmap uses the FULL
   // package slot index, not SLOT_W: reduced DEPTH must retain all tag bits.
   always_comb begin
     readySetInner = '0;
-    exceptionSetInner = '0;
     for (int row = 0; row < DEPTH; row = row + 1) begin
       if (validInner[row] &&
           (!flushInput.valid || rob_is_older(tagInner[row], flushInput.robTag))) begin
@@ -77,8 +116,6 @@ module rv32_rob #(
         for (int portIndex = 0; portIndex < 6; portIndex = portIndex + 1) begin
           if (completionInput[portIndex].valid && completionInput[portIndex].robTag == tagInner[row]) begin
             readySetInner[row] = 1'b1;
-            if ((portIndex == 0 || portIndex == 4) && completionInput[portIndex].exception)
-              exceptionSetInner[row] = 1'b1;
           end
         end
       end
@@ -86,7 +123,7 @@ module rv32_rob #(
   end
 
   // Exactly one ready write per row; allocation initialization wins. Retirement
-  // still observes the old ready bit and remains at most one instruction/cycle.
+  // still observes the old ready bit and is bounded by COMMIT_WIDTH.
   generate
     for (genvar row = 0; row < DEPTH; row = row + 1) begin : gen_ready_write
       if (DEPTH == ROB_ENTRIES) begin : gen_constant_bitmap_slot
@@ -101,7 +138,9 @@ module rv32_rob #(
       always_ff @(posedge clkInput or negedge rstNInput) begin
         if (!rstNInput) readyInner[row] <= 1'b0;
         else if (!freezeInput && allocInput.valid && allocReadyOutput && tailSlotInner == SLOT_W'(row))
-          readyInner[row] <= allocInput.ready || allocInput.isHalt || allocInput.hasException;
+          readyInner[row] <= allocInput.ready || allocInput.isHalt;
+        else if (!freezeInput && allocSecondFireInner && secondSlotInner == SLOT_W'(row))
+          readyInner[row] <= allocSecondInput.ready || allocSecondInput.isHalt;
         else if (!freezeInput && readySetInner[row]) readyInner[row] <= 1'b1;
       end
     end
@@ -145,12 +184,12 @@ module rv32_rob #(
   );
 
   rv32_add #(.WIDTH(ROB_TAG_W)) u_head_next (
-    .aInput(headInner), .bInput(ROB_TAG_W'(1)), .cinInput(1'b0),
+    .aInput(headInner), .bInput(ROB_TAG_W'(commitCountInner)), .cinInput(1'b0),
     .sumOutput(headNext), .coutOutput(unusedCoutHeadInner)
   );
 
   rv32_add #(.WIDTH(ROB_TAG_W)) u_tail_next (
-    .aInput(tailInner), .bInput(ROB_TAG_W'(1)), .cinInput(1'b0),
+    .aInput(tailInner), .bInput(ROB_TAG_W'(allocCountInner)), .cinInput(1'b0),
     .sumOutput(tailNext), .coutOutput(unusedCoutTailInner)
   );
 
@@ -160,12 +199,12 @@ module rv32_rob #(
   );
 
   rv32_sub #(.WIDTH(COUNT_W)) u_count_down (
-    .aInput(countInner), .bInput(COUNT_W'(1)),
+    .aInput(countInner), .bInput(commitCountInner),
     .diffOutput(countDownInner), .borrowOutput(unusedBorrowCountDownInner)
   );
 
   rv32_sub #(.WIDTH(COUNT_W)) u_flush_count_after_commit (
-    .aInput(flushCountInner[COUNT_W-1:0]), .bInput(COUNT_W'(1)),
+    .aInput(flushCountInner[COUNT_W-1:0]), .bInput(commitCountInner),
     .diffOutput(flushCountAfterCommitInner),
     .borrowOutput(unusedBorrowFlushCommitInner)
   );
@@ -205,25 +244,36 @@ module rv32_rob #(
                       (tagInner[lookupInput[4].robTag[SLOT_W-1:0]] == lookupInput[4].robTag);
   end
 
-  always_comb begin
-    commitOutput.valid = (countInner != '0) && validInner[headInner[SLOT_W-1:0]] &&
-                     readyInner[headInner[SLOT_W-1:0]] &&
-                      (!flushInput.valid || rob_is_older(tagInner[headSlotInner], flushInput.robTag));
-    commitOutput.robTag = tagInner[headSlotInner];
-    commitOutput.programCounter = pcInner[headSlotInner];
-    commitOutput.instruction = instrInner[headSlotInner];
-    commitOutput.writesArchitecturalRegister = writesRdInner[headSlotInner];
-    commitOutput.architecturalRegister = archRdInner[headSlotInner];
-    commitOutput.newPhysicalRegister = newPhyInner[headSlotInner];
-    commitOutput.oldPhysicalRegister = oldPhyInner[headSlotInner];
-    commitStoreOutput = storeInner[headSlotInner];
-    commitOutput.storeQueueIndex = sqIndexInner[headSlotInner];
-    commitOutput.isHalt = haltInner[headSlotInner];
-    commitOutput.hasException = exceptionInner[headSlotInner];
+  // Fold candidates locally rather than feeding a packed output array back
+  // through per-lane blocks. Eligibility is old-state only, independent of
+  // downstream ready; the separate fire fold enforces consumer acceptance.
+  always_comb begin : commit_candidates
+    logic prefix;
+    logic [SLOT_W-1:0] slot;
+    logic eligible;
+    prefix = !freezeInput;
+    slot = '0;
+    eligible = 1'b0;
+    for (int lane = 0; lane < COMMIT_WIDTH; lane++) begin
+      slot = headInner[SLOT_W-1:0] + SLOT_W'(lane);
+      eligible = prefix && int'(countInner) > lane && validInner[slot] &&
+        tagInner[slot] == headInner + rob_tag_t'(lane) && readyInner[slot] &&
+        (!flushInput.valid || rob_is_older(tagInner[slot], flushInput.robTag));
+      commitOutput[lane].valid = eligible;
+      commitOutput[lane].robTag = tagInner[slot];
+      commitOutput[lane].programCounter = pcInner[slot];
+      commitOutput[lane].instruction = instrInner[slot];
+      commitOutput[lane].writesArchitecturalRegister = writesRdInner[slot];
+      commitOutput[lane].architecturalRegister = archRdInner[slot];
+      commitOutput[lane].newPhysicalRegister = newPhyInner[slot];
+      commitOutput[lane].oldPhysicalRegister = oldPhyInner[slot];
+      commitStoreOutput[lane] = storeInner[slot];
+      commitOutput[lane].storeQueueIndex = sqIndexInner[slot];
+      commitOutput[lane].isHalt = haltInner[slot];
+      commitOutput[lane].hasException = 1'b0; // Compatibility field, no exception state.
+      prefix = eligible && !haltInner[slot];
+    end
   end
-
-  assign commitFireOutput = commitOutput.valid && commitReadyInput;
-
   always_ff @(posedge clkInput or negedge rstNInput) begin
     if (!rstNInput) begin
       headInner <= '0;
@@ -241,7 +291,6 @@ module rv32_rob #(
         storeInner[iInner] <= 1'b0;
         sqIndexInner[iInner] <= '0;
         haltInner[iInner] <= 1'b0;
-        exceptionInner[iInner] <= 1'b0;
         predictedPcInner[iInner] <= '0;
         predictorCkptIdInner[iInner] <= '0;
         isRetInner[iInner] <= 1'b0;
@@ -255,19 +304,15 @@ module rv32_rob #(
           validInner[iInner] <= 1'b0;
       end
 
-      for (iInner = 0; iInner < DEPTH; iInner = iInner + 1)
-        if (exceptionSetInner[iInner]) exceptionInner[iInner] <= 1'b1;
-
-      if (commitFireOutput) begin
-        validInner[headSlotInner] <= 1'b0;
+      if (commitCountInner != 0) begin
+        for (int lane = 0; lane < COMMIT_WIDTH; lane++)
+          if (commitFireOutput[lane]) validInner[SLOT_W'(headInner + rob_tag_t'(lane))] <= 1'b0;
         headInner <= headNext;
       end
     end else if (!freezeInput) begin
-      for (iInner = 0; iInner < DEPTH; iInner = iInner + 1)
-        if (exceptionSetInner[iInner]) exceptionInner[iInner] <= 1'b1;
-
-      if (commitFireOutput) begin
-        validInner[headSlotInner] <= 1'b0;
+      if (commitCountInner != 0) begin
+        for (int lane = 0; lane < COMMIT_WIDTH; lane++)
+          if (commitFireOutput[lane]) validInner[SLOT_W'(headInner + rob_tag_t'(lane))] <= 1'b0;
         headInner <= headNext;
       end
 
@@ -283,18 +328,37 @@ module rv32_rob #(
         storeInner[tailSlotInner] <= allocInput.isStore;
         sqIndexInner[tailSlotInner] <= allocInput.storeQueueIndex;
         haltInner[tailSlotInner] <= allocInput.isHalt;
-        exceptionInner[tailSlotInner] <= allocInput.hasException;
         predictedPcInner[tailSlotInner] <= allocInput.predictedProgramCounter;
         predictorCkptIdInner[tailSlotInner] <= allocInput.predictorCheckpointId;
         isRetInner[tailSlotInner] <= allocInput.isReturn;
         tailInner <= tailNext;
       end
+      if (allocSecondFireInner) begin
+        validInner[secondSlotInner] <= 1'b1;
+        tagInner[secondSlotInner] <= allocSecondTagOutput;
+        pcInner[secondSlotInner] <= allocSecondInput.programCounter;
+        instrInner[secondSlotInner] <= allocSecondInput.instruction;
+        writesRdInner[secondSlotInner] <= allocSecondInput.writesArchitecturalRegister;
+        archRdInner[secondSlotInner] <= allocSecondInput.architecturalRegister;
+        newPhyInner[secondSlotInner] <= allocSecondInput.newPhysicalRegister;
+        oldPhyInner[secondSlotInner] <= allocSecondInput.oldPhysicalRegister;
+        storeInner[secondSlotInner] <= allocSecondInput.isStore;
+        sqIndexInner[secondSlotInner] <= allocSecondInput.storeQueueIndex;
+        haltInner[secondSlotInner] <= allocSecondInput.isHalt;
+        predictedPcInner[secondSlotInner] <= allocSecondInput.predictedProgramCounter;
+        predictorCkptIdInner[secondSlotInner] <= allocSecondInput.predictorCheckpointId;
+        isRetInner[secondSlotInner] <= allocSecondInput.isReturn;
+      end
 
-      unique case ({allocInput.valid && allocReadyOutput, commitFireOutput})
-        2'b10: countInner <= countUpInner;
-        2'b01: countInner <= countDownInner;
-        default: countInner <= countInner;
-      endcase
+      countInner <= countDownInner + allocCountInner;
     end
   end
+`ifndef SYNTHESIS
+  always @(posedge clkInput) if (rstNInput && !freezeInput) begin
+    assert (!allocSecondInput.valid || RENAME_WIDTH == 1 || allocFireInner)
+      else $fatal(1, "ROB second allocation must follow the first");
+    assert (int'(countInner) + int'(allocCountInner) <= DEPTH)
+      else $fatal(1, "ROB allocation exceeds old free capacity");
+  end
+`endif
 endmodule

@@ -1,7 +1,10 @@
 module rv32_prf #(
   parameter int unsigned PRF_DEPTH = rv32_pkg::PRF_ENTRIES,
   parameter int unsigned ROB_DEPTH = rv32_pkg::ROB_ENTRIES,
-  parameter int unsigned WRITEBACK_PORTS = 4
+  parameter int unsigned WRITEBACK_PORTS = 4,
+  parameter int unsigned COMMIT_WIDTH = 1,
+  parameter int unsigned RENAME_WIDTH = 1,
+  parameter int unsigned READ_PORTS = 3
 ) (
   input  logic                       clkInput,
   input  logic                       rstNInput,
@@ -10,8 +13,11 @@ module rv32_prf #(
   input  rv32_pkg::prf_allocation_input_t allocationInput,
   output logic                       allocReadyOutput,
   output rv32_pkg::phy_tag_t         allocPhyOutput,
+  input  rv32_pkg::prf_allocation_input_t allocationSecondInput,
+  output logic allocSecondReadyOutput,
+  output rv32_pkg::phy_tag_t allocSecondPhyOutput,
 
-  input  rv32_pkg::prf_free_input_t  freeInput,
+  input  rv32_pkg::prf_free_input_t [COMMIT_WIDTH-1:0] freeInput,
 
   // Recovery shares the four-beat cursor with RAT/RAS. Only younger newPhy
   // registers are returned, in age order. The cursor retains PRE-squash count:
@@ -21,8 +27,8 @@ module rv32_prf #(
   input  logic [$clog2(ROB_DEPTH+1)-1:0] restoreCountInput,
   input  rv32_pkg::rob_replay_narrow_t [rv32_pkg::RECOVERY_WIDTH-1:0] replayInput,
 
-  input  rv32_pkg::prf_read_input_t [2:0] readInput,
-  output rv32_pkg::prf_read_output_t [2:0] readOutput,
+  input  rv32_pkg::prf_read_input_t [READ_PORTS-1:0] readInput,
+  output rv32_pkg::prf_read_output_t [READ_PORTS-1:0] readOutput,
 
   input  rv32_pkg::cdb_result_t [WRITEBACK_PORTS-1:0] writebackInput,
 
@@ -30,11 +36,18 @@ module rv32_prf #(
   output logic [$clog2(PRF_DEPTH+1)-1:0] freeCountOutput
 );
   import rv32_pkg::*;
+  if (RENAME_WIDTH != 1 && RENAME_WIDTH != 2) begin : g_invalid_rename_width
+    initial $fatal(1, "RENAME_WIDTH must be 1 or 2");
+  end
+  if (COMMIT_WIDTH != 1 && COMMIT_WIDTH != 2) begin : g_invalid_commit_width
+    initial $fatal(1, "COMMIT_WIDTH must be 1 or 2");
+  end
 
   localparam int unsigned SLOT_W = $clog2(PRF_DEPTH);
   localparam int unsigned SEQ_W = SLOT_W + 1;
   localparam int unsigned COUNT_W = $clog2(PRF_DEPTH+1);
   localparam int unsigned RECYCLE_W = $clog2(RECOVERY_WIDTH+1);
+  localparam int unsigned VALUE_WRITERS = WRITEBACK_PORTS + 2;
   typedef logic [SEQ_W-1:0] free_seq_t;
   typedef logic [(RECOVERY_WIDTH > 1 ? $clog2(RECOVERY_WIDTH) : 1)-1:0] recycle_index_t;
 
@@ -49,6 +62,8 @@ module rv32_prf #(
   phy_tag_t selectedPhyInner;
   logic selectedValidInner;
   logic allocationFireInner;
+  logic allocationSecondFireInner;
+  free_seq_t secondHeadInner, allocatedHeadInner;
   integer seqIndexInner;
 
   function automatic free_seq_t free_seq_next(input free_seq_t seq);
@@ -61,6 +76,12 @@ module rv32_prf #(
   assign freeHeadSlotInner = freeHeadInner[SLOT_W-1:0];
   assign freeTailSlotInner = freeTailInner[SLOT_W-1:0];
   assign allocationFireInner = allocationInput.valid && allocReadyOutput;
+  assign secondHeadInner = allocationFireInner ? free_seq_next(freeHeadInner) : freeHeadInner;
+  assign allocSecondReadyOutput = RENAME_WIDTH == 2 && !restoreInput.valid && !recoveryInput.active &&
+    int'(freeCountOutput) > int'(allocationFireInner);
+  assign allocSecondPhyOutput = allocSecondReadyOutput ? freeListInner[secondHeadInner[SLOT_W-1:0]] : '0;
+  assign allocationSecondFireInner = RENAME_WIDTH == 2 && allocationSecondInput.valid && allocSecondReadyOutput;
+  assign allocatedHeadInner = allocationSecondFireInner ? free_seq_next(secondHeadInner) : secondHeadInner;
 
   always_comb begin
     // Non-power-of-two ring: slots 48..63 are skipped at depth48. The epoch
@@ -75,12 +96,10 @@ module rv32_prf #(
     allocReadyOutput = !restoreInput.valid && !recoveryInput.active && selectedValidInner;
     allocPhyOutput = selectedPhyInner;
 
-    readOutput[0].ready = (readInput[0].physicalRegister == '0) ? 1'b1 : readyInner[readInput[0].physicalRegister];
-    readOutput[0].value = (readInput[0].physicalRegister == '0) ? 32'b0 : valueInner[readInput[0].physicalRegister];
-    readOutput[1].ready = (readInput[1].physicalRegister == '0) ? 1'b1 : readyInner[readInput[1].physicalRegister];
-    readOutput[1].value = (readInput[1].physicalRegister == '0) ? 32'b0 : valueInner[readInput[1].physicalRegister];
-    readOutput[2].ready = (readInput[2].physicalRegister == '0) ? 1'b1 : readyInner[readInput[2].physicalRegister];
-    readOutput[2].value = (readInput[2].physicalRegister == '0) ? 32'b0 : valueInner[readInput[2].physicalRegister];
+    for (int portIndex = 0; portIndex < READ_PORTS; portIndex++) begin
+      readOutput[portIndex].ready = readInput[portIndex].physicalRegister == '0 ? 1'b1 : readyInner[readInput[portIndex].physicalRegister];
+      readOutput[portIndex].value = readInput[portIndex].physicalRegister == '0 ? 32'b0 : valueInner[readInput[portIndex].physicalRegister];
+    end
     readyVectorOutput = readyInner;
 
   end
@@ -112,49 +131,78 @@ module rv32_prf #(
         end
       end
     end
-    if (!restoreInput.valid && !recoveryInput.active && freeInput.valid && freeInput.physicalRegister != '0) begin
-      recyclePhyInner[recycle_index_t'(recycleCountInner)] = freeInput.physicalRegister;
+    for (int lane = 0; lane < COMMIT_WIDTH; lane++) begin
+     if (!restoreInput.valid && !recoveryInput.active && freeInput[lane].valid && freeInput[lane].physicalRegister != '0) begin
+      recyclePhyInner[recycle_index_t'(recycleCountInner)] = freeInput[lane].physicalRegister;
       recycleSlotInner[recycle_index_t'(recycleCountInner)] = recycleTailInner[SLOT_W-1:0];
       recycleTailInner = free_seq_next(recycleTailInner);
       recycleCountInner = recycleCountInner + RECYCLE_W'(1);
+     end
+    end
+  end
+
+  // Decode every writer once per destination row, then keep only its highest
+  // priority match. Wide values enter a masked OR instead of four cascaded
+  // indexed-write muxes. Preserve WB high-port > WB low-port > lane1 > lane0.
+  for (genvar row = 0; row < PRF_DEPTH; row++) begin : g_value_write
+    logic [VALUE_WRITERS-1:0] hit, winner;
+    logic [31:0] data;
+    logic isReady;
+    assign hit[0] = row != 0 && allocationFireInner && selectedPhyInner == phy_tag_t'(row);
+    assign hit[1] = row != 0 && allocationSecondFireInner && allocSecondPhyOutput == phy_tag_t'(row);
+    for (genvar portIndex = 0; portIndex < WRITEBACK_PORTS; portIndex++) begin : g_wb_hit
+      assign hit[portIndex+2] = row != 0 && writebackInput[portIndex].valid &&
+        writebackInput[portIndex].phyTag == phy_tag_t'(row);
+    end
+    always_comb begin
+      winner = '0;
+      for (int writer = 0; writer < VALUE_WRITERS; writer++) begin
+        logic later;
+        later = 1'b0;
+        for (int peer = writer+1; peer < VALUE_WRITERS; peer++) later |= hit[peer];
+        winner[writer] = hit[writer] && !later;
+      end
+      data = (allocationInput.value & {32{winner[0]}}) |
+             (allocationSecondInput.value & {32{winner[1]}});
+      isReady = (allocationInput.valueValid && winner[0]) ||
+                (allocationSecondInput.valueValid && winner[1]);
+      for (int portIndex = 0; portIndex < WRITEBACK_PORTS; portIndex++) begin
+        data |= writebackInput[portIndex].value & {32{winner[portIndex+2]}};
+        isReady |= winner[portIndex+2];
+      end
+    end
+    always_ff @(posedge clkInput or negedge rstNInput) begin
+      if (!rstNInput) begin
+        valueInner[row] <= '0;
+        readyInner[row] <= row < ARCH_REGS;
+      end else if (!freezeInput) begin
+        if (row == 0) begin
+          valueInner[row] <= '0;
+          readyInner[row] <= 1'b1;
+        end else if (|hit) begin
+          valueInner[row] <= data;
+          readyInner[row] <= isReady;
+        end
+      end
     end
   end
 
   always_ff @(posedge clkInput or negedge rstNInput) begin
     if (!rstNInput) begin
-      readyInner <= '0;
       freeHeadInner <= '0;
       freeTailInner <= free_seq_t'(PRF_DEPTH-ARCH_REGS);
-      for (seqIndexInner = 0; seqIndexInner < PRF_DEPTH; seqIndexInner = seqIndexInner + 1)
-        valueInner[seqIndexInner] <= 32'b0;
-      for (seqIndexInner = 0; seqIndexInner < ARCH_REGS; seqIndexInner = seqIndexInner + 1)
-        readyInner[seqIndexInner] <= 1'b1;
       for (seqIndexInner = 0; seqIndexInner < PRF_DEPTH; seqIndexInner = seqIndexInner + 1)
         freeListInner[seqIndexInner] <= seqIndexInner < PRF_DEPTH-ARCH_REGS ?
             phy_tag_t'(ARCH_REGS+seqIndexInner) : phy_tag_t'(0);
     end else if (!freezeInput) begin
-      if (allocationFireInner)
-        freeHeadInner <= free_seq_next(freeHeadInner);
+      if (allocationFireInner || allocationSecondFireInner)
+        freeHeadInner <= allocatedHeadInner;
       if (recycleCountInner != 0)
         freeTailInner <= recycleTailInner;
       for (int k = 0; k < RECOVERY_WIDTH; k++)
         if (k < int'(recycleCountInner))
           freeListInner[recycleSlotInner[k]] <= recyclePhyInner[k];
 
-      if (allocationFireInner) begin
-        valueInner[selectedPhyInner] <= allocationInput.value;
-        readyInner[selectedPhyInner] <= allocationInput.valueValid;
-      end
-
-      for (int portIndex = 0; portIndex < WRITEBACK_PORTS; portIndex++) begin
-        if (writebackInput[portIndex].valid && (writebackInput[portIndex].phyTag != '0)) begin
-          valueInner[writebackInput[portIndex].phyTag] <= writebackInput[portIndex].value;
-          readyInner[writebackInput[portIndex].phyTag] <= 1'b1;
-        end
-      end
-
-      valueInner[0] <= 32'b0;
-      readyInner[0] <= 1'b1;
     end
   end
 
@@ -177,7 +225,11 @@ module rv32_prf #(
       else $fatal(1, "PRF FIFO entered a padded slot");
     assert (!freeMembership[0] && $countones(freeMembership) == int'(freeCountOutput))
       else $fatal(1, "PRF FIFO contains P0 or duplicate registers");
-    assert (int'(freeCountOutput) - int'(allocationFireInner) +
+    assert (int'(freeCountOutput) >= int'(allocationFireInner) + int'(allocationSecondFireInner))
+      else $fatal(1, "PRF allocation exceeds old free capacity");
+    assert (!allocationSecondFireInner || !allocationFireInner || allocSecondPhyOutput != selectedPhyInner)
+      else $fatal(1, "PRF allocated one physical register twice");
+    assert (int'(freeCountOutput) - int'(allocationFireInner) - int'(allocationSecondFireInner) +
             int'(recycleCountInner) <= PRF_DEPTH)
       else $fatal(1, "PRF FIFO overflow");
     for (int k = 0; k < RECOVERY_WIDTH; k++) if (k < int'(recycleCountInner)) begin

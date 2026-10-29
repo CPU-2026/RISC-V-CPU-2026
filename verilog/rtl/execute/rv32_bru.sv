@@ -1,4 +1,6 @@
-module rv32_bru (
+module rv32_bru #(
+  parameter bit CONDITIONAL_ONLY = 1'b0
+) (
   input  rv32_pkg::branch_operation_input_t branchInput,
   output rv32_pkg::branch_operation_output_t branchOutput
 );
@@ -8,22 +10,29 @@ module rv32_bru (
   logic [31:0] pcPlus4Inner;
   logic [31:0] pcPlusImmInner;
   logic [31:0] src1PlusImmInner;
-  logic unusedCoutPc4Inner, unusedCoutPcimmInner, unusedCoutSrc1immInner;
+  logic unusedCoutPcimmInner, unusedCoutSrc1immInner;
 
-  rv32_add #(.WIDTH(32)) u_pc_plus_4 (
-    .aInput(branchInput.programCounter), .bInput(32'd4), .cinInput(1'b0),
-    .sumOutput(pcPlus4Inner), .coutOutput(unusedCoutPc4Inner)
-  );
+  // Adding 4 cannot change bits 1:0. Preserve them rather than assuming
+  // alignment, and wrap the upper increment modulo 2^30 exactly as RV32.
+  assign pcPlus4Inner = {branchInput.programCounter[31:2] + 30'd1,
+                        branchInput.programCounter[1:0]};
 
   rv32_add #(.WIDTH(32)) u_pc_plus_imm (
     .aInput(branchInput.programCounter), .bInput(branchInput.immediate), .cinInput(1'b0),
     .sumOutput(pcPlusImmInner), .coutOutput(unusedCoutPcimmInner)
   );
 
-  rv32_add #(.WIDTH(32)) u_src1_plus_imm (
-    .aInput(branchInput.source1), .bInput(branchInput.immediate), .cinInput(1'b0),
-    .sumOutput(src1PlusImmInner), .coutOutput(unusedCoutSrc1immInner)
-  );
+  generate if (!CONDITIONAL_ONLY) begin : g_jump_target
+    rv32_add #(.WIDTH(32)) u_src1_plus_imm (
+      .aInput(branchInput.source1), .bInput(branchInput.immediate), .cinInput(1'b0),
+      .sumOutput(src1PlusImmInner), .coutOutput(unusedCoutSrc1immInner)
+    );
+  end else begin : g_conditional_target
+    // The core dispatches JAL/JALR to the integer ALU. No source-address
+    // target adder or JALR target mux is needed by its conditional BRU.
+    assign src1PlusImmInner = '0;
+    assign unusedCoutSrc1immInner = 1'b0;
+  end endgenerate
 
   always_comb begin
     conditionInner = 1'b0;
@@ -42,7 +51,7 @@ module rv32_bru (
 
     branchOutput.taken = conditionInner;
     branchOutput.linkValue = pcPlus4Inner;
-    if (branchInput.operation == OP_JALR) begin
+    if (!CONDITIONAL_ONLY && branchInput.operation == OP_JALR) begin
       branchOutput.target = src1PlusImmInner & 32'hffff_fffe;
       branchOutput.nextProgramCounter = src1PlusImmInner & 32'hffff_fffe;
     end else begin
@@ -53,7 +62,7 @@ module rv32_bru (
         branchOutput.nextProgramCounter = pcPlus4Inner;
     end
 
-    branchOutput.targetMisaligned = conditionInner && (branchOutput.nextProgramCounter[1:0] != 2'b00);
+    branchOutput.targetMisaligned = 1'b0; // Targets are aligned by contract.
     branchOutput.mispredict = (branchOutput.nextProgramCounter != branchInput.predictedNextProgramCounter);
   end
 endmodule

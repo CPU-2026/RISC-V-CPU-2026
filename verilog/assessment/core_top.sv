@@ -35,7 +35,7 @@ module student_top (
   output logic haltedOutput,
   output logic trapOutput
 );
-  rv32_core #(.TAGGED_DMEM(1'b1), .LEGACY_HALT(1'b0)) u_core (
+  rv32_core #(.TAGGED_DMEM(1'b1), .LEGACY_HALT(1'b0), .FETCH_WIDTH(1)) u_core (
     .clkInput(clock), .rstNInput(!reset),
     .imemReqValidOutput(imemReqValidOutput),
     .imemReqReadyInput(imemReqReadyInput),

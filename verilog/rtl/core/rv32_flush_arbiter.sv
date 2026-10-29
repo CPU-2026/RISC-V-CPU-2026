@@ -1,5 +1,6 @@
 module rv32_flush_arbiter #(
-  parameter int unsigned DEPTH = 4
+  parameter int unsigned DEPTH = 4,
+  parameter bit SORTED_HEAD_SELECT = 1'b0
 ) (
   input  logic                         clkInput,
   input  logic                         rstNInput,
@@ -25,6 +26,34 @@ module rv32_flush_arbiter #(
   integer combIndexInner, combJInner, countInner, writeIndexInner, insertPosInner;
   integer seqIndexInner;
 
+  generate if (SORTED_HEAD_SELECT) begin : g_sorted_head
+    always @* begin
+      squashOutput = '0;
+      if (validInner[0]) begin
+        squashOutput.valid = 1'b1;
+        squashOutput.robTag = tagInner[0];
+        squashOutput.programCounter = pcInner[0];
+        squashOutput.checkpointId = ckptIdInner[0];
+      end
+    end
+`ifndef SYNTHESIS
+    always @(posedge clkInput) if (rstNInput) begin
+      squash_input_t scanned;
+      scanned = '0;
+      for (int row=0;row<DEPTH;row++) begin
+        if (row>0 && validInner[row])
+          assert (validInner[row-1]) else $fatal(1,"flush valid-prefix invariant violated");
+        for (int peer=row+1;peer<DEPTH;peer++)
+          if (validInner[row] && validInner[peer])
+            assert (!rob_is_older(tagInner[peer],tagInner[row]))
+              else $fatal(1,"flush age-order invariant violated");
+        if (validInner[row] && (!scanned.valid || rob_is_older(tagInner[row],scanned.robTag)))
+          scanned = '{valid:1'b1,robTag:tagInner[row],programCounter:pcInner[row],checkpointId:ckptIdInner[row]};
+      end
+      assert (squashOutput === scanned) else $fatal(1,"flush head/scan mismatch");
+    end
+`endif
+  end else begin : g_scan_head
   always @* begin
     squashOutput.valid = 1'b0;
     squashOutput.robTag = '0;
@@ -40,6 +69,7 @@ module rv32_flush_arbiter #(
       end
     end
   end
+  end endgenerate
 
   always @* begin
     countInner = 0;

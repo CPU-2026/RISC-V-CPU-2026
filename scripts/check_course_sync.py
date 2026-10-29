@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--out', type=Path, default=Path('/tmp/opencode/course-sync-register'))
     parser.add_argument('--pattern', default='*')
     parser.add_argument('--skip-build', action='store_true')
+    parser.add_argument('--commit-width', type=int, choices=(1, 2), default=2)
     args = parser.parse_args()
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -42,9 +43,10 @@ def main():
         header.write_text(original.replace('class CPU {', 'class CPU {\n  friend struct CourseSyncProbe;'))
         active = re.search(r'set\(CPU_SOURCES(.*?)\)',cmake.read_text(),re.S).group(1)
         cpp = [staged/Path(p).relative_to('src') for p in active.split()]
-        command = ['verilator', '--cc', '--exe', '--build', '--assert', '--unroll-count', '1024',
+        command = ['verilator', '--cc', '--exe', '--build', '--assert', '--unroll-count', '1024', '-Wno-fatal',
+                   f'-DCPU_COMMIT_WIDTH={args.commit_width}',
                    '-j', '2', '--top-module', 'course_sync_top', '--Mdir', str(out/'obj'),
-                   '-CFLAGS', f'-std=c++20 -O2 -I{staged / "include"}',
+                   '-CFLAGS', f'-std=c++20 -O2 -DCPU_COMMIT_WIDTH={args.commit_width} -I{staged / "include"}',
                    *map(str,rtl), str(ROOT/'scripts/tests/course_sync_top.sv'),
                    str(ROOT/'scripts/tests/course_sync_driver.cpp'), *map(str,cpp)]
         with (out/'build.log').open('w') as log:
@@ -52,7 +54,10 @@ def main():
         if result.returncode:
             raise RuntimeError((out/'build.log').read_text(errors='replace')[-14000:])
         (out/'inputs.json').write_text(json.dumps(before, indent=2)+'\n')
-    elif json.loads((out/'inputs.json').read_text()) != before:
+        (out/'configuration.json').write_text(json.dumps(dict(commit_width=args.commit_width))+'\n')
+    elif (json.loads((out/'inputs.json').read_text()) != before or
+          not (out/'configuration.json').is_file() or
+          json.loads((out/'configuration.json').read_text()) != dict(commit_width=args.commit_width)):
         raise ValueError('stale binary: source identities changed; rebuild required')
     rows = []
     (out/'report.json').write_text(json.dumps(dict(passed=False,status='running',rows=rows),indent=2)+'\n')
@@ -71,6 +76,7 @@ def main():
             break
     assert before == identities(), 'production sources changed during verification'
     report = dict(passed=bool(rows) and all(r['passed'] for r in rows), status='complete', rows=rows,
+                   commit_width=args.commit_width,
                   scope='current main-tree CPU, shared slave events, real AXI DUT; pre-edge events and retirement',
                   source_unchanged=True, inputs=before)
     (out/'report.json').write_text(json.dumps(report, indent=2)+'\n')

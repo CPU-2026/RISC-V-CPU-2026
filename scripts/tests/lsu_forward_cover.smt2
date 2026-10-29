@@ -1,0 +1,43 @@
+; Arithmetic lemma only; the SV test separately exercises the production query.
+; Keep the overlap predicate's current word-delta and address-wrap guards.
+(set-option :timeout 60000)
+(declare-const L (_ BitVec 32))
+(declare-const S (_ BitVec 32))
+(declare-const NL (_ BitVec 3))
+(declare-const NS (_ BitVec 3))
+(declare-const DATA (_ BitVec 32))
+(assert (or (= NL #b001) (= NL #b010) (= NL #b100)))
+(assert (or (= NS #b001) (= NS #b010) (= NS #b100)))
+(define-fun LO () (_ BitVec 3) (concat #b0 ((_ extract 1 0) L)))
+(define-fun SO () (_ BitVec 3) (concat #b0 ((_ extract 1 0) S)))
+(define-fun LE () (_ BitVec 3) (bvadd LO NL))
+(define-fun SE () (_ BitVec 3) (bvadd SO NS))
+(define-fun WD () (_ BitVec 30) (bvsub ((_ extract 31 2) L) ((_ extract 31 2) S)))
+(define-fun OVERLAP () Bool
+ (ite (= WD (_ bv0 30)) (and (bvult LO SE) (bvult SO LE))
+  (ite (and (= WD (_ bv1 30)) (not (= ((_ extract 31 2) S) (_ bv1073741823 30))))
+   (bvult (bvadd LO #b100) SE)
+   (ite (and (= WD (_ bv1073741823 30)) (not (= ((_ extract 31 2) L) (_ bv1073741823 30))))
+    (bvult (bvadd SO #b100) LE) false))))
+(define-fun D () (_ BitVec 32) (bvsub L S))
+(define-fun OLD () Bool
+ (and (bvuge L S) (bvule (bvadd D ((_ zero_extend 29) NL)) ((_ zero_extend 29) NS))))
+(define-fun OFFSET () (_ BitVec 2) (bvsub ((_ extract 1 0) L) ((_ extract 1 0) S)))
+(define-fun NEW () Bool (bvule (bvadd (concat #b0 OFFSET) NL) NS))
+; Coverage predicates agree for every overlapping pair: UNSAT.
+(push)
+(assert OVERLAP)
+(assert (xor OLD NEW))
+(check-sat)
+(pop)
+; All 32 forwarded raw bits agree, including offsets across word boundaries.
+(push)
+(assert OVERLAP)
+(assert OLD)
+(assert (not (= (bvlshr DATA (bvshl D (_ bv3 32)))
+                (bvlshr DATA (concat (_ bv0 27) OFFSET #b000)))))
+(check-sat)
+(pop)
+; Negative control: omitting the overlap premise is NOT equivalent: SAT.
+(assert (xor OLD NEW))
+(check-sat)

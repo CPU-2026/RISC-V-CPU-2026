@@ -1,3 +1,5 @@
+// Contract: accepted instructions are legal RV32IM encodings. Reserved words
+// are outside this core's supported input domain; no illegal-instruction trap.
 module rv32_decoder #(
   parameter bit LEGACY_HALT = 1'b0
 ) (
@@ -14,11 +16,9 @@ module rv32_decoder #(
     opcodeInner = decodeContextInput.instruction[6:0];
     funct3Inner = decodeContextInput.instruction[14:12];
     funct7Inner = decodeContextInput.instruction[31:25];
-
     uopOutput = '0;
     uopOutput.valid = 1'b1;
-    uopOutput.illegal = 1'b1;
-    uopOutput.uopClass = UOP_ILLEGAL;
+    uopOutput.uopClass = UOP_NONE;
     uopOutput.operation = OP_INVALID;
     uopOutput.rd = decodeContextInput.instruction[11:7];
     uopOutput.rs1 = decodeContextInput.instruction[19:15];
@@ -30,197 +30,107 @@ module rv32_decoder #(
     uopOutput.memorySize = MEM_WORD;
 
     if (LEGACY_HALT && decodeContextInput.instruction == HALT_INSN) begin
-      // Retain the encoded ADDI payload, as the software decoded IQ does.
       uopOutput.immediate = {{20{decodeContextInput.instruction[31]}}, decodeContextInput.instruction[31:20]};
-      uopOutput.illegal = 1'b0;
       uopOutput.halt = 1'b1;
       uopOutput.uopClass = UOP_HALT;
     end else begin
       unique case (opcodeInner)
-        OPCODE_LUI: begin
-          uopOutput.illegal = 1'b0;
+        OPCODE_LUI, OPCODE_AUIPC: begin
           uopOutput.uopClass = UOP_ALU;
-          uopOutput.operation = OP_LUI;
+          uopOutput.operation = opcodeInner == OPCODE_LUI ? OP_LUI : OP_AUIPC;
           uopOutput.immediate = {decodeContextInput.instruction[31:12], 12'b0};
           uopOutput.usesImmediate = 1'b1;
           uopOutput.writesRd = (uopOutput.rd != 5'd0);
         end
-
-        OPCODE_AUIPC: begin
-          uopOutput.illegal = 1'b0;
-          uopOutput.uopClass = UOP_ALU;
-          uopOutput.operation = OP_AUIPC;
-          uopOutput.immediate = {decodeContextInput.instruction[31:12], 12'b0};
-          uopOutput.usesImmediate = 1'b1;
-          uopOutput.writesRd = (uopOutput.rd != 5'd0);
-        end
-
         OPCODE_JAL: begin
-          uopOutput.illegal = 1'b0;
           uopOutput.uopClass = UOP_ALU;
           uopOutput.operation = OP_JAL;
-          uopOutput.immediate = {{11{decodeContextInput.instruction[31]}}, decodeContextInput.instruction[31], decodeContextInput.instruction[19:12],
-                        decodeContextInput.instruction[20], decodeContextInput.instruction[30:21], 1'b0};
+          uopOutput.immediate = {{11{decodeContextInput.instruction[31]}}, decodeContextInput.instruction[31],
+            decodeContextInput.instruction[19:12], decodeContextInput.instruction[20],
+            decodeContextInput.instruction[30:21], 1'b0};
           uopOutput.usesImmediate = 1'b1;
           uopOutput.writesRd = (uopOutput.rd != 5'd0);
         end
-
         OPCODE_JALR: begin
-          if (funct3Inner == 3'b000) begin
-            uopOutput.illegal = 1'b0;
-            uopOutput.uopClass = UOP_ALU;
-            uopOutput.operation = OP_JALR;
-            uopOutput.immediate = {{20{decodeContextInput.instruction[31]}}, decodeContextInput.instruction[31:20]};
-            uopOutput.usesRs1 = 1'b1;
-            uopOutput.usesImmediate = 1'b1;
-            uopOutput.writesRd = (uopOutput.rd != 5'd0);
-          end
+          uopOutput.uopClass = UOP_ALU;
+          uopOutput.operation = OP_JALR;
+          uopOutput.immediate = {{20{decodeContextInput.instruction[31]}}, decodeContextInput.instruction[31:20]};
+          uopOutput.usesRs1 = 1'b1;
+          uopOutput.usesImmediate = 1'b1;
+          uopOutput.writesRd = (uopOutput.rd != 5'd0);
         end
-
         OPCODE_BRANCH: begin
           uopOutput.uopClass = UOP_BRANCH;
-          uopOutput.immediate = {{19{decodeContextInput.instruction[31]}}, decodeContextInput.instruction[31], decodeContextInput.instruction[7],
-                        decodeContextInput.instruction[30:25], decodeContextInput.instruction[11:8], 1'b0};
+          uopOutput.immediate = {{19{decodeContextInput.instruction[31]}}, decodeContextInput.instruction[31],
+            decodeContextInput.instruction[7], decodeContextInput.instruction[30:25],
+            decodeContextInput.instruction[11:8], 1'b0};
           uopOutput.usesRs1 = 1'b1;
           uopOutput.usesRs2 = 1'b1;
           unique case (funct3Inner)
-            3'b000: begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_BEQ;  end
-            3'b001: begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_BNE;  end
-            3'b100: begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_BLT;  end
-            3'b101: begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_BGE;  end
-            3'b110: begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_BLTU; end
-            3'b111: begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_BGEU; end
-            default: begin uopOutput.illegal = 1'b1; uopOutput.operation = OP_INVALID; end
+            3'b000: uopOutput.operation = OP_BEQ;
+            3'b001: uopOutput.operation = OP_BNE;
+            3'b100: uopOutput.operation = OP_BLT;
+            3'b101: uopOutput.operation = OP_BGE;
+            3'b110: uopOutput.operation = OP_BLTU;
+            3'b111: uopOutput.operation = OP_BGEU;
+            default: uopOutput.operation = OP_INVALID;
           endcase
         end
-
-        OPCODE_LOAD: begin
-          uopOutput.uopClass = UOP_LOAD;
-          uopOutput.operation = OP_LOAD;
-          uopOutput.immediate = {{20{decodeContextInput.instruction[31]}}, decodeContextInput.instruction[31:20]};
+        OPCODE_LOAD, OPCODE_STORE: begin
           uopOutput.usesRs1 = 1'b1;
           uopOutput.usesImmediate = 1'b1;
-          uopOutput.writesRd = (uopOutput.rd != 5'd0);
-          unique case (funct3Inner)
-            3'b000: begin uopOutput.illegal = 1'b0; uopOutput.memorySize = MEM_BYTE; end
-            3'b001: begin uopOutput.illegal = 1'b0; uopOutput.memorySize = MEM_HALF; end
-            3'b010: begin uopOutput.illegal = 1'b0; uopOutput.memorySize = MEM_WORD; end
-            3'b100: begin
-              uopOutput.illegal = 1'b0;
-              uopOutput.memorySize = MEM_BYTE;
-              uopOutput.memoryUnsigned = 1'b1;
-            end
-            3'b101: begin
-              uopOutput.illegal = 1'b0;
-              uopOutput.memorySize = MEM_HALF;
-              uopOutput.memoryUnsigned = 1'b1;
-            end
-            default: uopOutput.illegal = 1'b1;
-          endcase
+          uopOutput.memorySize = mem_size_e'(funct3Inner[1:0]);
+          if (opcodeInner == OPCODE_LOAD) begin
+            uopOutput.uopClass = UOP_LOAD;
+            uopOutput.operation = OP_LOAD;
+            uopOutput.immediate = {{20{decodeContextInput.instruction[31]}}, decodeContextInput.instruction[31:20]};
+            uopOutput.writesRd = (uopOutput.rd != 5'd0);
+            uopOutput.memoryUnsigned = funct3Inner[2];
+          end else begin
+            uopOutput.uopClass = UOP_STORE;
+            uopOutput.operation = OP_STORE;
+            uopOutput.immediate = {{20{decodeContextInput.instruction[31]}},
+              decodeContextInput.instruction[31:25], decodeContextInput.instruction[11:7]};
+            uopOutput.usesRs2 = 1'b1;
+          end
         end
-
-        OPCODE_STORE: begin
-          uopOutput.uopClass = UOP_STORE;
-          uopOutput.operation = OP_STORE;
-          uopOutput.immediate = {{20{decodeContextInput.instruction[31]}}, decodeContextInput.instruction[31:25], decodeContextInput.instruction[11:7]};
-          uopOutput.usesRs1 = 1'b1;
-          uopOutput.usesRs2 = 1'b1;
-          uopOutput.usesImmediate = 1'b1;
-          unique case (funct3Inner)
-            3'b000: begin uopOutput.illegal = 1'b0; uopOutput.memorySize = MEM_BYTE; end
-            3'b001: begin uopOutput.illegal = 1'b0; uopOutput.memorySize = MEM_HALF; end
-            3'b010: begin uopOutput.illegal = 1'b0; uopOutput.memorySize = MEM_WORD; end
-            default: uopOutput.illegal = 1'b1;
-          endcase
-        end
-
-        OPCODE_OP_IMM: begin
+        OPCODE_OP_IMM, OPCODE_OP: begin
           uopOutput.uopClass = UOP_ALU;
-          uopOutput.immediate = {{20{decodeContextInput.instruction[31]}}, decodeContextInput.instruction[31:20]};
           uopOutput.usesRs1 = 1'b1;
-          uopOutput.usesImmediate = 1'b1;
+          uopOutput.usesRs2 = opcodeInner == OPCODE_OP;
+          uopOutput.usesImmediate = opcodeInner == OPCODE_OP_IMM;
           uopOutput.writesRd = (uopOutput.rd != 5'd0);
-          unique case (funct3Inner)
-            3'b000: begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_ADD;  end
-            3'b010: begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_SLT;  end
-            3'b011: begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_SLTU; end
-            3'b100: begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_XOR;  end
-            3'b110: begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_OR;   end
-            3'b111: begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_AND;  end
-            3'b001: begin
-              if (funct7Inner == 7'b0000000) begin
-                uopOutput.illegal = 1'b0;
-                uopOutput.operation = OP_SLL;
-              end
-            end
-            3'b101: begin
-              if (funct7Inner == 7'b0000000) begin
-                uopOutput.illegal = 1'b0;
-                uopOutput.operation = OP_SRL;
-              end else if (funct7Inner == 7'b0100000) begin
-                uopOutput.illegal = 1'b0;
-                uopOutput.operation = OP_SRA;
-              end
-            end
-            default: uopOutput.illegal = 1'b1;
-          endcase
-        end
-
-        OPCODE_OP: begin
-          uopOutput.usesRs1 = 1'b1;
-          uopOutput.usesRs2 = 1'b1;
-          uopOutput.writesRd = (uopOutput.rd != 5'd0);
-          if (funct7Inner == 7'b0000001) begin
+          if (opcodeInner == OPCODE_OP_IMM)
+            uopOutput.immediate = {{20{decodeContextInput.instruction[31]}}, decodeContextInput.instruction[31:20]};
+          if (opcodeInner == OPCODE_OP && funct7Inner == 7'b0000001) begin
+            uopOutput.uopClass = funct3Inner[2] ? UOP_DIV : UOP_MUL;
             unique case (funct3Inner)
-              3'b000: begin uopOutput.illegal = 1'b0; uopOutput.uopClass = UOP_MUL; uopOutput.operation = OP_MUL;    end
-              3'b001: begin uopOutput.illegal = 1'b0; uopOutput.uopClass = UOP_MUL; uopOutput.operation = OP_MULH;   end
-              3'b010: begin uopOutput.illegal = 1'b0; uopOutput.uopClass = UOP_MUL; uopOutput.operation = OP_MULHSU; end
-              3'b011: begin uopOutput.illegal = 1'b0; uopOutput.uopClass = UOP_MUL; uopOutput.operation = OP_MULHU;  end
-              3'b100: begin uopOutput.illegal = 1'b0; uopOutput.uopClass = UOP_DIV; uopOutput.operation = OP_DIV;    end
-              3'b101: begin uopOutput.illegal = 1'b0; uopOutput.uopClass = UOP_DIV; uopOutput.operation = OP_DIVU;   end
-              3'b110: begin uopOutput.illegal = 1'b0; uopOutput.uopClass = UOP_DIV; uopOutput.operation = OP_REM;    end
-              3'b111: begin uopOutput.illegal = 1'b0; uopOutput.uopClass = UOP_DIV; uopOutput.operation = OP_REMU;   end
-              default: uopOutput.illegal = 1'b1;
+              3'b000: uopOutput.operation = OP_MUL;
+              3'b001: uopOutput.operation = OP_MULH;
+              3'b010: uopOutput.operation = OP_MULHSU;
+              3'b011: uopOutput.operation = OP_MULHU;
+              3'b100: uopOutput.operation = OP_DIV;
+              3'b101: uopOutput.operation = OP_DIVU;
+              3'b110: uopOutput.operation = OP_REM;
+              3'b111: uopOutput.operation = OP_REMU;
+              default: uopOutput.operation = OP_INVALID;
             endcase
-          end else if ((funct7Inner == 7'b0000000) ||
-                       (funct7Inner == 7'b0100000)) begin
-            uopOutput.uopClass = UOP_ALU;
+          end else begin
             unique case (funct3Inner)
-              3'b000: begin
-                if (funct7Inner == 7'b0000000) begin
-                  uopOutput.illegal = 1'b0;
-                  uopOutput.operation = OP_ADD;
-                end else begin
-                  uopOutput.illegal = 1'b0;
-                  uopOutput.operation = OP_SUB;
-                end
-              end
-              3'b001: if (funct7Inner == 7'b0000000) begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_SLL;  end
-              3'b010: if (funct7Inner == 7'b0000000) begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_SLT;  end
-              3'b011: if (funct7Inner == 7'b0000000) begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_SLTU; end
-              3'b100: if (funct7Inner == 7'b0000000) begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_XOR;  end
-              3'b101: begin
-                if (funct7Inner == 7'b0000000) begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_SRL; end
-                else begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_SRA; end
-              end
-              3'b110: if (funct7Inner == 7'b0000000) begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_OR;  end
-              3'b111: if (funct7Inner == 7'b0000000) begin uopOutput.illegal = 1'b0; uopOutput.operation = OP_AND; end
-              default: uopOutput.illegal = 1'b1;
+              3'b000: uopOutput.operation = opcodeInner == OPCODE_OP && decodeContextInput.instruction[30] ? OP_SUB : OP_ADD;
+              3'b001: uopOutput.operation = OP_SLL;
+              3'b010: uopOutput.operation = OP_SLT;
+              3'b011: uopOutput.operation = OP_SLTU;
+              3'b100: uopOutput.operation = OP_XOR;
+              3'b101: uopOutput.operation = decodeContextInput.instruction[30] ? OP_SRA : OP_SRL;
+              3'b110: uopOutput.operation = OP_OR;
+              3'b111: uopOutput.operation = OP_AND;
+              default: uopOutput.operation = OP_INVALID;
             endcase
           end
         end
-
-        default: begin
-          uopOutput.illegal = 1'b1;
-          uopOutput.uopClass = UOP_ILLEGAL;
-        end
+        default: begin end // Out of contract, not an architectural trap path.
       endcase
-    end
-
-    if (uopOutput.illegal) begin
-      uopOutput.uopClass = UOP_ILLEGAL;
-      uopOutput.operation = OP_INVALID;
-      uopOutput.writesRd = 1'b0;
     end
   end
 endmodule

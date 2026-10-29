@@ -1,6 +1,6 @@
 # 同步 SRAM：`sram_fakeram`
 
-公共模型：[`scripts/ram/sram_fakeram.sv`](../scripts/ram/sram_fakeram.sv)，用于片上存储，独立于外部 AXI RAM。当前 Cache 阵列布局见 [cache.md](cache.md)，面积/时序口径见 [assessment.md](assessment.md)。
+公共模型：[`scripts/ram/sram_fakeram.sv`](../scripts/ram/sram_fakeram.sv)，用于片上存储，独立于外部 AXI RAM。当前 Cache 阵列布局见 [architecture.md](architecture.md#访存与缓存)，面积/时序口径见 [assessment.md](assessment.md)。
 
 ## 实例化
 

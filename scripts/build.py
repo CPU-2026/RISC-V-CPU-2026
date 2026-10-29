@@ -68,7 +68,7 @@ def build_simulator(sources, out, args):
     }.items())
     subprocess.run([
         verilator, "--cc", "--exe", "--build", "--trace", "--assert",
-        "--unroll-count", "1024",
+        "--unroll-count", "1024", "--unroll-stmts", "100000",
         "-Wall", "-Wno-fatal", "--top-module", "student_top",
         "--Mdir", str(objects), "-o", str(binary), "-j", str(args.jobs),
         "-MAKEFLAGS", make_flags,

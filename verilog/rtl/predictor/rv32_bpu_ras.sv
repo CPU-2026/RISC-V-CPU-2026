@@ -1,5 +1,6 @@
 module rv32_bpu_ras #(
-  parameter int unsigned RAS_ENTRIES = rv32_pkg::RAS_ENTRIES
+  parameter int unsigned RAS_ENTRIES = rv32_pkg::RAS_ENTRIES,
+  parameter int unsigned COMMIT_WIDTH = 1
 ) (
   input logic clkInput,
   input logic rstNInput,
@@ -7,13 +8,16 @@ module rv32_bpu_ras #(
 
   input rv32_pkg::predictor_fetch_info_t fetchInfoInput,
   input rv32_pkg::squash_input_t         squashInput,
-  input rv32_pkg::rob_predictor_input_t  robInput,
+  input rv32_pkg::rob_predictor_input_t [COMMIT_WIDTH-1:0] robInput,
   input rv32_pkg::recovery_step_t recoveryInput,
 
   output logic [15:0]            rasTopOutput,
   output logic [31:0]            queryRetTargetOutput
 );
   import rv32_pkg::*;
+  if (COMMIT_WIDTH != 1 && COMMIT_WIDTH != 2 && COMMIT_WIDTH != 4) begin : g_invalid_commit_width
+    initial $fatal(1, "COMMIT_WIDTH must be 1, 2 or 4");
+  end
   localparam int unsigned RAS_PTR_W = RAS_ENTRIES > 1 ? $clog2(RAS_ENTRIES) : 1;
   localparam int unsigned RAS_STORAGE_ENTRIES = RAS_ENTRIES > 0 ? RAS_ENTRIES : 1;
   localparam int unsigned RAS_TOP_W = $clog2(RAS_STORAGE_ENTRIES + 1);
@@ -51,15 +55,17 @@ module rv32_bpu_ras #(
     archWriteInner = 1'b0;
     archWriteMaskInner = '0;
     archWriteDataInner = '0;
-    if (!freezeInput && !squashInput.valid && !recoveryInput.active && robInput.willCommit) begin
-      if (robInput.isHeadReturn && (archRasTopNext != '0))
+    for (int lane = 0; lane < COMMIT_WIDTH; lane++) begin
+     if (!freezeInput && !squashInput.valid && !recoveryInput.active && robInput[lane].willCommit) begin
+      if (robInput[lane].isHeadReturn && (archRasTopNext != '0))
         archRasTopNext = archRasTopNext - RAS_TOP_W'(1);
-      if (robInput.isHeadCall && archRasTopNext < RAS_TOP_W'(RAS_STORAGE_ENTRIES)) begin
+      if (robInput[lane].isHeadCall && archRasTopNext < RAS_TOP_W'(RAS_STORAGE_ENTRIES)) begin
         archWriteInner = 1'b1;
         archWriteMaskInner[archRasTopNext[RAS_PTR_W-1:0]] = 1'b1;
-        archWriteDataInner[int'(archRasTopNext)*32 +: 32] = robInput.headProgramCounter + 32'd4;
+        archWriteDataInner[int'(archRasTopNext)*32 +: 32] = robInput[lane].headProgramCounter + 32'd4;
         archRasTopNext = archRasTopNext + RAS_TOP_W'(1);
       end
+     end
     end
   end
 
@@ -105,21 +111,21 @@ module rv32_bpu_ras #(
         replayTagInner = recoveryInput.nextTag + rob_tag_t'(laneInner);
         if (replayActiveNext && windowIndexInner < ROB_ENTRIES &&
             windowIndexInner < int'(recoveryInput.liveCount)) begin
-          if (robInput.replayRasWindow[laneInner].robTag == replayTagInner) begin
-            replayRdLinkInner = (robInput.replayRasWindow[laneInner].rd == 5'd1) ||
-                             (robInput.replayRasWindow[laneInner].rd == 5'd5);
-            replayRs1LinkInner = (robInput.replayRasWindow[laneInner].rs1 == 5'd1) ||
-                              (robInput.replayRasWindow[laneInner].rs1 == 5'd5);
-            replayCallInner = ((robInput.replayRasWindow[laneInner].opcode == OPCODE_JAL) ||
-                           ((robInput.replayRasWindow[laneInner].opcode == OPCODE_JALR) &&
-                            (robInput.replayRasWindow[laneInner].funct3 == 3'b000))) && replayRdLinkInner;
-            replayRetInner = (robInput.replayRasWindow[laneInner].opcode == OPCODE_JALR) &&
-                          (robInput.replayRasWindow[laneInner].funct3 == 3'b000) && replayRs1LinkInner;
+          if (robInput[0].replayRasWindow[laneInner].robTag == replayTagInner) begin
+            replayRdLinkInner = (robInput[0].replayRasWindow[laneInner].rd == 5'd1) ||
+                              (robInput[0].replayRasWindow[laneInner].rd == 5'd5);
+            replayRs1LinkInner = (robInput[0].replayRasWindow[laneInner].rs1 == 5'd1) ||
+                               (robInput[0].replayRasWindow[laneInner].rs1 == 5'd5);
+            replayCallInner = ((robInput[0].replayRasWindow[laneInner].opcode == OPCODE_JAL) ||
+                            ((robInput[0].replayRasWindow[laneInner].opcode == OPCODE_JALR) &&
+                             (robInput[0].replayRasWindow[laneInner].funct3 == 3'b000))) && replayRdLinkInner;
+            replayRetInner = (robInput[0].replayRasWindow[laneInner].opcode == OPCODE_JALR) &&
+                           (robInput[0].replayRasWindow[laneInner].funct3 == 3'b000) && replayRs1LinkInner;
             if (replayRetInner && (specRasTopNext != '0))
               specRasTopNext = specRasTopNext - RAS_TOP_W'(1);
             if (replayCallInner && specRasTopNext < RAS_TOP_W'(RAS_STORAGE_ENTRIES)) begin
               specRasPcNext[specRasTopNext[RAS_PTR_W-1:0]] =
-                robInput.replayRasWindow[laneInner].programCounter + 32'd4;
+                robInput[0].replayRasWindow[laneInner].programCounter + 32'd4;
               specRasTopNext = specRasTopNext + RAS_TOP_W'(1);
             end
             if (replayTagInner == recoveryInput.squashTag)

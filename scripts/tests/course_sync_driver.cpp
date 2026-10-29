@@ -30,8 +30,8 @@ struct Isa {
         for(unsigned b=0;b<bytes;++b)value|=uint32_t(memory.read_data(addr+b))<<(b*8);
         return value;
     }
-    void retire(const Vcourse_sync_top& t) {
-        equal(t.observe[1],pc,"independent ISA PC");
+    void retire(const uint32_t* observe) {
+        equal(observe[1],pc,"independent ISA PC");
         const uint32_t insn=word(pc,4),opcode=insn&127,rd=(insn>>7)&31;
         const uint32_t kind=(insn>>12)&7,a=x[(insn>>15)&31],b=x[(insn>>20)&31];
         uint32_t next=pc+4,value=0,addr=0,size=0;
@@ -63,9 +63,9 @@ struct Isa {
         case 0x23:
             writes=false;store=true;size=1u<<kind;
             addr=a+sx(((insn>>25)<<5)|((insn>>7)&31),12);
-            equal(t.observe[6],addr,"independent Store address");
-            equal(t.observe[7],b,"independent Store data");
-            equal(t.observe[8],(1u<<size)-1,"independent Store mask");
+            equal(observe[6],addr,"independent Store address");
+            equal(observe[7],b,"independent Store data");
+            equal(observe[8],(1u<<size)-1,"independent Store mask");
             if(addr!=AXI_EXIT_ADDR)for(unsigned i=0;i<size;++i)memory.write_data(addr+i,uint8_t(b>>(i*8)));
             break;
         case 0x13: {
@@ -99,9 +99,9 @@ struct Isa {
             break;
         default:throw std::runtime_error("independent unsupported instruction "+std::to_string(insn));
         }
-        equal(t.observe[2],writes&&rd!=0,"independent destination valid");
-        equal(t.observe[5],store,"independent Store valid");
-        if(writes&&rd!=0){equal(t.observe[3],rd,"independent rd");equal(t.observe[4],value,"independent rd value");x[rd]=value;}
+        equal(observe[2],writes&&rd!=0,"independent destination valid");
+        equal(observe[5],store,"independent Store valid");
+        if(writes&&rd!=0){equal(observe[3],rd,"independent rd");equal(observe[4],value,"independent rd value");x[rd]=value;}
         pc=next;
     }
 };
@@ -121,7 +121,8 @@ struct CourseSyncProbe {
         equal(mask(t.wvalid,t.wstrb),mask(bus.wValid,bus.wStrb),"AXI W strobe");
         equal(t.bready,bus.bReady,"AXI B ready");
         const auto& r = c.ROBModule;
-        const bool commit = !c.exitCommitted && r.willCommit(c.squashDetect);
+        const auto& plan = c.robInput.commits;
+        const bool commit = plan.count != 0;
         equal(t.observe[0],commit,"commit valid");
         if (commit) {
             const unsigned row = robSlot(r.getHead());
@@ -133,6 +134,20 @@ struct CourseSyncProbe {
                 equal(t.observe[4],uint32_t(c.PRFModule.getValue(r.getNewPhy(row))),"commit value");
             }
             equal(t.observe[5],r.headType() == ROBType::STORE,"commit store");
+        }
+        for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+            const unsigned n = 57 + 9*lane;
+            equal(t.observe[n],lane < plan.count,"retirement lane valid");
+            if (lane >= plan.count) continue;
+            const auto row = robSlot(plan.tags[lane]);
+            const bool writes = r.getNewPhy(row) != InvalidPhy && r.getRd(row) != 0;
+            equal(t.observe[n+1],uint32_t(r.getPC(row)),"retirement lane PC");
+            equal(t.observe[n+2],writes,"retirement lane destination valid");
+            if (writes) {
+                equal(t.observe[n+3],r.getRd(row),"retirement lane rd");
+                equal(t.observe[n+4],uint32_t(c.PRFModule.getValue(r.getNewPhy(row))),"retirement lane value");
+            }
+            equal(t.observe[n+5],r.getType(row) == ROBType::STORE,"retirement lane Store");
         }
         equal(t.observe[9],c.exitCommitted,"exit committed");
         equal(t.observe[10],r.isTrapCommitted(),"trap");
@@ -211,20 +226,27 @@ int main(int argc,char** argv) { try {
     top->reset=1;
     for (unsigned n=0;n<5;++n) { top->clock=0;top->eval();top->clock=1;top->eval(); }
     top->reset=0;
-    uint64_t retired=0, core=0;
+    uint64_t retired=0, core=0, dual=0;
     for (cycle=0;cycle<100000000;++cycle) {
         cpu->comb();
         CourseSyncProbe::drive(*cpu,*top);
         top->clock=0;top->eval();
         CourseSyncProbe::compare(*cpu,*top);
-        if (cycle != 0 && top->observe[0]) { ++retired; isa.retire(*top); }
+        if (cycle != 0) {
+            unsigned count = 0;
+            for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+                const auto* observe = &top->observe[57 + 9*lane];
+                if (observe[0]) { ++retired; ++count; isa.retire(observe); }
+            }
+            dual += count == 2;
+        }
         CourseSyncProbe::clock(*cpu);
         top->clock=1;top->eval();
         if (!core && top->observe[9]) core=cycle;
         if (CourseSyncProbe::state(*cpu).SlaveModule.isDone()) {
             equal(CourseSyncProbe::state(*cpu).SlaveModule.exitResult(),uint32_t(std::stoull(argv[2])),"result");
             equal(uint32_t(retired),uint32_t(std::stoull(argv[3])),"independent retirement count");
-            std::cout << "PASS cycles=" << cycle << " core=" << core << " retired=" << retired << '\n';
+            std::cout << "PASS cycles=" << cycle << " core=" << core << " retired=" << retired << " dual=" << dual << '\n';
             return 0;
         }
     }

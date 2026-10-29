@@ -1,18 +1,82 @@
+`ifndef CPU_FETCH_WIDTH
+`define CPU_FETCH_WIDTH 4
+`endif
+`ifndef CPU_COMMIT_WIDTH
+`define CPU_COMMIT_WIDTH 4
+`endif
+`ifndef CPU_ALU_UNITS
+`define CPU_ALU_UNITS 2
+`endif
+`ifndef CPU_ALU_CDB_PORTS
+`define CPU_ALU_CDB_PORTS 2
+`endif
+`ifndef CPU_DECODE_WIDTH
+`define CPU_DECODE_WIDTH 4
+`endif
+// Public compile-time allocation width. The legacy macro remains an alias;
+// defining both inconsistently is rejected by rv32_issue_config.
+`ifndef CPU_ISSUE_WIDTH
+`ifdef CPU_RENAME_WIDTH
+`define CPU_ISSUE_WIDTH `CPU_RENAME_WIDTH
+`else
+`define CPU_ISSUE_WIDTH 4
+`endif
+`endif
+`ifndef CPU_RENAME_WIDTH
+`define CPU_RENAME_WIDTH `CPU_ISSUE_WIDTH
+`endif
 package rv32_pkg;
   parameter int unsigned XLEN         = 32;
   parameter int unsigned ARCH_REGS    = 32;
-  parameter int unsigned ROB_ENTRIES  = 16;
-  parameter int unsigned PRF_ENTRIES  = 48;
-  parameter int unsigned ROB_TAG_W    = 5;
-  parameter int unsigned PHY_TAG_W    = 6;
+  parameter int unsigned FETCH_WIDTH  = `CPU_FETCH_WIDTH;
+  parameter int unsigned DECODE_WIDTH = `CPU_DECODE_WIDTH;
+  parameter int unsigned ISSUE_WIDTH  = `CPU_ISSUE_WIDTH;
+  parameter int unsigned RENAME_WIDTH = `CPU_RENAME_WIDTH;
+  parameter int unsigned COMMIT_WIDTH = `CPU_COMMIT_WIDTH;
+  // Execution lanes are independent of ordered allocation width and CDB width.
+  parameter int unsigned ALU_UNITS = `CPU_ALU_UNITS;
+  parameter int unsigned ALU_CDB_PORTS = `CPU_ALU_CDB_PORTS;
+  parameter int unsigned WRITEBACK_PORTS = ALU_CDB_PORTS + 1;
+  parameter int unsigned ROB_ENTRIES  = ISSUE_WIDTH == 4 ? 32 : 16;
+  // Capacity is part of a width configuration, not a fixed scalar constant.
+  // Explicit overrides also apply when a top is parameterized rather than
+  // compiled with width macros. Both queues count INSTRUCTIONS, not packets.
+  function automatic int unsigned default_fq_entries(input int unsigned decodeWidth);
+`ifdef CPU_FQ_ENTRIES
+    return `CPU_FQ_ENTRIES;
+`else
+    return 2 * decodeWidth;
+`endif
+  endfunction
+  function automatic int unsigned default_iq_entries(input int unsigned decodeWidth);
+`ifdef CPU_IQ_ENTRIES
+    return `CPU_IQ_ENTRIES;
+`else
+    return 2 * decodeWidth;
+`endif
+  endfunction
+  typedef struct packed {
+    logic valid;
+    logic [31:0] pc, instruction;
+    logic rdValid;
+    logic [4:0] rd;
+    logic [31:0] value;
+    logic store;
+    logic [31:0] address, data;
+    logic [3:0] strobe;
+  } retirement_trace_t;
+  parameter int unsigned PRF_ENTRIES  = ISSUE_WIDTH == 4 ? 64 : 48;
+  parameter int unsigned ROB_TAG_W    = $clog2(ROB_ENTRIES) + 1;
+  parameter int unsigned PHY_TAG_W    = $clog2(PRF_ENTRIES);
   parameter int unsigned LQ_ENTRIES   = 8;
   parameter int unsigned SQ_ENTRIES   = 8;
-  parameter int unsigned BPU_CKPT_ENTRIES = 32;
+  parameter int unsigned BPU_CKPT_ENTRIES = ISSUE_WIDTH == 4 ? 64 : 32;
   parameter int unsigned BPU_CKPT_ID_W = $clog2(BPU_CKPT_ENTRIES);
-  parameter int unsigned FQ_ENTRIES   = 2;
-  parameter int unsigned IQ_ENTRIES   = 2;
-  parameter int unsigned FETCH_REQUEST_ENTRIES = 8;
-  parameter int unsigned AXI_FETCH_LINE_ENTRIES = 8;
+  parameter int unsigned FQ_ENTRIES   = default_fq_entries(DECODE_WIDTH);
+  parameter int unsigned IQ_ENTRIES   = default_iq_entries(DECODE_WIDTH);
+  // Instruction credits: retain two independent requests for a four-word packet.
+  parameter int unsigned FETCH_REQUEST_ENTRIES = FETCH_WIDTH == 4 ? 8 : 4;
+  parameter int unsigned AXI_FETCH_LINE_ENTRIES = 4;
   parameter int unsigned DATA_REQUEST_ENTRIES = 8;
   localparam int DATA_TRANSACTION_W = $clog2(DATA_REQUEST_ENTRIES);
   typedef logic [DATA_TRANSACTION_W-1:0] data_transaction_t;
@@ -28,10 +92,10 @@ package rv32_pkg;
     logic [31:0] rData;
     logic [1:0] rResp, bResp;
   } axi_slave_t;
-  parameter int unsigned INT_RS_ENTRIES = 2;
+  parameter int unsigned INT_RS_ENTRIES = 4;
   parameter int unsigned MUL_RS_ENTRIES = 1;
   parameter int unsigned DIV_RS_ENTRIES = 1;
-  parameter int unsigned BRANCH_RS_ENTRIES = 2;
+  parameter int unsigned BRANCH_RS_ENTRIES = 4;
   parameter int unsigned LOAD_RS_ENTRIES = 2;
   parameter int unsigned STORE_ADDR_RS_ENTRIES = 2;
   parameter int unsigned STORE_VALUE_RS_ENTRIES = 2;
@@ -43,14 +107,14 @@ package rv32_pkg;
   parameter int unsigned CACHE_LINE_BYTES = 64;
   parameter int unsigned CACHE_LINE_BITS = CACHE_LINE_BYTES << 3;
   parameter int unsigned ICACHE_SETS = 16;
-  parameter int unsigned DCACHE_SETS = 64;
+  parameter int unsigned DCACHE_SETS = 128;
   parameter int unsigned DCACHE_WAYS = 2;
   // DCache line size is decoupled from the ICache line: refill beats, bank
   // count and the external line payload all follow DCACHE_LINE_BYTES while
   // the ICache keeps CACHE_LINE_BYTES.
   parameter int unsigned DCACHE_LINE_BYTES = 32;
   parameter int unsigned DCACHE_LINE_BITS = DCACHE_LINE_BYTES << 3;
-  parameter int unsigned RAS_ENTRIES = 16;
+  parameter int unsigned RAS_ENTRIES = 8;
 
   localparam logic [31:0] HALT_INSN = 32'h0ff0_0513;
   localparam logic [6:0] OPCODE_LUI    = 7'b0110111;
@@ -134,7 +198,7 @@ package rv32_pkg;
 
   typedef struct packed {
     logic         valid;
-    logic         illegal;
+    logic         illegal; // Compatibility status, tied low in the no-exception core.
     logic         halt;
     uop_class_e   uopClass;
     operation_e   operation;
@@ -160,6 +224,29 @@ package rv32_pkg;
     logic [31:0] predictedNextProgramCounter;
     bpu_ckpt_id_t predictorCheckpointId;
   } decode_context_t;
+
+  // A packet never crosses an aligned 8-byte block. If it carries two words,
+  // word 0 is not control flow; its predicted successor is implicitly PC+4.
+  // Both checkpoints consequently snapshot the same OLD speculative history.
+  typedef struct packed {
+    logic [31:0] programCounter;
+    logic [31:0] predictedNextProgramCounter;
+    bpu_ckpt_id_t predictorCheckpointId;
+    logic secondValid;
+  } fetch_packet_context_t;
+
+  typedef struct packed {
+    logic [63:0] instructions;
+    fetch_packet_context_t metadata;
+  } fetch_packet_t;
+
+  typedef struct packed {
+    logic hit;
+    logic firstControl;
+    logic secondControl;
+    logic thirdControl;
+    logic fourthControl;
+  } icache_fetch_hint_t;
 
   typedef struct packed {
     logic valid;
@@ -480,7 +567,7 @@ package rv32_pkg;
   typedef struct packed {
     logic valid;
     rob_tag_t robTag;
-    logic exception;
+    logic exception; // Compatibility input, not stored/consumed by the ROB.
   } rob_completion_t;
 
   typedef struct packed {
@@ -495,7 +582,7 @@ package rv32_pkg;
     logic isStore;
     logic [2:0] storeQueueIndex;
     logic isHalt;
-    logic hasException;
+    logic hasException; // Compatibility input, not stored/consumed by the ROB.
     logic [31:0] predictedProgramCounter;
     bpu_ckpt_id_t predictorCheckpointId;
     logic isReturn;
@@ -524,7 +611,7 @@ package rv32_pkg;
     phy_tag_t oldPhysicalRegister;
     logic [2:0] storeQueueIndex;
     logic isHalt;
-    logic hasException;
+    logic hasException; // Compatibility output, always zero.
   } rob_commit_output_t;
 
   typedef struct packed {
@@ -582,6 +669,12 @@ package rv32_pkg;
     logic queryShiftValue;
     logic [7:0] recoveryHistory;
   } direction_history_input_t;
+
+  typedef struct packed {
+    logic localHistory;
+    logic localPrediction;
+    logic globalPrediction;
+  } direction_context_t;
 
   typedef struct packed {
     logic directionTaken;
@@ -660,7 +753,7 @@ package rv32_pkg;
     logic [31:0] nextProgramCounter;
     logic [31:0] linkValue;
     logic mispredict;
-    logic targetMisaligned;
+    logic targetMisaligned; // Compatibility output, always zero.
   } branch_operation_output_t;
 
   typedef struct packed {
@@ -692,7 +785,7 @@ package rv32_pkg;
     rob_tag_t robTag;
     phy_tag_t destinationPhy;
     logic isControl;
-    logic controlMisaligned;
+    logic controlMisaligned; // Compatibility output, always zero.
   } alu_execute_output_t;
 
   typedef struct packed {
@@ -705,7 +798,7 @@ package rv32_pkg;
     logic taken;
     logic conditional;
     logic mispredict;
-    logic misaligned;
+    logic misaligned; // Compatibility output, always zero.
     logic isCall;
     logic isReturn;
   } bru_execute_output_t;
