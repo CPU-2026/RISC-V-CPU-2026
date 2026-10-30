@@ -110,36 +110,54 @@ module rv32_rename_four #(
     .renameOutput(renames),.physicalOutput(physical),.robOutput(allocations),.rsOutput(base),
     .loadOutput,.storeOutput,.loadIndexOutput(loadIndices),.storeIndexOutput(storeIndices)
   );
-  always_comb begin : route_pools
-    rsOutput='0;rsAuxOutput='0;
-    for(int lane=0;lane<4;lane++)begin
-      int pool;
-      pool=-1;
-      case(decodedInput[lane].uopClass)
-        UOP_ALU:pool=0;UOP_MUL:pool=1;UOP_DIV:pool=2;UOP_BRANCH:pool=3;UOP_LOAD:pool=4;UOP_STORE:pool=5;
-        default:pool=-1;
-      endcase
-      if(pool>=0)rsOutput[pool][lane]=base[lane];
+  // Local experiment only: every output target is constant after elaboration.
+  for (genvar lane=0;lane<4;lane++) begin : g_static_route
+    always_comb begin : route_lane
+      rsOutput[0][lane]='0;rsOutput[1][lane]='0;rsOutput[2][lane]='0;
+      rsOutput[3][lane]='0;rsOutput[4][lane]='0;rsOutput[5][lane]='0;
+      rsOutput[6][lane]='0;
+      rsAuxOutput[0][lane]='0;rsAuxOutput[1][lane]='0;rsAuxOutput[2][lane]='0;
+      rsAuxOutput[3][lane]='0;rsAuxOutput[4][lane]='0;rsAuxOutput[5][lane]='0;
+      rsAuxOutput[6][lane]='0;
       rsAuxOutput[0][lane][0]=decodedInput[lane].operation==OP_JAL || decodedInput[lane].operation==OP_JALR;
-      if(pool==1 || pool==2)rsOutput[pool][lane].useImmediate=0;
-      if(pool==4 || pool==5)begin
-        rsOutput[pool][lane].source2Ready=1;
-        rsOutput[pool][lane].source2Tag='0;
-        rsOutput[pool][lane].source2Value='0;
-        rsOutput[pool][lane].useImmediate=1;
-        rsAuxOutput[pool][lane]=pool==5?{1'b1,storeIndices[lane]}:{1'b0,loadIndices[lane]};
-      end
-      if(pool==5)begin
-        rsOutput[6][lane]=base[lane];
-        rsOutput[6][lane].source1Ready=base[lane].source2Ready;
-        rsOutput[6][lane].source1Tag=base[lane].source2Tag;
-        rsOutput[6][lane].source1Value=base[lane].source2Value;
-        rsOutput[6][lane].source2Ready=1;
-        rsOutput[6][lane].source2Tag='0;
-        rsOutput[6][lane].source2Value='0;
-        rsOutput[6][lane].useImmediate=0;
-        rsAuxOutput[6][lane]={1'b0,storeIndices[lane]};
-      end
+      case (decodedInput[lane].uopClass)
+        UOP_ALU: rsOutput[0][lane]=base[lane];
+        UOP_MUL: begin
+          rsOutput[1][lane]=base[lane];
+          rsOutput[1][lane].useImmediate=0;
+        end
+        UOP_DIV: begin
+          rsOutput[2][lane]=base[lane];
+          rsOutput[2][lane].useImmediate=0;
+        end
+        UOP_BRANCH: rsOutput[3][lane]=base[lane];
+        UOP_LOAD: begin
+          rsOutput[4][lane]=base[lane];
+          rsOutput[4][lane].source2Ready=1;
+          rsOutput[4][lane].source2Tag='0;
+          rsOutput[4][lane].source2Value='0;
+          rsOutput[4][lane].useImmediate=1;
+          rsAuxOutput[4][lane]={1'b0,loadIndices[lane]};
+        end
+        UOP_STORE: begin
+          rsOutput[5][lane]=base[lane];
+          rsOutput[5][lane].source2Ready=1;
+          rsOutput[5][lane].source2Tag='0;
+          rsOutput[5][lane].source2Value='0;
+          rsOutput[5][lane].useImmediate=1;
+          rsAuxOutput[5][lane]={1'b1,storeIndices[lane]};
+          rsOutput[6][lane]=base[lane];
+          rsOutput[6][lane].source1Ready=base[lane].source2Ready;
+          rsOutput[6][lane].source1Tag=base[lane].source2Tag;
+          rsOutput[6][lane].source1Value=base[lane].source2Value;
+          rsOutput[6][lane].source2Ready=1;
+          rsOutput[6][lane].source2Tag='0;
+          rsOutput[6][lane].source2Value='0;
+          rsOutput[6][lane].useImmediate=0;
+          rsAuxOutput[6][lane]={1'b0,storeIndices[lane]};
+        end
+        default: begin end
+      endcase
     end
   end
 `ifndef SYNTHESIS

@@ -101,6 +101,11 @@ def factor_registered_axi_outputs(staged):
       writeCompleteInner[writeHeadSlotInner],
       address:entriesInner[writeHeadSlotInner].address, transaction:entriesInner[writeHeadSlotInner].transaction};
 """
+    # The adopted microbank implementation changes only this payload RHS.
+    # Accept the two reviewed equations exactly, never arbitrary response code.
+    expected_sram = expected.replace(
+        "payloadInner[readHeadSlotInner][wordIndex]",
+        "payloadReadLineInner[wordIndex*32+:32]")
     changes = []
     for path in staged:
         if path.name != "rv32_axi_data.sv":
@@ -110,7 +115,7 @@ def factor_registered_axi_outputs(staged):
         middle = text.index("    responseOutput = '", start)
         end = text.index("    masterOutput = '0;", middle)
         responses = text[middle:end]
-        if responses != expected:
+        if responses not in (expected, expected_sram):
             raise ValueError("unknown AXI registered response equations; review before factoring staged copy")
         readiness, count = re.subn(r"^    (writeReadyOutput|readReadyOutput|exitReadyOutput) =",
                                   r"  assign \1 =", text[start:middle], flags=re.MULTILINE)

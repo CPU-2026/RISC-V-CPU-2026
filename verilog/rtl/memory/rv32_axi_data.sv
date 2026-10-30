@@ -57,8 +57,20 @@ module rv32_axi_data (
   wire [3:0] writeHeadSlotInner = 4'(writeHeadOwnerInner);
   // DEPTH shared lines, organized by 32-bit word. Payload is deliberately not
   // reset: descriptors gate visibility and every read word is received before
-  // a line is exposed. This is register storage, not an SRAM interface change.
-  logic [31:0] payloadInner [DEPTH][WORDS];
+  // a line is exposed. Experimental microbanks and bypass are counted together.
+  logic [DCACHE_LINE_BITS-1:0] payloadReadLineInner;
+  logic [31:0] payloadWriteWordInner;
+  axi_payload_micro_sram #(.DEPTH(DEPTH),.WORDS(WORDS)) u_payload_sram (
+    .clkInput,.rstNInput,
+    .lineWriteInput(pushWriteInner),.lineMmioInput(exitValidInput),
+    .lineSlotInput(SLOT_W'(writeSlotInner)),.lineDataInput(requestInput.writeData),.exitDataInput(exitValueInput),
+    .beatWriteInput(slaveInput.rValid && readCollectInner>=0),
+    .beatSlotInput(SLOT_W'(readCollectSlotInner)),
+    .beatWordInput(entriesInner[readCollectSlotInner].collected[WORD_INDEX_W-1:0]),.beatDataInput(slaveInput.rData),
+    .readLineSlotInput(SLOT_W'(readHeadSlotInner)),.readWordSlotInput(SLOT_W'(wIssueSlotInner)),
+    .readWordInput(entriesInner[wIssueSlotInner].w[WORD_INDEX_W-1:0]),
+    .readLineDataOutput(payloadReadLineInner),.readWordDataOutput(payloadWriteWordInner)
+  );
   logic [DEPTH-1:0] dataBusyInner, allocatedInner, releasedInner;
   logic [3:0] firstFreeInner, secondFreeInner, readSlotInner, writeSlotInner;
   logic firstFreeFoundInner, secondFreeFoundInner;
@@ -69,6 +81,48 @@ module rv32_axi_data (
   logic [4:0] awIssueSeqInner, wIssueSeqInner, writeCollectSeqInner;
   int readIssueInner, awIssueInner, wIssueInner, readCollectInner, writeCollectInner;
   logic pushReadInner, pushWriteInner, popReadInner, popWriteInner;
+  // Exact modulo-2^32 address + (zero-extended 4-bit beat << 2).
+  // Keep unaligned addresses and beat values 8..15, not just legal line traffic.
+  // High carries depend on the small low sum and parallel base-only prefixes;
+  // a late beat carry need not ripple through all remaining address bits.
+  function automatic logic [31:0] beat_address_prefix(
+    input logic [31:0] baseAddress,
+    input logic [3:0] beat
+  );
+    logic [4:0] lowSum;
+    logic [31:0] result;
+    lowSum = {1'b0, baseAddress[5:2]} + {1'b0, beat};
+    result[1:0] = baseAddress[1:0];
+    result[5:2] = lowSum[3:0];
+    result[6] = baseAddress[6] ^ lowSum[4];
+    result[7] = baseAddress[7] ^ (lowSum[4] & (&baseAddress[6:6]));
+    result[8] = baseAddress[8] ^ (lowSum[4] & (&baseAddress[7:6]));
+    result[9] = baseAddress[9] ^ (lowSum[4] & (&baseAddress[8:6]));
+    result[10] = baseAddress[10] ^ (lowSum[4] & (&baseAddress[9:6]));
+    result[11] = baseAddress[11] ^ (lowSum[4] & (&baseAddress[10:6]));
+    result[12] = baseAddress[12] ^ (lowSum[4] & (&baseAddress[11:6]));
+    result[13] = baseAddress[13] ^ (lowSum[4] & (&baseAddress[12:6]));
+    result[14] = baseAddress[14] ^ (lowSum[4] & (&baseAddress[13:6]));
+    result[15] = baseAddress[15] ^ (lowSum[4] & (&baseAddress[14:6]));
+    result[16] = baseAddress[16] ^ (lowSum[4] & (&baseAddress[15:6]));
+    result[17] = baseAddress[17] ^ (lowSum[4] & (&baseAddress[16:6]));
+    result[18] = baseAddress[18] ^ (lowSum[4] & (&baseAddress[17:6]));
+    result[19] = baseAddress[19] ^ (lowSum[4] & (&baseAddress[18:6]));
+    result[20] = baseAddress[20] ^ (lowSum[4] & (&baseAddress[19:6]));
+    result[21] = baseAddress[21] ^ (lowSum[4] & (&baseAddress[20:6]));
+    result[22] = baseAddress[22] ^ (lowSum[4] & (&baseAddress[21:6]));
+    result[23] = baseAddress[23] ^ (lowSum[4] & (&baseAddress[22:6]));
+    result[24] = baseAddress[24] ^ (lowSum[4] & (&baseAddress[23:6]));
+    result[25] = baseAddress[25] ^ (lowSum[4] & (&baseAddress[24:6]));
+    result[26] = baseAddress[26] ^ (lowSum[4] & (&baseAddress[25:6]));
+    result[27] = baseAddress[27] ^ (lowSum[4] & (&baseAddress[26:6]));
+    result[28] = baseAddress[28] ^ (lowSum[4] & (&baseAddress[27:6]));
+    result[29] = baseAddress[29] ^ (lowSum[4] & (&baseAddress[28:6]));
+    result[30] = baseAddress[30] ^ (lowSum[4] & (&baseAddress[29:6]));
+    result[31] = baseAddress[31] ^ (lowSum[4] & (&baseAddress[30:6]));
+    return result;
+  endfunction
+
   always_comb begin
     firstFreeInner = '0;
     secondFreeInner = '0;
@@ -119,21 +173,19 @@ module rv32_axi_data (
       data:'0};
     for (int wordIndex = 0; wordIndex < WORDS; wordIndex++)
       if (responseOutput.valid)
-        responseOutput.data[wordIndex*32+:32] = payloadInner[readHeadSlotInner][wordIndex];
+        responseOutput.data[wordIndex*32+:32] = payloadReadLineInner[wordIndex*32+:32];
     writeResponseOutput = '{valid:rstNInput && writeCountInner != 0 &&
       writeCompleteInner[writeHeadSlotInner],
       address:entriesInner[writeHeadSlotInner].address, transaction:entriesInner[writeHeadSlotInner].transaction};
     masterOutput = '0;
     masterOutput.arValid = rstNInput && readIssueInner >= 0;
-    masterOutput.arAddr = readIssueInner >= 0 ? entriesInner[readIssueSlotInner].address +
-      (32'(entriesInner[readIssueSlotInner].issued) << 2) : 0;
+    masterOutput.arAddr = readIssueInner >= 0 ? beat_address_prefix(entriesInner[readIssueSlotInner].address, entriesInner[readIssueSlotInner].issued) : 0;
     masterOutput.awValid = rstNInput && awIssueInner >= 0;
-    masterOutput.awAddr = awIssueInner >= 0 ? entriesInner[awIssueSlotInner].address +
-      (32'(entriesInner[awIssueSlotInner].issued) << 2) : 0;
+    masterOutput.awAddr = awIssueInner >= 0 ? beat_address_prefix(entriesInner[awIssueSlotInner].address, entriesInner[awIssueSlotInner].issued) : 0;
     masterOutput.wValid = rstNInput && wIssueInner >= 0;
     if (wIssueInner >= 0) begin
       masterOutput.wStrb = 4'hf;
-      masterOutput.wData = payloadInner[wIssueSlotInner][entriesInner[wIssueSlotInner].w[WORD_INDEX_W-1:0]];
+      masterOutput.wData = payloadWriteWordInner;
     end
     masterOutput.rReady = rstNInput;
     masterOutput.bReady = rstNInput;
@@ -222,20 +274,7 @@ module rv32_axi_data (
         writeHeadOwnerInner <= SLOT_W'(writeOrderInner[4'(writeHeadInner + 4'd1)]);
     end
   end
-  always_ff @(posedge clkInput) begin
-    if (rstNInput) begin
-      for (int slot = 0; slot < DEPTH; slot++) begin
-        for (int wordIndex = 0; wordIndex < WORDS; wordIndex++) begin
-          if (pushWriteInner && writeSlotInner == 4'(slot) && (!exitValidInput || wordIndex == 0))
-            payloadInner[slot][wordIndex] <= exitValidInput ? exitValueInput : requestInput.writeData[wordIndex*32+:32];
-          else if (slaveInput.rValid && readCollectInner >= 0 &&
-              readCollectSlotInner == 4'(slot) &&
-              entriesInner[readCollectSlotInner].collected == WORD_W'(wordIndex))
-            payloadInner[slot][wordIndex] <= slaveInput.rData;
-        end
-      end
-    end
-  end
+  // Payload state is held by the SRAM helper; all descriptor FSMs are unchanged.
 `ifndef SYNTHESIS
   always @(posedge clkInput) if (rstNInput) begin
     logic [DEPTH-1:0] owners;
@@ -271,4 +310,84 @@ module rv32_axi_data (
     if (slaveInput.bValid) assert (writeCollectInner >= 0 && slaveInput.bResp == 0);
   end
 `endif
+endmodule
+
+// Framework-supported 1RW microbank experiment, NOT a conventional deep RAM.
+// One independent 1x32 bank per line/word permits a full-line write and an R
+// beat to a different live line at the same edge. Every non-written bank reads
+// at every edge. Written-bank rdata is undefined and is NEVER consumed: two
+// shared last-edge write buffers forward the full-line and R-beat writes.
+// Physical macro fixed overhead and power are not modeled by FakeRAM v1.
+module axi_payload_micro_sram #(
+  parameter int DEPTH=8, WORDS=8,
+  localparam int SLOT_W=$clog2(DEPTH), WORD_INDEX_W=$clog2(WORDS)
+) (
+  input logic clkInput,rstNInput,
+  input logic lineWriteInput,lineMmioInput,
+  input logic [SLOT_W-1:0] lineSlotInput,
+  input logic [WORDS*32-1:0] lineDataInput,
+  input logic [31:0] exitDataInput,
+  input logic beatWriteInput,
+  input logic [SLOT_W-1:0] beatSlotInput,
+  input logic [WORD_INDEX_W-1:0] beatWordInput,
+  input logic [31:0] beatDataInput,
+  input logic [SLOT_W-1:0] readLineSlotInput,readWordSlotInput,
+  input logic [WORD_INDEX_W-1:0] readWordInput,
+  output logic [WORDS*32-1:0] readLineDataOutput,
+  output logic [31:0] readWordDataOutput
+);
+  // Packed carrier avoids sv2v/Yosys implicit function-memory arguments.
+  logic [DEPTH*WORDS*32-1:0] bankDataInner;
+  logic lastLineValidInner,lastBeatValidInner,lastLineMmioInner;
+  logic [SLOT_W-1:0] lastLineSlotInner,lastBeatSlotInner;
+  logic [WORD_INDEX_W-1:0] lastBeatWordInner;
+  logic [WORDS*32-1:0] lastLineDataInner;
+  logic [31:0] lastBeatDataInner;
+  for (genvar slot=0;slot<DEPTH;slot++) begin : g_line
+    for (genvar wordIndex=0;wordIndex<WORDS;wordIndex++) begin : g_word
+      logic lineHit,beatHit;
+      assign lineHit=rstNInput && lineWriteInput && lineSlotInput==SLOT_W'(slot) &&
+        (!lineMmioInput || wordIndex==0);
+      assign beatHit=rstNInput && beatWriteInput && beatSlotInput==SLOT_W'(slot) &&
+        beatWordInput==WORD_INDEX_W'(wordIndex);
+      sram_fakeram #(.DEPTH(1),.WIDTH(32),.WRITE_GRANULARITY(32)) u_bank (
+        .clk(clkInput),.en(1'b1),.we(lineHit || beatHit),.wmask(1'b1),.addr(1'b0),
+        .wdata(lineHit ? (lineMmioInput ? exitDataInput : lineDataInput[wordIndex*32+:32]) : beatDataInput),
+        .rdata(bankDataInner[(slot*WORDS+wordIndex)*32+:32])
+      );
+    end
+  end
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) begin lastLineValidInner<=0;lastBeatValidInner<=0;end
+    else begin lastLineValidInner<=lineWriteInput;lastBeatValidInner<=beatWriteInput;end
+  end
+  // Payload deliberately has no reset, just like the original array. Only
+  // valid flags reset; the enclosing AXI descriptor gates all exposed data.
+  always_ff @(posedge clkInput) if (rstNInput) begin
+    if (lineWriteInput) begin
+      lastLineSlotInner<=lineSlotInput;
+      lastLineMmioInner<=lineMmioInput;
+      lastLineDataInner<=lineDataInput;
+      if (lineMmioInput) lastLineDataInner[31:0]<=exitDataInput;
+    end
+    if (beatWriteInput) begin
+      lastBeatSlotInner<=beatSlotInput;
+      lastBeatWordInner<=beatWordInput;
+      lastBeatDataInner<=beatDataInput;
+    end
+  end
+  function automatic logic [31:0] payload_word(
+    input logic [SLOT_W-1:0] slot,
+    input logic [WORD_INDEX_W-1:0] wordIndex
+  );
+    if (lastLineValidInner && lastLineSlotInner==slot && (!lastLineMmioInner || wordIndex==0))
+      return lastLineDataInner[wordIndex*32+:32];
+    if (lastBeatValidInner && lastBeatSlotInner==slot && lastBeatWordInner==wordIndex)
+      return lastBeatDataInner;
+    return bankDataInner[(int'(slot)*WORDS+int'(wordIndex))*32+:32];
+  endfunction
+  for (genvar wordIndex=0;wordIndex<WORDS;wordIndex++) begin : g_response_word
+    always_comb readLineDataOutput[wordIndex*32+:32]=payload_word(readLineSlotInput,WORD_INDEX_W'(wordIndex));
+  end
+  always_comb readWordDataOutput=payload_word(readWordSlotInput,readWordInput);
 endmodule

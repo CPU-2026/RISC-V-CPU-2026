@@ -1,5 +1,5 @@
 `ifndef CPU_FETCH_WIDTH
-`define CPU_FETCH_WIDTH 4
+`define CPU_FETCH_WIDTH 2
 `endif
 `ifndef CPU_COMMIT_WIDTH
 `define CPU_COMMIT_WIDTH 4

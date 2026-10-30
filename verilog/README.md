@@ -25,19 +25,6 @@ make perf
 make synth
 ```
 
-2026-10-29 用户明确要求采用已验证的最高 IPC 候选，默认配置改为：
-
-* fetch4 / decode4 / ordered-allocation4 / commit4；分配宽度不是四个执行口。
-* ROB32 / PRF64 / 预测检查点64 / FQ8 / IQ8；DCache 8 KiB。
-* 双 ALU、单 AGU；ALU0→CDB0、ALU1→CDB1，Load/MUL/DIV→共享 CDB2。
-* 默认值在 `rtl/common/rv32_pkg.sv`，普通 `make build` / `make perf` 无需额外宽度宏。
-
-该候选此前通过 native lint 和原始六项 perf 的独立退休 ISA 检查，历史几何 IPC 为
-0.859877973781；这不是课程默认 Slave 下的新测量，也不代表达到 IPC>0.865 或面积/频率门槛。
-本次切换的备份、来源核验和复验记录位于
-`../../sync/evidence/superscalar4-production-adoption-20261029-r01/`。
-**尚无本配置的有效最终面积/Fmax，切换不恢复已暂停的正式 PPA。**
-
 目前官方的：
 
 ```text

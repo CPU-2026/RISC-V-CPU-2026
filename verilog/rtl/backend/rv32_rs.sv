@@ -130,7 +130,86 @@ module rv32_rs #(
   endfunction
 
   // PARALLEL_SINGLE_ISSUE_SELECTOR
-  generate if (ISSUE_WIDTH == 1 && WB_ISSUE_BYPASS && DEPTH >= 2) begin : g_parallel_select
+  generate if (DEPTH==4 && ISSUE_WIDTH==2 && WB_ISSUE_BYPASS && INDEPENDENT_ISSUE_READY) begin : g_parallel_n_of_m
+    // 2-of-4 age-ranked arbitration. All candidate ranks are computed in
+    // parallel; rank 1 never waits for rank 0's winner/index or removal mask.
+    // Busy ROB identities inhabit one legal half-ring. Equal tags preserve
+    // the original ascending scan's lower-row priority.
+    logic [DEPTH-1:0] readyMaskInner;
+    logic [DEPTH-1:0] beforeInner[DEPTH], olderReadyInner[DEPTH];
+    logic [2:0] rankLoInner[DEPTH], rankHiInner[DEPTH], rankInner[DEPTH];
+    logic [DEPTH-1:0] winnerMaskInner[ISSUE_WIDTH];
+    for (genvar row=0;row<DEPTH;row++) begin : g_rank
+      assign readyMaskInner[row]=busyInner[row] && src1IssueReadyInner[row] && src2IssueReadyInner[row];
+      for (genvar peer=0;peer<DEPTH;peer++) begin : g_precedence
+        if (peer==row) assign beforeInner[row][peer]=1'b0;
+        else if (peer<row)
+          assign beforeInner[row][peer]=!rs_is_older(robTagInner[row],robTagInner[peer]);
+        // Spell out the reciprocal comparison: equivalent complementary
+        // expressions can be shared without a coarse array self-dependency.
+        else assign beforeInner[row][peer]=rs_is_older(robTagInner[peer],robTagInner[row]);
+      end
+      assign olderReadyInner[row]=readyMaskInner & beforeInner[row];
+      // Explicit balanced four-input population count; self precedence is 0.
+      assign rankLoInner[row]={2'b0,olderReadyInner[row][0]}+{2'b0,olderReadyInner[row][1]};
+      assign rankHiInner[row]={2'b0,olderReadyInner[row][2]}+{2'b0,olderReadyInner[row][3]};
+      assign rankInner[row]=rankLoInner[row]+rankHiInner[row];
+      for (genvar lane=0;lane<ISSUE_WIDTH;lane++) begin : g_grant
+        assign winnerMaskInner[lane][row]=readyMaskInner[row] && rankInner[row]==3'(lane);
+      end
+    end
+    always_comb begin
+      laneTakenInner=winnerMaskInner[0] | winnerMaskInner[1];
+      for (int lane=0;lane<ISSUE_WIDTH;lane++) begin
+        laneFoundInner[lane]=|winnerMaskInner[lane];
+        laneIndexInner[lane]='0;
+        for (int row=0;row<DEPTH;row++)
+          laneIndexInner[lane]|=INDEX_W'(row) & {INDEX_W{winnerMaskInner[lane][row]}};
+      end
+      // Keep default index 0 and ALL invalid-cycle payloads, just as the scan.
+      // Flush qualification remains AFTER ranking, not part of eligibility.
+      issueFoundInner=laneFoundInner[0];
+      issueIndexInner=laneIndexInner[0];
+      issueOutput.valid=issueFoundInner && (!flushInfoInput.valid ||
+        rs_is_older(robTagInner[issueIndexInner],flushInfoInput.robTag));
+      issueOutput.operation=operation_e'(opInner[issueIndexInner]);
+      issueOutput.robTag=robTagInner[issueIndexInner];
+      issueOutput.destinationPhy=destPhyInner[issueIndexInner];
+      issueOutput.source1Value=src1IssueValueInner[issueIndexInner];
+      issueOutput.source2Value=src2IssueValueInner[issueIndexInner];
+      issueOutput.immediate=immInner[issueIndexInner];
+      issueOutput.programCounter=pcInner[issueIndexInner];
+      issueOutput.predictedProgramCounter=predictedPcInner[issueIndexInner];
+      issueOutput.useImmediate=useImmInner[issueIndexInner];
+      issueAuxOutput=auxInner[issueIndexInner];
+      for (int lane=0;lane<ISSUE_WIDTH;lane++) begin
+        issueLaneValidOutput[lane]=laneFoundInner[lane] && (!flushInfoInput.valid ||
+          rs_is_older(robTagInner[laneIndexInner[lane]],flushInfoInput.robTag));
+        issueLaneOutput[lane].valid=issueLaneValidOutput[lane];
+        issueLaneOutput[lane].operation=operation_e'(opInner[laneIndexInner[lane]]);
+        issueLaneOutput[lane].robTag=robTagInner[laneIndexInner[lane]];
+        issueLaneOutput[lane].destinationPhy=destPhyInner[laneIndexInner[lane]];
+        issueLaneOutput[lane].source1Value=src1IssueValueInner[laneIndexInner[lane]];
+        issueLaneOutput[lane].source2Value=src2IssueValueInner[laneIndexInner[lane]];
+        issueLaneOutput[lane].immediate=immInner[laneIndexInner[lane]];
+        issueLaneOutput[lane].programCounter=pcInner[laneIndexInner[lane]];
+        issueLaneOutput[lane].predictedProgramCounter=predictedPcInner[laneIndexInner[lane]];
+        issueLaneOutput[lane].useImmediate=useImmInner[laneIndexInner[lane]];
+        issueLaneAuxOutput[lane]=auxInner[laneIndexInner[lane]];
+      end
+    end
+`ifndef SYNTHESIS
+    always @(posedge clkInput) if (rstNInput) begin
+      assert ($onehot0(winnerMaskInner[0]) && $onehot0(winnerMaskInner[1]))
+        else $fatal(1,"N-of-M RS grant not onehot");
+      assert (!(|(winnerMaskInner[0] & winnerMaskInner[1])))
+        else $fatal(1,"N-of-M RS grants overlap");
+      assert (int'(laneFoundInner[0])+int'(laneFoundInner[1])==
+        ($countones(readyMaskInner)>1 ? 2 : $countones(readyMaskInner)))
+        else $fatal(1,"N-of-M RS lost eligible instruction (illegal age window?)");
+    end
+`endif
+  end else if (ISSUE_WIDTH == 1 && WB_ISSUE_BYPASS && DEPTH >= 2) begin : g_parallel_select
     logic [DEPTH-1:0] readyMaskInner, winnerMaskInner;
     logic [DEPTH-1:0] outranksInner [DEPTH];
     for (genvar row = 0; row < DEPTH; row++) begin : g_row

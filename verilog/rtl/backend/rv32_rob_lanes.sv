@@ -42,6 +42,47 @@ module rv32_rob_lanes #(
   rob_tag_t headInner, tailInner;
   logic [COUNT_W-1:0] countInner, allocatedCountInner, committedCountInner;
 
+  // Shared decode stays INSIDE each port. Lookup results must not create a
+  // coarse whole-array dependency into the independent retirement read path.
+  localparam int SHARED_READ_PORTS=COMMIT_WIDTH+LOOKUP_PORTS+RECOVERY_WIDTH;
+  rob_allocation_input_t commitPayloadInner[COMMIT_WIDTH];
+  rob_tag_t commitTagInner[COMMIT_WIDTH];
+  logic [COMMIT_WIDTH-1:0] commitValidInner, commitReadyInner;
+  for (genvar portIndex=0;portIndex<SHARED_READ_PORTS;portIndex++) begin : g_shared_read
+    logic [SLOT_W-1:0] slot;
+    logic [DEPTH-1:0] selectRow;
+    rob_allocation_input_t payload;
+    rob_tag_t tag;
+    logic valid,ready;
+    if (portIndex<COMMIT_WIDTH) begin : g_commit_slot
+      assign slot=SLOT_W'(headInner+rob_tag_t'(portIndex));
+      assign commitPayloadInner[portIndex]=payload;
+      assign commitTagInner[portIndex]=tag;
+      assign commitValidInner[portIndex]=valid;
+      assign commitReadyInner[portIndex]=ready;
+    end else if (portIndex<COMMIT_WIDTH+LOOKUP_PORTS) begin : g_lookup_slot
+      assign slot=lookupInput[portIndex-COMMIT_WIDTH].robTag[SLOT_W-1:0];
+    end else begin : g_replay_slot
+      assign slot=SLOT_W'(headInner+replayOffsetInput+
+        rob_tag_t'(portIndex-COMMIT_WIDTH-LOOKUP_PORTS));
+    end
+    for (genvar row=0;row<DEPTH;row++) begin : g_decode
+      assign selectRow[row]=slot==SLOT_W'(row);
+    end
+    always_comb begin
+      payload='0;
+      tag='0;
+      valid=1'b0;
+      ready=1'b0;
+      for (int row=0;row<DEPTH;row++) begin
+        payload|=payloadInner[row]&{$bits(rob_allocation_input_t){selectRow[row]}};
+        tag|=tagInner[row]&{ROB_TAG_W{selectRow[row]}};
+        valid|=validInner[row] && selectRow[row];
+        ready|=readyInner[row] && selectRow[row];
+      end
+    end
+  end
+
   assign nextTagOutput=tailInner;
   assign creditsOutput=(!freezeInput && !flushInput.valid)?COUNT_W'(DEPTH)-countInner:'0;
   assign countOutput=countInner;
@@ -61,23 +102,21 @@ module rv32_rob_lanes #(
     bit open;
     open=!freezeInput;
     for (int lane=0;lane<COMMIT_WIDTH;lane++) begin
-      logic [SLOT_W-1:0] slot;
-      slot=SLOT_W'(headInner+rob_tag_t'(lane));
       commitOutput[lane]='0;
-      commitOutput[lane].valid=open && int'(countInner)>lane && validInner[slot] &&
-        tagInner[slot]==headInner+rob_tag_t'(lane) && readyInner[slot] &&
-        (!flushInput.valid || rob_is_older(tagInner[slot],flushInput.robTag));
-      commitOutput[lane].robTag=tagInner[slot];
-      commitOutput[lane].programCounter=payloadInner[slot].programCounter;
-      commitOutput[lane].instruction=payloadInner[slot].instruction;
-      commitOutput[lane].writesArchitecturalRegister=payloadInner[slot].writesArchitecturalRegister;
-      commitOutput[lane].architecturalRegister=payloadInner[slot].architecturalRegister;
-      commitOutput[lane].newPhysicalRegister=payloadInner[slot].newPhysicalRegister;
-      commitOutput[lane].oldPhysicalRegister=payloadInner[slot].oldPhysicalRegister;
-      commitOutput[lane].storeQueueIndex=payloadInner[slot].storeQueueIndex;
-      commitOutput[lane].isHalt=payloadInner[slot].isHalt;
-      commitStoreOutput[lane]=payloadInner[slot].isStore;
-      open=commitOutput[lane].valid && !payloadInner[slot].isHalt;
+      commitOutput[lane].valid=open && int'(countInner)>lane && commitValidInner[lane] &&
+        commitTagInner[lane]==headInner+rob_tag_t'(lane) && commitReadyInner[lane] &&
+        (!flushInput.valid || rob_is_older(commitTagInner[lane],flushInput.robTag));
+      commitOutput[lane].robTag=commitTagInner[lane];
+      commitOutput[lane].programCounter=commitPayloadInner[lane].programCounter;
+      commitOutput[lane].instruction=commitPayloadInner[lane].instruction;
+      commitOutput[lane].writesArchitecturalRegister=commitPayloadInner[lane].writesArchitecturalRegister;
+      commitOutput[lane].architecturalRegister=commitPayloadInner[lane].architecturalRegister;
+      commitOutput[lane].newPhysicalRegister=commitPayloadInner[lane].newPhysicalRegister;
+      commitOutput[lane].oldPhysicalRegister=commitPayloadInner[lane].oldPhysicalRegister;
+      commitOutput[lane].storeQueueIndex=commitPayloadInner[lane].storeQueueIndex;
+      commitOutput[lane].isHalt=commitPayloadInner[lane].isHalt;
+      commitStoreOutput[lane]=commitPayloadInner[lane].isStore;
+      open=commitOutput[lane].valid && !commitPayloadInner[lane].isHalt;
     end
   end
   always_comb begin : commit_acceptance
@@ -91,28 +130,24 @@ module rv32_rob_lanes #(
     end
   end
   for (genvar portIndex=0;portIndex<LOOKUP_PORTS;portIndex++) begin : g_lookup
-    logic [SLOT_W-1:0] slot;
-    assign slot=lookupInput[portIndex].robTag[SLOT_W-1:0];
     always_comb begin
       lookupOutput[portIndex]='0;
-      lookupOutput[portIndex].valid=validInner[slot] && tagInner[slot]==lookupInput[portIndex].robTag;
+      lookupOutput[portIndex].valid=g_shared_read[COMMIT_WIDTH+portIndex].valid && g_shared_read[COMMIT_WIDTH+portIndex].tag==lookupInput[portIndex].robTag;
       if (portIndex<2 || portIndex==5) begin
-        lookupOutput[portIndex].programCounter=payloadInner[slot].programCounter;
-        lookupOutput[portIndex].predictedProgramCounter=payloadInner[slot].predictedProgramCounter;
-        lookupOutput[portIndex].predictorCheckpointId=payloadInner[slot].predictorCheckpointId;
-        lookupOutput[portIndex].isReturn=payloadInner[slot].isReturn;
+        lookupOutput[portIndex].programCounter=g_shared_read[COMMIT_WIDTH+portIndex].payload.programCounter;
+        lookupOutput[portIndex].predictedProgramCounter=g_shared_read[COMMIT_WIDTH+portIndex].payload.predictedProgramCounter;
+        lookupOutput[portIndex].predictorCheckpointId=g_shared_read[COMMIT_WIDTH+portIndex].payload.predictorCheckpointId;
+        lookupOutput[portIndex].isReturn=g_shared_read[COMMIT_WIDTH+portIndex].payload.isReturn;
       end
     end
   end
   for (genvar lane=0;lane<RECOVERY_WIDTH;lane++) begin : g_replay
-    logic [SLOT_W-1:0] slot;
-    assign slot=SLOT_W'(headInner+replayOffsetInput+rob_tag_t'(lane));
     // Invalidated suffix payloads intentionally survive until recovery ends.
-    assign replayNarrowOutput[lane]='{robTag:tagInner[slot],archRd:payloadInner[slot].architecturalRegister,
-      newPhy:payloadInner[slot].newPhysicalRegister};
-    assign replayRasOutput[lane]='{robTag:tagInner[slot],programCounter:payloadInner[slot].programCounter,
-      opcode:payloadInner[slot].instruction[6:0],rd:payloadInner[slot].instruction[11:7],
-      funct3:payloadInner[slot].instruction[14:12],rs1:payloadInner[slot].instruction[19:15]};
+    assign replayNarrowOutput[lane]='{robTag:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].tag,archRd:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].payload.architecturalRegister,
+      newPhy:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].payload.newPhysicalRegister};
+    assign replayRasOutput[lane]='{robTag:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].tag,programCounter:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].payload.programCounter,
+      opcode:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].payload.instruction[6:0],rd:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].payload.instruction[11:7],
+      funct3:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].payload.instruction[14:12],rs1:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].payload.instruction[19:15]};
   end
   for (genvar row=0;row<DEPTH;row++) begin : g_row
     logic [LANES-1:0] writeHit;
