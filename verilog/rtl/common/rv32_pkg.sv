@@ -545,6 +545,7 @@ package rv32_pkg;
     logic readValid;
     logic [31:0] readAddress;
     logic [1:0] readTransaction;
+    logic [$clog2(DCACHE_LINE_BYTES/4)-1:0] readStartWord;
     logic writeValid;
     logic [31:0] writeAddress;
     logic [1:0] writeTransaction;
@@ -557,6 +558,13 @@ package rv32_pkg;
     logic [1:0] transaction;
     logic [DCACHE_LINE_BITS-1:0] data;
   } dcache_line_response_input_t;
+
+  typedef struct packed {
+    logic valid;
+    logic [31:0] address;
+    logic [1:0] transaction;
+    logic [31:0] data;
+  } dcache_word_response_input_t;
 
   typedef struct packed {
     logic valid;

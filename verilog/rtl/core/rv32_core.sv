@@ -202,6 +202,7 @@ module rv32_core #(
   rv32_pkg::rob_completion_t [5:0] robCompletionInputInner;
   rv32_pkg::rob_lookup_input_t [ROB_LOOKUP_PORTS-1:0] robLookupInputInner;
   rv32_pkg::rob_lookup_output_t [ROB_LOOKUP_PORTS-1:0] robLookupOutputInner;
+  rv32_pkg::rob_lookup_output_t loadLookupSeparateInner;
   rob_lookup_output_t jumpLookupInner;
   rv32_pkg::rob_commit_output_t [COMMIT_WIDTH-1:0] robCommitOutputInner;
   rv32_pkg::rob_status_output_t robStatusOutputInner;
@@ -514,6 +515,18 @@ module rv32_core #(
   end else begin : g_shared_alu_writeback
     assign writebackInputInner[0]='{valid:wbAluValidInner,phyTag:wbAluPhyInner,value:wbAluValueInner};
   end endgenerate
+  // Physically separate the early StoreValue bus from the shared Load CDB.
+  rv32_pkg::cdb_result_t [WRITEBACK_PORTS-1:0] svEarlyWritebackInner;
+  generate for (genvar earlyPort=0;earlyPort<WRITEBACK_PORTS;earlyPort++) begin : g_sv_early_cdb
+    if (ALU_CDB_PORTS==2 && earlyPort<2) begin : g_dual
+      assign svEarlyWritebackInner[earlyPort]='{valid:aluResultGrantInner[earlyPort] && !aluLaneResultInner[earlyPort].isControl,
+        phyTag:aluLaneResultInner[earlyPort].destinationPhy,value:aluLaneResultInner[earlyPort].value};
+    end else if (ALU_CDB_PORTS==1 && earlyPort==0) begin : g_single
+      assign svEarlyWritebackInner[earlyPort]='{valid:wbAluValidInner,phyTag:wbAluPhyInner,value:wbAluValueInner};
+    end else begin : g_no_shared
+      assign svEarlyWritebackInner[earlyPort]='0;
+    end
+  end endgenerate
   assign sharedCdbCandidatesInner[0] = '{valid: mulResultEligibleInner,
                                         phyTag: wbMulPhyInner, value: wbMulValueInner};
   assign sharedCdbCandidatesInner[1] = '{valid: divResultEligibleInner,
@@ -635,7 +648,7 @@ module rv32_core #(
                                          exception: 1'b0};
   assign robCompletionInputInner[5] = '0;
   assign robLookupInputInner[0] = '{robTag: bruTagInner};
-  assign robLookupInputInner[2] = '{robTag: wbLoadTagInner};
+  assign robLookupInputInner[2] = '{robTag: ISSUE_WIDTH==4 ? rob_tag_t'(0) : wbLoadTagInner};
   assign robLookupInputInner[3] = '{robTag: wbMulTagInner};
   assign robLookupInputInner[4] = '{robTag: wbDivTagInner};
   assign robCommitValidInner = robCommitOutputInner[0].valid;
@@ -689,7 +702,7 @@ module rv32_core #(
   assign jumpRobPredictedPcInner = jumpLookupInner.predictedProgramCounter;
   assign jumpRobCkptIdInner = jumpLookupInner.predictorCheckpointId;
   assign jumpRobIsRetInner = jumpLookupInner.isReturn;
-  assign loadRobLiveInner = robLookupOutputInner[2].valid;
+  assign loadRobLiveInner = ISSUE_WIDTH==4 ? loadLookupSeparateInner.valid : robLookupOutputInner[2].valid;
   assign mulRobLiveInner = robLookupOutputInner[3].valid;
   assign divRobLiveInner = robLookupOutputInner[4].valid;
   assign predictorFetchAcceptInner = predictorQueryOutputInner.accepted;
@@ -838,6 +851,17 @@ module rv32_core #(
     .replayRasOutput(robReplayRasInner)
   );
   end else begin : g_four_rename_state
+    rob_lookup_input_t [ROB_LOOKUP_PORTS-1:0] independentLookup;
+    rob_lookup_output_t [ROB_LOOKUP_PORTS-1:0] independentResult;
+    for(genvar p=0;p<ROB_LOOKUP_PORTS;p++)begin:g_lookup_route
+      if(p==2)begin:g_load_hole
+        assign independentLookup[p]='0;
+        assign robLookupOutputInner[p]='0;
+      end else begin:g_registered
+        assign independentLookup[p]=robLookupInputInner[p];
+        assign robLookupOutputInner[p]=independentResult[p];
+      end
+    end
     assign prfAllocReadyInner=1'b1;
     assign robAllocReadyInner=1'b1;
     assign ratReadSecondOutputInner='0;
@@ -860,7 +884,8 @@ module rv32_core #(
       .firstFreePhysicalOutput(prfAllocPhyInner),.readyVectorOutput(prfReadyVectorInner),
       .writebackInput(writebackInputInner),.completionInput(robCompletionInputInner),.storeReadyInput(lsuStoreCompleteOutputInner),
       .flushInput('{valid:globalFlushInner,robTag:globalFlushTagInner}),.recoveryInput(recoveryStepInner),
-      .lookupInput(robLookupInputInner),.lookupOutput(robLookupOutputInner),
+      .lookupInput(independentLookup),.lookupOutput(independentResult),
+      .lookupLoadInput('{robTag:wbLoadTagInner}),.lookupLoadOutput(loadLookupSeparateInner),
       .commitOutput(robCommitOutputInner),.commitStoreOutput(retirementStoreInner),
       .commitReadyInput(retirementReadyInner),.commitFireOutput(retirementFireInner),
       .statusOutput(robStatusOutputInner),.robCountOutput(robCountInner),.nextTagOutput(robAllocTagInner),
@@ -1111,12 +1136,12 @@ module rv32_core #(
     .issueAuxOutput(saAuxInner), .occupancyOutput(), .issueLaneValidOutput(), .issueLaneOutput(), .issueLaneAuxOutput()
   );
   rv32_rs #(.DEPTH(STORE_VALUE_RS_ENTRIES), .AUX_W(3),
-             .ISSUE_WIDTH(STORE_VALUE_RS_ENTRIES), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH)) u_store_value_rs (
+             .ISSUE_WIDTH(STORE_VALUE_RS_ENTRIES), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH), .REUSE_ON_ISSUE(1'b1), .WB_ISSUE_BYPASS(1'b1), .WB_ISSUE_PORTS(ALU_CDB_PORTS)) u_store_value_rs (
     .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(svRsAllocInputInner), .allocReadyOutput(svRsAllocReadyInner),
-    .allocAuxInput(sqAllocIndexInner), .writebackInput(writebackInputInner),
+    .allocAuxInput(sqAllocIndexInner), .writebackInput(writebackInputInner), .issueWritebackInput(svEarlyWritebackInner),
     .allocSecondInput(svRsAllocSecondInputInner), .allocSecondReadyOutput(svRsAllocSecondReadyInner),
     .allocSecondAuxInput(sqAllocSecondIndexInner),
     .allocLanesInput(wideRsAllocInner[6]),.allocLanesAuxInput(wideSvAuxInner),

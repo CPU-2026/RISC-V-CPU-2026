@@ -63,6 +63,7 @@ module student_top #(
     dcache_cpu_response_output_t dcacheResponseInner;
     dcache_line_request_output_t dataRequestInner;
     dcache_line_response_input_t dataResponseInner;
+    dcache_word_response_input_t dataWordResponseInner;
     dcache_write_response_input_t dataWriteResponseInner, cacheWriteResponseInner;
     logic dataReadReadyInner, dataWriteReadyInner, dataResponseReadyInner, dataWriteResponseReadyInner;
     logic exitReadyInner, exitValidInner;
@@ -125,7 +126,7 @@ module student_top #(
       .clkInput(clock), .rstNInput(resetNInner), .cpuRequestInput(dcacheRequestInner),
       .cpuReqReadyOutput(dmemReadyInner), .cpuResponseOutput(dcacheResponseInner),
       .memRequestOutput(dataRequestInner), .memReadReadyInput(dataReadReadyInner),
-      .memWriteReadyInput(dataWriteReadyInner), .memResponseInput(dataResponseInner),
+      .memWriteReadyInput(dataWriteReadyInner), .memResponseInput(dataResponseInner), .memWordResponseInput(dataWordResponseInner),
       .memWriteResponseInput(cacheWriteResponseInner), .memRspReadyOutput(dataResponseReadyInner),
       .memWriteRspReadyOutput(dataWriteResponseReadyInner), .initializedOutput(),
       .exitReadyInput(exitReadyInner), .exitValidOutput(exitValidInner), .exitValueOutput(exitValueInner)
@@ -133,7 +134,7 @@ module student_top #(
     rv32_axi_data u_axi_data (
       .clkInput(clock), .rstNInput(resetNInner), .requestInput(dataRequestInner),
       .readReadyOutput(dataReadReadyInner), .writeReadyOutput(dataWriteReadyInner),
-      .responseOutput(dataResponseInner), .responseReadyInput(dataResponseReadyInner),
+      .responseOutput(dataResponseInner), .wordResponseOutput(dataWordResponseInner), .responseReadyInput(dataResponseReadyInner),
       .writeResponseOutput(dataWriteResponseInner),
       .writeResponseReadyInput(dataWriteResponseReadyInner || dataWriteResponseInner.address == AXI_EXIT_ADDR),
       .exitValidInput(exitValidInner), .exitValueInput(exitValueInner), .exitReadyOutput(exitReadyInner),

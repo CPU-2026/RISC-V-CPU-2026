@@ -9,6 +9,7 @@ module rv32_rs #(
   parameter int unsigned WRITEBACK_PORTS = 4,
   parameter bit REUSE_ON_ISSUE = 1'b0,
   parameter bit WB_ISSUE_BYPASS = 1'b0,
+  parameter int unsigned WB_ISSUE_PORTS = WRITEBACK_PORTS,
   parameter bit INDEPENDENT_ISSUE_READY = 1'b0
 ) (
   input  logic                   clkInput,
@@ -39,7 +40,9 @@ module rv32_rs #(
   input logic [3:0][AUX_W-1:0] allocLanesAuxInput,
   output logic [3:0] allocLanesFireOutput,
   output logic [$clog2(DEPTH+1)-1:0] allocCreditsOutput,
-  input logic [ISSUE_WIDTH-1:0] issueLaneReadyInput
+  input logic [ISSUE_WIDTH-1:0] issueLaneReadyInput,
+  // Independent early bus; ordinary wakeup still sees every full CDB port.
+  input rv32_pkg::cdb_result_t [WRITEBACK_PORTS-1:0] issueWritebackInput
 );
   import rv32_pkg::*;
   if (RENAME_WIDTH != 1 && RENAME_WIDTH != 2 && RENAME_WIDTH != 4) begin : g_invalid_rename_width
@@ -97,6 +100,7 @@ module rv32_rs #(
 
   cdb_result_t allocSrc1WbInner, allocSrc2WbInner;
   cdb_result_t src1WbInner [DEPTH], src2WbInner [DEPTH];
+  cdb_result_t src1IssueWbInner [DEPTH], src2IssueWbInner [DEPTH];
   logic src1IssueReadyInner [DEPTH], src2IssueReadyInner [DEPTH];
   logic [31:0] src1IssueValueInner [DEPTH], src2IssueValueInner [DEPTH];
   function automatic cdb_result_t matching_writeback(input phy_tag_t tag);
@@ -106,19 +110,34 @@ module rv32_rs #(
       if (writebackInput[portIndex].valid && writebackInput[portIndex].phyTag == tag)
         matching_writeback = writebackInput[portIndex];
   endfunction
+  function automatic cdb_result_t matching_issue_writeback(input phy_tag_t tag);
+    matching_issue_writeback='0;
+    // A static prefix of granted CDB ports may bypass into OLD-entry issue.
+    // All ports still participate in normal wakeup and allocation capture.
+    for (int portIndex=WB_ISSUE_PORTS-1;portIndex>=0;portIndex--)
+      if (issueWritebackInput[portIndex].valid && issueWritebackInput[portIndex].phyTag==tag)
+        matching_issue_writeback=issueWritebackInput[portIndex];
+  endfunction
   assign allocSrc1WbInner = matching_writeback(allocInput.source1Tag);
   assign allocSrc2WbInner = matching_writeback(allocInput.source2Tag);
   for (genvar row = 0; row < DEPTH; row++) begin : g_wakeup
     assign src1WbInner[row] = matching_writeback(src1TagInner[row]);
     assign src2WbInner[row] = matching_writeback(src2TagInner[row]);
+    if (WB_ISSUE_PORTS==WRITEBACK_PORTS) begin : g_all_issue_ports
+      assign src1IssueWbInner[row]=src1WbInner[row];
+      assign src2IssueWbInner[row]=src2WbInner[row];
+    end else begin : g_prefix_issue_ports
+      assign src1IssueWbInner[row]=matching_issue_writeback(src1TagInner[row]);
+      assign src2IssueWbInner[row]=matching_issue_writeback(src2TagInner[row]);
+    end
     // Only OLD occupied entries may dispatch. An authenticated granted CDB
     // value can satisfy their operand now; ordinary register capture remains.
-    assign src1IssueReadyInner[row] = src1ReadyInner[row] || (WB_ISSUE_BYPASS && src1WbInner[row].valid);
-    assign src2IssueReadyInner[row] = src2ReadyInner[row] || (WB_ISSUE_BYPASS && src2WbInner[row].valid);
-    assign src1IssueValueInner[row] = WB_ISSUE_BYPASS && !src1ReadyInner[row] && src1WbInner[row].valid ?
-      src1WbInner[row].value : src1ValueInner[row];
-    assign src2IssueValueInner[row] = WB_ISSUE_BYPASS && !src2ReadyInner[row] && src2WbInner[row].valid ?
-      src2WbInner[row].value : src2ValueInner[row];
+    assign src1IssueReadyInner[row] = src1ReadyInner[row] || (WB_ISSUE_BYPASS && src1IssueWbInner[row].valid);
+    assign src2IssueReadyInner[row] = src2ReadyInner[row] || (WB_ISSUE_BYPASS && src2IssueWbInner[row].valid);
+    assign src1IssueValueInner[row] = WB_ISSUE_BYPASS && !src1ReadyInner[row] && src1IssueWbInner[row].valid ?
+      src1IssueWbInner[row].value : src1ValueInner[row];
+    assign src2IssueValueInner[row] = WB_ISSUE_BYPASS && !src2ReadyInner[row] && src2IssueWbInner[row].valid ?
+      src2IssueWbInner[row].value : src2ValueInner[row];
   end
 
   function automatic logic rs_is_older(
@@ -209,7 +228,7 @@ module rv32_rs #(
         else $fatal(1,"N-of-M RS lost eligible instruction (illegal age window?)");
     end
 `endif
-  end else if (ISSUE_WIDTH == 1 && WB_ISSUE_BYPASS && DEPTH >= 2) begin : g_parallel_select
+  end else if (ISSUE_WIDTH == 1 && WB_ISSUE_BYPASS && WB_ISSUE_PORTS==WRITEBACK_PORTS && DEPTH >= 2) begin : g_parallel_select
     logic [DEPTH-1:0] readyMaskInner, winnerMaskInner;
     logic [DEPTH-1:0] outranksInner [DEPTH];
     for (genvar row = 0; row < DEPTH; row++) begin : g_row
@@ -509,6 +528,49 @@ module rv32_rs #(
     for (genvar lane=0;lane<4;lane++) assign allocLanesIndexInner[lane]='0;
   end endgenerate
 
+  // Decode accepted allocation lanes once per row; share youngest-writer
+  // priority across every payload bit. Keep the original single-row path.
+  rs_allocation_input_t rowAllocationInner[DEPTH];
+  logic [AUX_W-1:0] rowAllocationAuxInner[DEPTH];
+  logic [DEPTH-1:0] rowAllocationFireInner;
+  generate if (RENAME_WIDTH==4 && DEPTH>1) begin : g_static_allocation_write
+    for (genvar row=0;row<DEPTH;row++) begin : g_row
+      logic [3:0] hit,winner;
+      for (genvar lane=0;lane<4;lane++) begin : g_hit
+        assign hit[lane]=allocLanesFireOutput[lane] && allocLanesIndexInner[lane]==INDEX_W'(row);
+      end
+      assign rowAllocationFireInner[row]=|hit;
+      always_comb begin
+        logic later;
+        rs_allocation_input_t resolved;
+        later=1'b0;
+        winner='0;
+        for (int lane=3;lane>=0;lane--) begin
+          winner[lane]=hit[lane] && !later;
+          later|=hit[lane];
+        end
+        rowAllocationInner[row]='0;
+        rowAllocationAuxInner[row]='0;
+        resolved='0;
+        for (int lane=0;lane<4;lane++) begin
+          resolved=allocLanesInput[lane];
+          resolved.source1Ready=allocLanesS1ReadyInner[lane];
+          resolved.source2Ready=allocLanesS2ReadyInner[lane];
+          resolved.source1Value=allocLanesS1ValueInner[lane];
+          resolved.source2Value=allocLanesS2ValueInner[lane];
+          rowAllocationInner[row]|=resolved & {$bits(rs_allocation_input_t){winner[lane]}};
+          rowAllocationAuxInner[row]|=allocLanesAuxInput[lane] & {AUX_W{winner[lane]}};
+        end
+      end
+    end
+  end else begin : g_no_static_allocation_write
+    assign rowAllocationFireInner='0;
+    for (genvar row=0;row<DEPTH;row++) begin : g_row
+      assign rowAllocationInner[row]='0;
+      assign rowAllocationAuxInner[row]='0;
+    end
+  end endgenerate
+
   always_ff @(posedge clkInput or negedge rstNInput) begin
     if (!rstNInput) begin
       for (seqIndexInner = 0; seqIndexInner < DEPTH; seqIndexInner = seqIndexInner + 1) begin
@@ -595,6 +657,25 @@ module rv32_rs #(
           useImmInner[allocSecondIndexInner] <= allocSecondInput.useImmediate;
           auxInner[allocSecondIndexInner] <= allocSecondAuxInput;
         end
+        if (RENAME_WIDTH == 4 && DEPTH>1) begin
+          for (int row=0;row<DEPTH;row++) if (rowAllocationFireInner[row]) begin
+            busyInner[row]<=1'b1;
+            opInner[row]<=rowAllocationInner[row].operation;
+            robTagInner[row]<=rowAllocationInner[row].robTag;
+            destPhyInner[row]<=rowAllocationInner[row].destinationPhy;
+            src1ReadyInner[row]<=rowAllocationInner[row].source1Ready;
+            src1TagInner[row]<=rowAllocationInner[row].source1Tag;
+            src1ValueInner[row]<=rowAllocationInner[row].source1Value;
+            src2ReadyInner[row]<=rowAllocationInner[row].source2Ready;
+            src2TagInner[row]<=rowAllocationInner[row].source2Tag;
+            src2ValueInner[row]<=rowAllocationInner[row].source2Value;
+            immInner[row]<=rowAllocationInner[row].immediate;
+            pcInner[row]<=rowAllocationInner[row].programCounter;
+            predictedPcInner[row]<=rowAllocationInner[row].predictedProgramCounter;
+            useImmInner[row]<=rowAllocationInner[row].useImmediate;
+            auxInner[row]<=rowAllocationAuxInner[row];
+          end
+        end else begin
         if (RENAME_WIDTH == 4) begin
           for (int lane=0;lane<4;lane++) if (allocLanesFireOutput[lane]) begin
             busyInner[allocLanesIndexInner[lane]]<=1;
@@ -613,6 +694,7 @@ module rv32_rs #(
             useImmInner[allocLanesIndexInner[lane]]<=allocLanesInput[lane].useImmediate;
             auxInner[allocLanesIndexInner[lane]]<=allocLanesAuxInput[lane];
           end
+        end
         end
       end
     end

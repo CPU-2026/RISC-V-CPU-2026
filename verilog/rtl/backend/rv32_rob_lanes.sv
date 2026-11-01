@@ -4,7 +4,8 @@ module rv32_rob_lanes #(
   parameter int unsigned LANES=4,
   parameter int unsigned DEPTH=rv32_pkg::ROB_ENTRIES,
   parameter int unsigned COMMIT_WIDTH=2,
-  parameter int unsigned LOOKUP_PORTS=5
+  parameter int unsigned LOOKUP_PORTS=5,
+  parameter bit SPLIT_LOAD_LOOKUP=1'b0
 ) (
   input logic clkInput, rstNInput, freezeInput,
   input rv32_pkg::rob_allocation_input_t [LANES-1:0] allocationInput,
@@ -16,6 +17,8 @@ module rv32_rob_lanes #(
   input rv32_pkg::store_completion_output_t storeReadyInput,
   input rv32_pkg::rob_flush_input_t flushInput,
   input rv32_pkg::rob_lookup_input_t [LOOKUP_PORTS-1:0] lookupInput,
+  input rv32_pkg::rob_lookup_input_t lookupLoadInput,
+  output rv32_pkg::rob_lookup_output_t lookupLoadOutput,
   output rv32_pkg::rob_lookup_output_t [LOOKUP_PORTS-1:0] lookupOutput,
   output rv32_pkg::rob_commit_output_t [COMMIT_WIDTH-1:0] commitOutput,
   output logic [COMMIT_WIDTH-1:0] commitStoreOutput,
@@ -44,11 +47,88 @@ module rv32_rob_lanes #(
 
   // Shared decode stays INSIDE each port. Lookup results must not create a
   // coarse whole-array dependency into the independent retirement read path.
-  localparam int SHARED_READ_PORTS=COMMIT_WIDTH+LOOKUP_PORTS+RECOVERY_WIDTH;
+  localparam int SHARED_READ_PORTS=COMMIT_WIDTH+LOOKUP_PORTS;
   rob_allocation_input_t commitPayloadInner[COMMIT_WIDTH];
   rob_tag_t commitTagInner[COMMIT_WIDTH];
   logic [COMMIT_WIDTH-1:0] commitValidInner, commitReadyInner;
-  for (genvar portIndex=0;portIndex<SHARED_READ_PORTS;portIndex++) begin : g_shared_read
+  // Consecutive retirement lanes use each low-bit bank once. Read a single
+  // row from each bank, then rotate into program order. Invalid-row payloads
+  // are preserved too; valid/ready/commit acceptance remain separate consumers.
+  typedef struct packed {
+    rob_allocation_input_t payload;
+    rob_tag_t tag;
+    logic valid;
+    logic ready;
+  } commit_read_t;
+  commit_read_t commitReadInner[COMMIT_WIDTH];
+  if (DEPTH>=COMMIT_WIDTH && COMMIT_WIDTH>1) begin : g_commit_banked
+    localparam int BANK_W=$clog2(COMMIT_WIDTH);
+    localparam int ROWS=DEPTH/COMMIT_WIDTH;
+    localparam int ROW_W=(ROWS>1)?$clog2(ROWS):1;
+    logic [SLOT_W-1:0] baseSlot;
+    logic [BANK_W-1:0] firstBank;
+    logic [ROW_W-1:0] baseRow;
+    assign baseSlot=SLOT_W'(headInner);
+    assign firstBank=BANK_W'(baseSlot);
+    assign baseRow=ROW_W'(baseSlot>>BANK_W);
+    for (genvar bank=0;bank<COMMIT_WIDTH;bank++) begin : g_bank
+      logic [ROW_W-1:0] selectedCommitRow;
+      logic [ROWS-1:0] selectRow;
+      commit_read_t selected;
+      assign selectedCommitRow=baseRow+ROW_W'(BANK_W'(bank)<firstBank);
+      for (genvar row=0;row<ROWS;row++) begin : g_decode
+        assign selectRow[row]=(selectedCommitRow & ROW_W'(ROWS-1))==ROW_W'(row);
+      end
+      always_comb begin
+        selected='0;
+        for (int row=0;row<ROWS;row++) begin
+          selected|=commit_read_t'{payload:payloadInner[row*COMMIT_WIDTH+bank],
+            tag:tagInner[row*COMMIT_WIDTH+bank],valid:validInner[row*COMMIT_WIDTH+bank],
+            ready:readyInner[row*COMMIT_WIDTH+bank]} & {$bits(commit_read_t){selectRow[row]}};
+        end
+      end
+    end
+    for (genvar stage=0;stage<BANK_W;stage++) begin : g_rotate
+      logic [COMMIT_WIDTH-1:0][$bits(commit_read_t)-1:0] value;
+      for (genvar lane=0;lane<COMMIT_WIDTH;lane++) begin : g_lane
+        if (stage==0) begin : g_first
+          assign value[lane]=firstBank[stage] ?
+            g_bank[(lane+(1<<stage))%COMMIT_WIDTH].selected : g_bank[lane].selected;
+        end else begin : g_later
+          assign value[lane]=firstBank[stage] ?
+            g_rotate[stage-1].value[(lane+(1<<stage))%COMMIT_WIDTH] : g_rotate[stage-1].value[lane];
+        end
+      end
+    end
+    for (genvar lane=0;lane<COMMIT_WIDTH;lane++) begin : g_result
+      assign commitReadInner[lane]=commit_read_t'(g_rotate[BANK_W-1].value[lane]);
+    end
+  end else begin : g_commit_small
+    for (genvar lane=0;lane<COMMIT_WIDTH;lane++) begin : g_lane
+      logic [SLOT_W-1:0] slot;
+      logic [DEPTH-1:0] selectRow;
+      commit_read_t selected;
+      assign slot=SLOT_W'(headInner+rob_tag_t'(lane));
+      for (genvar row=0;row<DEPTH;row++) begin : g_decode
+        assign selectRow[row]=slot==SLOT_W'(row);
+      end
+      always_comb begin
+        selected='0;
+        for (int row=0;row<DEPTH;row++) begin
+          selected|=commit_read_t'{payload:payloadInner[row],tag:tagInner[row],
+            valid:validInner[row],ready:readyInner[row]} & {$bits(commit_read_t){selectRow[row]}};
+        end
+      end
+      assign commitReadInner[lane]=selected;
+    end
+  end
+  for (genvar lane=0;lane<COMMIT_WIDTH;lane++) begin : g_commit_read_outputs
+    assign commitPayloadInner[lane]=commitReadInner[lane].payload;
+    assign commitTagInner[lane]=commitReadInner[lane].tag;
+    assign commitValidInner[lane]=commitReadInner[lane].valid;
+    assign commitReadyInner[lane]=commitReadInner[lane].ready;
+  end
+  for (genvar portIndex=COMMIT_WIDTH;portIndex<SHARED_READ_PORTS;portIndex++) begin : g_shared_read
     logic [SLOT_W-1:0] slot;
     logic [DEPTH-1:0] selectRow;
     rob_allocation_input_t payload;
@@ -60,11 +140,12 @@ module rv32_rob_lanes #(
       assign commitTagInner[portIndex]=tag;
       assign commitValidInner[portIndex]=valid;
       assign commitReadyInner[portIndex]=ready;
-    end else if (portIndex<COMMIT_WIDTH+LOOKUP_PORTS) begin : g_lookup_slot
-      assign slot=lookupInput[portIndex-COMMIT_WIDTH].robTag[SLOT_W-1:0];
-    end else begin : g_replay_slot
-      assign slot=SLOT_W'(headInner+replayOffsetInput+
-        rob_tag_t'(portIndex-COMMIT_WIDTH-LOOKUP_PORTS));
+    end else begin : g_lookup_slot
+      if(SPLIT_LOAD_LOOKUP && portIndex==COMMIT_WIDTH+2)begin:g_load
+        assign slot=lookupLoadInput.robTag[SLOT_W-1:0];
+      end else begin:g_registered
+        assign slot=lookupInput[portIndex-COMMIT_WIDTH].robTag[SLOT_W-1:0];
+      end
     end
     for (genvar row=0;row<DEPTH;row++) begin : g_decode
       assign selectRow[row]=slot==SLOT_W'(row);
@@ -130,6 +211,9 @@ module rv32_rob_lanes #(
     end
   end
   for (genvar portIndex=0;portIndex<LOOKUP_PORTS;portIndex++) begin : g_lookup
+    if(SPLIT_LOAD_LOOKUP && portIndex==2)begin:g_load
+      assign lookupOutput[portIndex]='0;
+    end else begin:g_registered
     always_comb begin
       lookupOutput[portIndex]='0;
       lookupOutput[portIndex].valid=g_shared_read[COMMIT_WIDTH+portIndex].valid && g_shared_read[COMMIT_WIDTH+portIndex].tag==lookupInput[portIndex].robTag;
@@ -140,19 +224,147 @@ module rv32_rob_lanes #(
         lookupOutput[portIndex].isReturn=g_shared_read[COMMIT_WIDTH+portIndex].payload.isReturn;
       end
     end
+    end
+  end
+  if(SPLIT_LOAD_LOOKUP)begin:g_load_lookup_output
+    assign lookupLoadOutput='{valid:g_shared_read[COMMIT_WIDTH+2].valid &&
+      g_shared_read[COMMIT_WIDTH+2].tag==lookupLoadInput.robTag,
+      programCounter:'0,predictedProgramCounter:'0,predictorCheckpointId:'0,isReturn:1'b0};
+  end else begin:g_no_load_lookup_output
+    assign lookupLoadOutput='0;
+  end
+  // Consecutive recovery lanes visit each low-bit bank exactly once. Select
+  // one row per bank, then rotate the bank order with log2(RECOVERY_WIDTH)
+  // stages. Never gate on validInner: canceled payloads are still recycled.
+  typedef struct packed {
+    rob_tag_t robTag;
+    logic [4:0] archRd;
+    phy_tag_t newPhy;
+    logic [31:0] programCounter;
+    logic [19:0] instruction;
+  } replay_read_t;
+  replay_read_t replayReadInner[RECOVERY_WIDTH];
+  if (DEPTH>=RECOVERY_WIDTH && RECOVERY_WIDTH>1 &&
+      (RECOVERY_WIDTH&(RECOVERY_WIDTH-1))==0) begin : g_replay_banked
+    localparam int BANK_W=$clog2(RECOVERY_WIDTH);
+    localparam int ROWS=DEPTH/RECOVERY_WIDTH;
+    localparam int ROW_W=(ROWS>1)?$clog2(ROWS):1;
+    logic [SLOT_W-1:0] baseSlot;
+    logic [BANK_W-1:0] firstBank;
+    logic [ROW_W-1:0] baseRow;
+    assign baseSlot=SLOT_W'(headInner+replayOffsetInput);
+    assign firstBank=BANK_W'(baseSlot);
+    assign baseRow=ROW_W'(baseSlot>>BANK_W);
+    for (genvar bank=0;bank<RECOVERY_WIDTH;bank++) begin : g_bank
+      logic [ROW_W-1:0] selectedRow;
+      logic [ROWS-1:0] selectRow;
+      replay_read_t selected;
+      assign selectedRow=baseRow+ROW_W'(BANK_W'(bank)<firstBank);
+      for (genvar row=0;row<ROWS;row++) begin : g_decode
+        // For ROWS=1 the addition may be one; the physical slot still wraps.
+        assign selectRow[row]=(selectedRow & ROW_W'(ROWS-1))==ROW_W'(row);
+      end
+      always_comb begin
+        selected='0;
+        for (int row=0;row<ROWS;row++) begin
+          selected|=replay_read_t'{robTag:tagInner[row*RECOVERY_WIDTH+bank],
+            archRd:payloadInner[row*RECOVERY_WIDTH+bank].architecturalRegister,
+            newPhy:payloadInner[row*RECOVERY_WIDTH+bank].newPhysicalRegister,
+            programCounter:payloadInner[row*RECOVERY_WIDTH+bank].programCounter,
+            instruction:payloadInner[row*RECOVERY_WIDTH+bank].instruction[19:0]} &
+            {$bits(replay_read_t){selectRow[row]}};
+        end
+      end
+    end
+    for (genvar stage=0;stage<BANK_W;stage++) begin : g_rotate
+      // A separate net per generated stage avoids a coarse whole-array
+      // dependency in native/converted frontends; this is still acyclic wiring.
+      logic [RECOVERY_WIDTH-1:0][$bits(replay_read_t)-1:0] value;
+      for (genvar lane=0;lane<RECOVERY_WIDTH;lane++) begin : g_lane
+        if (stage==0) begin : g_first
+          assign value[lane]=firstBank[stage] ?
+            g_bank[(lane+(1<<stage))%RECOVERY_WIDTH].selected : g_bank[lane].selected;
+        end else begin : g_later
+          assign value[lane]=firstBank[stage] ?
+            g_rotate[stage-1].value[(lane+(1<<stage))%RECOVERY_WIDTH] : g_rotate[stage-1].value[lane];
+        end
+      end
+    end
+    for (genvar lane=0;lane<RECOVERY_WIDTH;lane++) begin : g_result
+      assign replayReadInner[lane]=replay_read_t'(g_rotate[BANK_W-1].value[lane]);
+    end
+  end else begin : g_replay_small
+    // Preserve the parameterized interface when a beat revisits physical rows.
+    for (genvar lane=0;lane<RECOVERY_WIDTH;lane++) begin : g_lane
+      logic [SLOT_W-1:0] slot;
+      logic [DEPTH-1:0] selectRow;
+      replay_read_t selected;
+      assign slot=SLOT_W'(headInner+replayOffsetInput+rob_tag_t'(lane));
+      for (genvar row=0;row<DEPTH;row++) begin : g_decode
+        assign selectRow[row]=slot==SLOT_W'(row);
+      end
+      always_comb begin
+        selected='0;
+        for (int row=0;row<DEPTH;row++) begin
+          selected|=replay_read_t'{robTag:tagInner[row],
+            archRd:payloadInner[row].architecturalRegister,
+            newPhy:payloadInner[row].newPhysicalRegister,
+            programCounter:payloadInner[row].programCounter,
+            instruction:payloadInner[row].instruction[19:0]} &
+            {$bits(replay_read_t){selectRow[row]}};
+        end
+      end
+      assign replayReadInner[lane]=selected;
+    end
   end
   for (genvar lane=0;lane<RECOVERY_WIDTH;lane++) begin : g_replay
-    // Invalidated suffix payloads intentionally survive until recovery ends.
-    assign replayNarrowOutput[lane]='{robTag:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].tag,archRd:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].payload.architecturalRegister,
-      newPhy:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].payload.newPhysicalRegister};
-    assign replayRasOutput[lane]='{robTag:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].tag,programCounter:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].payload.programCounter,
-      opcode:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].payload.instruction[6:0],rd:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].payload.instruction[11:7],
-      funct3:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].payload.instruction[14:12],rs1:g_shared_read[COMMIT_WIDTH+LOOKUP_PORTS+lane].payload.instruction[19:15]};
+    assign replayNarrowOutput[lane]='{robTag:replayReadInner[lane].robTag,
+      archRd:replayReadInner[lane].archRd,newPhy:replayReadInner[lane].newPhy};
+    assign replayRasOutput[lane]='{robTag:replayReadInner[lane].robTag,
+      programCounter:replayReadInner[lane].programCounter,
+      opcode:replayReadInner[lane].instruction[6:0],rd:replayReadInner[lane].instruction[11:7],
+      funct3:replayReadInner[lane].instruction[14:12],rs1:replayReadInner[lane].instruction[19:15]};
+  end
+  // Wide write-data selection is grouped instead of replicated per row. Lane
+  // `lane` can only ever target rows whose low log2(LANES) bits equal
+  // (tailInner+lane)'s, so adding the low bits of tailInner to that lane index
+  // maps each row group to exactly one candidate lane. One payload mux per group
+  // then serves the DEPTH/LANES rows that group owns, while every row keeps its
+  // own write enable. Selection count is DEPTH copies -> LANES copies; this is a
+  // structural repetition count, not a measured area claim.
+  localparam int GROUP_W=(LANES>1)?$clog2(LANES):1;
+  logic [GROUP_W-1:0] tailGroup;
+  logic [GROUP_W-1:0] laneGroup[LANES];
+  rob_allocation_input_t writeGroupPayload[LANES];
+  rob_tag_t writeGroupTag[LANES];
+  logic [SLOT_W-1:0] writeGroupSlot[LANES];
+  logic writeGroupFire[LANES];
+  if (LANES>1) begin : g_tail_group
+    assign tailGroup=tailInner[GROUP_W-1:0];
+  end else begin : g_tail_group_single
+    assign tailGroup='0;
+  end
+  for (genvar lane=0;lane<LANES;lane++) begin : g_lane_group
+    assign laneGroup[lane]=tailGroup+GROUP_W'(lane);
+  end
+  for (genvar group=0;group<LANES;group++) begin : g_write_group
+    always_comb begin
+      writeGroupPayload[group]='0;
+      writeGroupTag[group]='0;
+      writeGroupSlot[group]='0;
+      writeGroupFire[group]=1'b0;
+      for (int lane=0;lane<LANES;lane++) begin
+        if (laneGroup[lane]==GROUP_W'(group)) begin
+          writeGroupPayload[group]=allocationInput[lane];
+          writeGroupTag[group]=allocationTagOutput[lane];
+          writeGroupSlot[group]=SLOT_W'(allocationTagOutput[lane]);
+          writeGroupFire[group]=allocationFireOutput[lane];
+        end
+      end
+    end
   end
   for (genvar row=0;row<DEPTH;row++) begin : g_row
-    logic [LANES-1:0] writeHit;
-    rob_allocation_input_t writePayload;
-    rob_tag_t writeTag;
+    logic writeHit;
     logic completed, retired, storeReady;
     if (DEPTH==ROB_ENTRIES) begin
       assign storeReady=storeReadyInput.readyMask[row] && storeReadyInput.epochMask[row]==tagInner[row][ROB_TAG_W-1];
@@ -160,15 +372,10 @@ module rv32_rob_lanes #(
       assign storeReady=storeReadyInput.readyMask[tagInner[row][ROB_TAG_W-2:0]] &&
         storeReadyInput.epochMask[tagInner[row][ROB_TAG_W-2:0]]==tagInner[row][ROB_TAG_W-1];
     end
-    for (genvar lane=0;lane<LANES;lane++) begin : g_write_hit
-      assign writeHit[lane]=allocationFireOutput[lane] && SLOT_W'(allocationTagOutput[lane])==SLOT_W'(row);
-    end
+    // Rows in one group share the group payload; the compare only keeps the
+    // single row that this allocation actually targets.
+    assign writeHit=writeGroupFire[row&(LANES-1)] && writeGroupSlot[row&(LANES-1)]==SLOT_W'(row);
     always_comb begin
-      writePayload='0;writeTag='0;
-      for (int lane=0;lane<LANES;lane++) begin
-        writePayload|=allocationInput[lane]&{$bits(rob_allocation_input_t){writeHit[lane]}};
-        writeTag|=allocationTagOutput[lane]&{ROB_TAG_W{writeHit[lane]}};
-      end
       completed=0;retired=0;
       if (validInner[row] && (!flushInput.valid || rob_is_older(tagInner[row],flushInput.robTag))) begin
         completed=payloadInner[row].isStore && storeReady;
@@ -184,9 +391,9 @@ module rv32_rob_lanes #(
       end else if (!freezeInput) begin
         if (flushInput.valid && validInner[row] && rob_is_younger(tagInner[row],flushInput.robTag)) validInner[row]<=0;
         if (retired) validInner[row]<=0;
-        if (|writeHit) begin
-          validInner[row]<=1;tagInner[row]<=writeTag;payloadInner[row]<=writePayload;
-          readyInner[row]<=writePayload.ready || writePayload.isHalt;
+        if (writeHit) begin
+          validInner[row]<=1;tagInner[row]<=writeGroupTag[row&(LANES-1)];payloadInner[row]<=writeGroupPayload[row&(LANES-1)];
+          readyInner[row]<=writeGroupPayload[row&(LANES-1)].ready || writeGroupPayload[row&(LANES-1)].isHalt;
         end else if (completed) readyInner[row]<=1;
       end
     end

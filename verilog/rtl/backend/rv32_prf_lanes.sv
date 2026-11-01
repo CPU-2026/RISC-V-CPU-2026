@@ -43,7 +43,14 @@ module rv32_prf_lanes #(
   if (PRF_DEPTH <= ARCH_REGS || PRF_DEPTH > 2**PHY_TAG_W) begin : g_invalid_depth
     initial $fatal(1, "PRF lane capacity outside physical identity range");
   end
-  logic [31:0] valueInner [PRF_DEPTH];
+  // SRAM rdata is valid only after a read edge. Every non-writing bank
+  // refreshes its sole row, including freeze. Shared last-edge write records
+  // bridge write edges without duplicating a full physical-register data array.
+  logic [31:0] bankReadInner [PRF_DEPTH];
+  logic [PRF_DEPTH-1:0] everWrittenInner;
+  logic [VALUE_WRITERS-1:0] priorWriteValidInner;
+  phy_tag_t [VALUE_WRITERS-1:0] priorWritePhyInner;
+  logic [VALUE_WRITERS-1:0][31:0] priorWriteDataInner;
   logic [PRF_DEPTH-1:0] readyInner;
   phy_tag_t freeListInner [PRF_DEPTH];
   free_seq_t freeHeadInner, freeTailInner, allocatedHeadInner, recycleTailInner;
@@ -79,7 +86,7 @@ module rv32_prf_lanes #(
       if (!freezeInput && !restoreInput.valid && !recoveryInput.active &&
           allocationInput[lane].valid && used < int'(freeCountOutput)) begin
         allocationFireOutput[lane] = 1'b1;
-        allocationPhyOutput[lane] = freeListInner[allocatedHeadInner[SLOT_W-1:0]];
+        allocationPhyOutput[lane] = previewPhyOutput[used];
         allocatedHeadInner = free_seq_next(allocatedHeadInner);
         used++;
       end
@@ -88,9 +95,45 @@ module rv32_prf_lanes #(
   end
   for (genvar portIndex = 0; portIndex < READ_PORTS; portIndex++) begin : g_read
     assign readOutput[portIndex].ready = readInput[portIndex].physicalRegister == 0 ? 1'b1 : readyInner[readInput[portIndex].physicalRegister];
-    assign readOutput[portIndex].value = readInput[portIndex].physicalRegister == 0 ? '0 : valueInner[readInput[portIndex].physicalRegister];
+    always_comb begin : read_with_last_edge_forwarding
+      readOutput[portIndex].value = '0;
+      if (readInput[portIndex].physicalRegister != 0) begin
+        if (everWrittenInner[readInput[portIndex].physicalRegister])
+          readOutput[portIndex].value = bankReadInner[readInput[portIndex].physicalRegister];
+        // Exactly the original priority: younger allocation, then higher WB.
+        for (int writer = 0; writer < VALUE_WRITERS; writer++)
+          if (priorWriteValidInner[writer] &&
+              priorWritePhyInner[writer] == readInput[portIndex].physicalRegister)
+            readOutput[portIndex].value = priorWriteDataInner[writer];
+      end
+    end
   end
   assign readyVectorOutput = readyInner;
+
+  for (genvar writer = 0; writer < VALUE_WRITERS; writer++) begin : g_write_history
+    logic valid;
+    phy_tag_t tag;
+    logic [31:0] value;
+    if (writer < LANES) begin : g_allocation
+      assign valid = allocationFireOutput[writer] && allocationPhyOutput[writer] != 0;
+      assign tag = allocationPhyOutput[writer];
+      assign value = allocationInput[writer].value;
+    end else begin : g_writeback
+      assign valid = writebackInput[writer-LANES].valid && writebackInput[writer-LANES].phyTag != 0;
+      assign tag = writebackInput[writer-LANES].phyTag;
+      assign value = writebackInput[writer-LANES].value;
+    end
+    // Data/tag need no reset: valid independently masks them after reset/freeze.
+    always_ff @(posedge clkInput) begin
+      priorWritePhyInner[writer] <= tag;
+      priorWriteDataInner[writer] <= value;
+    end
+    always_ff @(posedge clkInput or negedge rstNInput) begin
+      if (!rstNInput) priorWriteValidInner[writer] <= 1'b0;
+      else priorWriteValidInner[writer] <= !freezeInput && valid;
+    end
+  end
+
 
   always_comb begin : release_old_physical
     recycleCountInner = '0;
@@ -152,13 +195,24 @@ module rv32_prf_lanes #(
         isReady |= winner[portIndex+LANES];
       end
     end
+    if (row == 0) begin : g_zero
+      assign bankReadInner[row] = '0;
+    end else begin : g_payload_sram
+      sram_fakeram #(.DEPTH(1), .WIDTH(32), .WRITE_GRANULARITY(32)) u_payload (
+        .clk(clkInput), .en(rstNInput), .we(!freezeInput && (|hit)),
+        .wmask(1'b1), .addr(1'b0), .wdata(data), .rdata(bankReadInner[row])
+      );
+    end
     always_ff @(posedge clkInput or negedge rstNInput) begin
       if (!rstNInput) begin
-        valueInner[row] <= '0;
         readyInner[row] <= row < ARCH_REGS;
+        everWrittenInner[row] <= 1'b0;
       end else if (!freezeInput) begin
-        if (row == 0) begin valueInner[row] <= '0; readyInner[row] <= 1'b1; end
-        else if (|hit) begin valueInner[row] <= data; readyInner[row] <= isReady; end
+        if (row == 0) readyInner[row] <= 1'b1;
+        else if (|hit) begin
+          readyInner[row] <= isReady;
+          everWrittenInner[row] <= 1'b1;
+        end
       end
     end
   end

@@ -8,6 +8,7 @@ module rv32_axi_data (
   input rv32_pkg::dcache_line_request_output_t requestInput,
   output logic readReadyOutput, writeReadyOutput,
   output rv32_pkg::dcache_line_response_input_t responseOutput,
+  output rv32_pkg::dcache_word_response_input_t wordResponseOutput,
   input logic responseReadyInput,
   output rv32_pkg::dcache_write_response_input_t writeResponseOutput,
   input logic writeResponseReadyInput,
@@ -29,6 +30,7 @@ module rv32_axi_data (
   typedef struct packed {
     logic [31:0] address;
     logic [1:0] transaction;
+    logic [WORD_INDEX_W-1:0] startWord;
     logic [WORD_W-1:0] issued, collected, w;
     logic mmio;
   } entry_t;
@@ -66,11 +68,32 @@ module rv32_axi_data (
     .lineSlotInput(SLOT_W'(writeSlotInner)),.lineDataInput(requestInput.writeData),.exitDataInput(exitValueInput),
     .beatWriteInput(slaveInput.rValid && readCollectInner>=0),
     .beatSlotInput(SLOT_W'(readCollectSlotInner)),
-    .beatWordInput(entriesInner[readCollectSlotInner].collected[WORD_INDEX_W-1:0]),.beatDataInput(slaveInput.rData),
+    .beatWordInput(collectReadWordInner),.beatDataInput(slaveInput.rData),
     .readLineSlotInput(SLOT_W'(readHeadSlotInner)),.readWordSlotInput(SLOT_W'(wIssueSlotInner)),
     .readWordInput(entriesInner[wIssueSlotInner].w[WORD_INDEX_W-1:0]),
     .readLineDataOutput(payloadReadLineInner),.readWordDataOutput(payloadWriteWordInner)
   );
+  logic [WORD_INDEX_W-1:0] issueReadWordInner,collectReadWordInner;
+  assign issueReadWordInner=entriesInner[readIssueSlotInner].startWord+
+    entriesInner[readIssueSlotInner].issued[WORD_INDEX_W-1:0];
+  assign collectReadWordInner=entriesInner[readCollectSlotInner].startWord+
+    entriesInner[readCollectSlotInner].collected[WORD_INDEX_W-1:0];
+  // This is an observed, accepted R beat. Full-line storage/completion remains
+  // authoritative and continues even after the CPU owner has restarted.
+  // Capture only accepted R beats. The one-cycle sideband cuts the AXI
+  // descriptor -> DCache response -> core/frontend combinational path.
+  // Full-line collection and MSHR ownership keep their existing protocol.
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) wordResponseOutput <= '0;
+    else begin
+      wordResponseOutput.valid <= slaveInput.rValid && readCollectInner>=0;
+      if (slaveInput.rValid && readCollectInner>=0) begin
+        wordResponseOutput.address <= beat_address_prefix(entriesInner[readCollectSlotInner].address,4'(collectReadWordInner));
+        wordResponseOutput.transaction <= entriesInner[readCollectSlotInner].transaction;
+        wordResponseOutput.data <= slaveInput.rData;
+      end
+    end
+  end
   logic [DEPTH-1:0] dataBusyInner, allocatedInner, releasedInner;
   logic [3:0] firstFreeInner, secondFreeInner, readSlotInner, writeSlotInner;
   logic firstFreeFoundInner, secondFreeFoundInner;
@@ -179,7 +202,7 @@ module rv32_axi_data (
       address:entriesInner[writeHeadSlotInner].address, transaction:entriesInner[writeHeadSlotInner].transaction};
     masterOutput = '0;
     masterOutput.arValid = rstNInput && readIssueInner >= 0;
-    masterOutput.arAddr = readIssueInner >= 0 ? beat_address_prefix(entriesInner[readIssueSlotInner].address, entriesInner[readIssueSlotInner].issued) : 0;
+    masterOutput.arAddr = readIssueInner >= 0 ? beat_address_prefix(entriesInner[readIssueSlotInner].address, 4'(issueReadWordInner)) : 0;
     masterOutput.awValid = rstNInput && awIssueInner >= 0;
     masterOutput.awAddr = awIssueInner >= 0 ? beat_address_prefix(entriesInner[awIssueSlotInner].address, entriesInner[awIssueSlotInner].issued) : 0;
     masterOutput.wValid = rstNInput && wIssueInner >= 0;
@@ -240,7 +263,7 @@ module rv32_axi_data (
         readOrderInner[readTailSeqInner[3:0]] <= readSlotInner;
         entriesInner[readSlotInner] <=
           '{address:requestInput.readAddress, transaction:requestInput.readTransaction,
-            default:'0};
+            startWord:requestInput.readStartWord,default:'0};
         readTailSeqInner <= readTailSeqInner + 1'b1;
       end
       if (pushWriteInner) begin

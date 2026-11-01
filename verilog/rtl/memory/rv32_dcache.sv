@@ -6,7 +6,8 @@
 // Cancelled transports still complete once; the LSU suppresses their writeback.
 module rv32_dcache #(
   parameter int unsigned SETS = rv32_pkg::DCACHE_SETS,
-  parameter int unsigned WAYS = rv32_pkg::DCACHE_WAYS
+  parameter int unsigned WAYS = rv32_pkg::DCACHE_WAYS,
+  parameter bit EARLY_WORD_RETURN = 1'b0
 ) (
   input logic clkInput, rstNInput,
   input rv32_pkg::dcache_cpu_request_input_t cpuRequestInput,
@@ -15,6 +16,7 @@ module rv32_dcache #(
   output rv32_pkg::dcache_line_request_output_t memRequestOutput,
   input logic memReadReadyInput, memWriteReadyInput,
   input rv32_pkg::dcache_line_response_input_t memResponseInput,
+  input rv32_pkg::dcache_word_response_input_t memWordResponseInput,
   input rv32_pkg::dcache_write_response_input_t memWriteResponseInput,
   output logic memRspReadyOutput, memWriteRspReadyOutput,
   output logic initializedOutput, idleOutput,
@@ -28,7 +30,9 @@ module rv32_dcache #(
   localparam int TAG_W = 32 - INDEX_W - OFFSET_W;
   localparam int META_W = TAG_W + 1;
   localparam int WORDS_PER_LINE = DCACHE_LINE_BYTES / 4;
-  localparam int FILL_WORDS_PER_BEAT = WORDS_PER_LINE > 1 ? 2 : 1;
+  // The accepted line bus is already complete. Each word has an independent
+  // physical 1RW SRAM bank, so one edge can publish the entire returned line.
+  localparam int FILL_WORDS_PER_BEAT = WORDS_PER_LINE;
   localparam int WORD_INDEX_W = $clog2(WORDS_PER_LINE) + 1;
   localparam int WAY_W = WAYS > 1 ? $clog2(WAYS) : 1;
   localparam int PLRU_W = WAYS > 2 ? 3 : 1;
@@ -112,7 +116,36 @@ module rv32_dcache #(
   logic normalHitWinsInner;
   logic [31:0] normalReadDataInner;
   logic [WAY_W-1:0] victimWayInner;
+  logic wordReturnInner;
+  logic wordCaptureValidInner;
+  logic [REQUEST_DEPTH-1:0] wordCaptureInner;
+  logic [1:0] wordMissInner;
+  logic [REQUEST_W-1:0] wordOwnerInner;
+  logic [31:0] wordRawInner;
+  assign wordMissInner=memWordResponseInput.transaction;
+  assign wordOwnerInner=missesInner[wordMissInner].owner;
+  always_comb begin
+    wordRawInner=memWordResponseInput.data >> (32'(requestInner[wordOwnerInner].request.address[1:0])<<3);
+    case(requestInner[wordOwnerInner].request.size)
+      MEM_BYTE:wordRawInner={24'b0,wordRawInner[7:0]};
+      MEM_HALF:wordRawInner={16'b0,wordRawInner[15:0]};
+      default:;
+    endcase
+  end
 
+  // Per-row narrow buffering uses the existing raw/ready state. The late word
+  // never enters a new combinational CPU-response mux or frees an MSHR owner.
+  function automatic logic [31:0] extract_returned_word(
+    input logic [31:0] data, input dcache_cpu_request_input_t request
+  );
+    logic [31:0] shifted;
+    shifted = data >> (32'(request.address[1:0]) << 3);
+    case (request.size)
+      MEM_BYTE: return {24'b0, shifted[7:0]};
+      MEM_HALF: return {16'b0, shifted[15:0]};
+      default: return shifted;
+    endcase
+  endfunction
   function automatic int bytes_for_size(input logic [1:0] sizeInput);
     case (sizeInput)
       MEM_BYTE: return 1;
@@ -337,6 +370,29 @@ module rv32_dcache #(
     owner = fillMissInner >= 0 ? int'(missesInner[fillMissInner].owner) : 0;
     firstFillInner = fillBeatInner && missesInner[fillMissInner].fillWord == 0;
     earlyInner = fillBeatInner && fillCanRespondInner[memResponseInput.transaction];
+    wordReturnInner=EARLY_WORD_RETURN && rstNInput && memWordResponseInput.valid && !earlyInner &&
+    missesInner[wordMissInner].valid && missesInner[wordMissInner].readSent && !missesInner[wordMissInner].responded &&
+    requestInner[wordOwnerInner].active && !requestInner[wordOwnerInner].request.write &&
+    !storeHazardInner[wordOwnerInner] &&
+    // Requested-line words are independent of the retained dirty victim.
+    memWordResponseInput.address[31:OFFSET_W]==missesInner[wordMissInner].line[31:OFFSET_W] &&
+    memWordResponseInput.address[OFFSET_W-1:2]==requestInner[wordOwnerInner].request.address[OFFSET_W-1:2] &&
+    int'(requestInner[wordOwnerInner].request.address[1:0])+bytes_for_size(requestInner[wordOwnerInner].request.size)<=4;
+    // An answered owner stays allocated until full-line publication. Other
+    // old-state loads may consume their own registered beat, including loads
+    // that arrived after the owner answered and therefore did not merge.
+    wordCaptureValidInner = EARLY_WORD_RETURN && rstNInput && memWordResponseInput.valid &&
+      missesInner[wordMissInner].valid && missesInner[wordMissInner].readSent &&
+      !requestInner[wordOwnerInner].request.write &&
+      // Keep victim ownership until full fill, but capture requested-line words.
+      memWordResponseInput.address[31:OFFSET_W]==missesInner[wordMissInner].line[31:OFFSET_W];
+    wordCaptureInner = '0;
+    for (int row = 0; row < REQUEST_DEPTH; row++)
+      wordCaptureInner[row] = wordCaptureValidInner && REQUEST_W'(row)!=wordOwnerInner &&
+        requestInner[row].active && !requestInner[row].ready && !requestInner[row].request.write &&
+        !storeAllocationHazardInner[row] &&
+        requestInner[row].request.address[31:2]==memWordResponseInput.address[31:2] &&
+        int'(requestInner[row].request.address[1:0])+bytes_for_size(requestInner[row].request.size)<=4;
     // Buffered eligibility uses only old request/hazard state. Do its
     // age arbitration before the late SRAM tag-hit qualification arrives.
     normalBufferedMaskInner = '0;
@@ -373,16 +429,17 @@ module rv32_dcache #(
       normalReadDataInner |= rawInner[row] & {32{normalBufferedWinnerInner[row]}};
     end
     normalTransactionInner = normalHitWinsInner ? hitTransactionInner : bufferedTransactionInner;
-    responseInner = earlyInner ? owner : normalResponseInner;
+    responseInner = earlyInner ? owner : (wordReturnInner ? int'(wordOwnerInner) : normalResponseInner);
     cpuResponseOutput = '0;
-    if (earlyInner || (|normalWinnerInner)) begin
+    if (earlyInner || wordReturnInner || (|normalWinnerInner)) begin
       cpuResponseOutput.valid = rstNInput;
       cpuResponseOutput.transaction = earlyInner ? fillTransactionInner[memResponseInput.transaction] :
-        normalTransactionInner;
+        (wordReturnInner ? requestInner[wordOwnerInner].request.transaction : normalTransactionInner);
       // earlyInner already authenticates this MSHR: avoid normal-response/validity muxes in the payload index.
       if (earlyInner) cpuResponseOutput.readData = extract_raw(memResponseInput.data, requestInner[missesInner[memResponseInput.transaction].owner].request);
       // An eligible hit wins iff the selected normal response is this read.
       // Avoid indexing the late winner vector through readIndex a second time.
+      else if (wordReturnInner) cpuResponseOutput.readData = wordRawInner;
       else if (normalHitWinsInner)
         cpuResponseOutput.readData = readHitRawInner;
       else cpuResponseOutput.readData = normalReadDataInner;
@@ -419,11 +476,16 @@ module rv32_dcache #(
            !(readValidInner && int'(readIndexInner) == i) &&
            !requestInner[i].ready && !requestInner[i].hasMiss && i != mergeSlotInner &&
            requestInner[i].request.address != AXI_EXIT_ADDR &&
-          !set_locked(requestInner[i].request.address) && !storeHazardInner[i] &&
+          (!requestInner[i].request.write || !set_locked(requestInner[i].request.address)) && !storeHazardInner[i] &&
           find_miss(line_of(requestInner[i].request.address)) < 0 &&
           (!requestInner[i].request.write || i == firstInner) &&
-          (!requestInner[i].deferred || (i == firstInner && freeMissInner >= 0)) &&
+          (!requestInner[i].deferred || (i == firstInner && freeMissInner >= 0 &&
+            !set_locked(requestInner[i].request.address))) &&
            (anyMiss || i == firstInner || i == lookupFirst)) candidates[i] = 1;
+    // A miss invalidates its reserved victim way at allocation. A Load
+    // can therefore hit another valid way while that set is locked.
+    // A failed probe becomes deferred until the set unlocks; Stores
+    // and new miss allocation retain the original whole-set lock.
     lookupCandidateInner = oldest_request(candidates);
     lookupInner = (!readValidInner || continueHit) && !fillBeatInner && storeInner < 0 ? lookupCandidateInner : -1;
     // Only lookupInner authorizes a read. With no candidate the truncated -1
@@ -444,6 +506,7 @@ module rv32_dcache #(
       memRequestOutput.readValid = rstNInput;
       memRequestOutput.readAddress = missesInner[readMissInner].line;
       memRequestOutput.readTransaction = 2'(readMissInner);
+      memRequestOutput.readStartWord = EARLY_WORD_RETURN ? requestInner[missesInner[readMissInner].owner].request.address[OFFSET_W-1:2] : '0;
     end
     if (writeMissInner >= 0) begin
       memRequestOutput.writeValid = rstNInput;
@@ -452,7 +515,7 @@ module rv32_dcache #(
       memRequestOutput.writeData = victimPayloadInner[writeMissInner];
     end
     releasedInner = 0;
-    if (responseInner >= 0 && (!fillBeatInner || responseInner != owner)) releasedInner[responseInner] = 1;
+    if (responseInner >= 0 && !wordReturnInner && (!fillBeatInner || responseInner != owner)) releasedInner[responseInner] = 1;
     if (storeInner >= 0) releasedInner[storeInner] = 1;
     if (fillFireInner) releasedInner[owner] = 1;
     if (exitValidOutput) releasedInner[firstInner] = 1;
@@ -604,7 +667,11 @@ module rv32_dcache #(
             requestInner[i].deferred <= 0;
             requestInner[i].hasMiss <= 0;
           end else if (requestInner[i].active) begin
-            if (firstFillInner && !requestInner[missesInner[fillMissInner].owner].request.write &&
+            if (wordCaptureInner[i]) begin
+              requestInner[i].ready <= 1;
+              requestInner[i].deferred <= 0;
+              requestInner[i].hasMiss <= 0;
+            end else if (firstFillInner && !requestInner[missesInner[fillMissInner].owner].request.write &&
                 requestInner[i].hasMiss && int'(requestInner[i].miss) == fillMissInner &&
                  REQUEST_W'(i) != missesInner[fillMissInner].owner) begin
               requestInner[i].ready <= 1;
@@ -620,7 +687,7 @@ module rv32_dcache #(
                 requestInner[i].deferred <= allocateMissInner < 0;
               end
             end
-            if (mergeSlotInner == i) begin
+            if (mergeSlotInner == i && !wordCaptureInner[i]) begin
               requestInner[i].miss <= 2'(mergeMissInner);
               requestInner[i].hasMiss <= 1;
               requestInner[i].deferred <= 0;
@@ -646,6 +713,7 @@ module rv32_dcache #(
           if (fillBeatInner && fillMissInner == m)
             missesInner[m].fillWord <= missesInner[m].fillWord + WORD_INDEX_W'(FILL_WORDS_PER_BEAT);
           if (fillMissInner == m && responseInner == int'(missesInner[m].owner)) missesInner[m].responded <= 1;
+        if (wordReturnInner && wordMissInner==2'(m)) missesInner[m].responded <= 1;
         end
       end
       for (int s = 0; s < SETS; s++) begin
@@ -670,7 +738,9 @@ module rv32_dcache #(
         if (allocateMissInner == m) victimPayloadInner[m] <= sram_line(int'(victimWayInner));
       for (int i = 0; i < REQUEST_DEPTH; i++) begin
         if (requestInner[i].active && !releasedInner[i]) begin
-          if (firstFillInner && !requestInner[missesInner[fillMissInner].owner].request.write &&
+          if (wordCaptureInner[i])
+            rawInner[i] <= extract_returned_word(memWordResponseInput.data, requestInner[i].request);
+          else if (firstFillInner && !requestInner[missesInner[fillMissInner].owner].request.write &&
               requestInner[i].hasMiss && int'(requestInner[i].miss) == fillMissInner &&
               REQUEST_W'(i) != missesInner[fillMissInner].owner)
             rawInner[i] <= extract_raw(memResponseInput.data, requestInner[i].request);

@@ -33,6 +33,8 @@ module rv32_rename_four #(
   input rv32_pkg::rob_flush_input_t flushInput,
   input rv32_pkg::recovery_step_t recoveryInput,
   input rv32_pkg::rob_lookup_input_t [LOOKUP_PORTS-1:0] lookupInput,
+  input rv32_pkg::rob_lookup_input_t lookupLoadInput,
+  output rv32_pkg::rob_lookup_output_t lookupLoadOutput,
   output rv32_pkg::rob_lookup_output_t [LOOKUP_PORTS-1:0] lookupOutput,
   output rv32_pkg::rob_commit_output_t [COMMIT_WIDTH-1:0] commitOutput,
   output logic [COMMIT_WIDTH-1:0] commitStoreOutput,
@@ -92,11 +94,11 @@ module rv32_rename_four #(
     .restoreCountInput(robCountOutput),.replayInput(replayNarrowOutput),.readInput(reads),.readOutput(values),
     .writebackInput,.readyVectorOutput,.freeCountOutput(freeCount)
   );
-  rv32_rob_lanes #(.LANES(4),.COMMIT_WIDTH(COMMIT_WIDTH),.LOOKUP_PORTS(LOOKUP_PORTS)) u_rob (
+  rv32_rob_lanes #(.LANES(4),.COMMIT_WIDTH(COMMIT_WIDTH),.LOOKUP_PORTS(LOOKUP_PORTS),.SPLIT_LOAD_LOOKUP(1'b1)) u_rob (
     .clkInput,.rstNInput,.freezeInput(freezeInput || recoveryInput.active),
     .allocationInput(allocations),.allocationFireOutput(robFire),
     .allocationTagOutput(allocatedTags),.creditsOutput(robCredits),.nextTagOutput,
-    .completionInput,.storeReadyInput,.flushInput,.lookupInput,.lookupOutput,
+    .completionInput,.storeReadyInput,.flushInput,.lookupInput,.lookupOutput,.lookupLoadInput,.lookupLoadOutput,
     .commitOutput,.commitStoreOutput,.commitReadyInput,.commitFireOutput,.statusOutput,.countOutput(robCountOutput),
     .replayOffsetInput(recoveryInput.offset),.replayNarrowOutput,.replayRasOutput
   );

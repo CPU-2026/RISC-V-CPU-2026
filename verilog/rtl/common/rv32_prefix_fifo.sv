@@ -84,6 +84,26 @@ module rv32_prefix_fifo #(
         if (rstNInput && !freezeInput && !flushInput && writeInner)
           entriesInner[row] <= bankDataInner[row & 1];
     end
+  end else if (PUSH_WIDTH == 4 && DEPTH >= 4) begin : g_four_banked_write
+    // Each consecutive four-lane push visits every low-two-bit bank once.
+    // Select the lane data once per bank, retain an individual row write enable.
+    logic [3:0][1:0] bankLaneInner;
+    logic [3:0][WIDTH-1:0] bankDataInner;
+    logic [3:0][SLOT_W-1:0] bankSlotInner;
+    logic [3:0] bankFireInner;
+    for (genvar bank = 0; bank < 4; bank++) begin : g_bank
+      assign bankLaneInner[bank] = 2'(bank) - tailInner[1:0];
+      assign bankDataInner[bank] = inDataInput[bankLaneInner[bank]];
+      assign bankSlotInner[bank] = SLOT_W'(tailInner + SEQ_W'(bankLaneInner[bank]));
+      assign bankFireInner[bank] = PUSH_W'(bankLaneInner[bank]) < pushInner;
+    end
+    for (genvar row = 0; row < DEPTH; row++) begin : g_row
+      logic writeInner;
+      assign writeInner = bankFireInner[row & 3] && bankSlotInner[row & 3] == SLOT_W'(row);
+      always_ff @(posedge clkInput)
+        if (rstNInput && !freezeInput && !flushInput && writeInner)
+          entriesInner[row] <= bankDataInner[row & 3];
+    end
   end else begin : g_generic_write
     always_ff @(posedge clkInput)
       if (rstNInput && !freezeInput && !flushInput)

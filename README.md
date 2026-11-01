@@ -2,9 +2,7 @@
 
 SystemVerilog **RV32IM 乱序处理器**：顺序重命名/分配、七池保留站、乱序执行、按序提交，SRAM I$/D$ 经共享 AXI4-Lite 访问外存。
 
-## 当前实现（2026-10-29）
-
-默认四取指、四译码、四路分配、四提交，双 ALU 各占一路 CDB，Load/MUL/DIV 共享第三路；AGU 和数据访存请求仍为单口。
+默认双取指、四译码、四路分配、四提交，双 ALU 各占一路 CDB，Load/MUL/DIV 共享第三路；AGU 和数据访存请求仍为单口。
 
 | 项目 | 默认配置 |
 |---|---|
@@ -15,7 +13,7 @@ SystemVerilog **RV32IM 乱序处理器**：顺序重命名/分配、七池保留
 | I$ | 1 KiB / 64 B 行，直接映射；2 个请求包，最多 8 个指令字信用 |
 | D$ | 8 KiB / 32 B 行，128 组×2 路；8 请求、4 MSHR |
 
-生产默认入口的六项 `perf_*` 已通过，几何 IPC 为 **0.858427672694**；**本配置尚无有效最终面积/Fmax，未通过完整 PPA 资格**。该 IPC 按课程外部退出完成周期计算，不与历史 core 周期 IPC 混用。验证范围见 [course.md](docs/course.md)。
+生产默认入口已采用第17轮 PRF 63×1×32 SRAM，包含第16轮置信度选择及脏行写回期间提前返回字。六项 `perf_*` 的几何 IPC 为 **0.903890966873**；同源整核综合/ABC/STA 已通过独立审计：面积 **34584.063 μm²**、Fmax **315.271 MHz**、评分 `IPC⁴ / Area² × Fmax = 1.759528e-7`。面积满足 `<36000 μm²`，Fmax 满足 `>300 MHz`；长期几何 IPC `>1.0985` 目标尚未达到。本轮由用户明确采用面积/评分优化，六项周期保持不变。IPC 按课程外部退出完成周期计算，不与历史 core 周期 IPC 混用。见[生产采用证书](../sync/evidence/prf-microbank-production-adoption-20261101-r02/adoption.json)；验证范围见 [course.md](docs/course.md)。
 
 ```mermaid
 flowchart TB

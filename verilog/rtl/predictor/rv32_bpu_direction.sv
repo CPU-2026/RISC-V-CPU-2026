@@ -44,7 +44,9 @@ module rv32_bpu_direction #(
     queryGlobalIdxInner = queryP2Inner[BHT_INDEX_W-1:0] ^ ghrInner;
     querySelIdxInner = queryP2Inner[BHT_INDEX_W-1:0];
     queryCondIdxInner = queryP2Inner[COND_INDEX_W-1:0];
-    predictionOutput.useGlobal = selectorInner[querySelIdxInner] >= 2'b10;
+    predictionOutput.useGlobal = selectorInner[querySelIdxInner] == 2'b11 &&
+      ((globalPhtInner[queryGlobalIdxInner] == 2'b00 || globalPhtInner[queryGlobalIdxInner] == 2'b11) ||
+       (localPhtInner[queryLocalIdxInner] == 3'b011 || localPhtInner[queryLocalIdxInner] == 3'b100));
     queryContextOutput = '{localHistory:localHistoryInner[queryP2Inner[BHT_INDEX_W-1:0]],
       localPrediction:localPhtInner[queryLocalIdxInner] >= 3'b100,
       globalPrediction:globalPhtInner[queryGlobalIdxInner] >= 2'b10};
