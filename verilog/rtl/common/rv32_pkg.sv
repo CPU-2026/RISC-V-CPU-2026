@@ -132,7 +132,7 @@ package rv32_pkg;
   typedef logic [BPU_CKPT_ID_W-1:0] bpu_ckpt_id_t;
 
   // One synchronous baseline read, followed by exactly four replay beats.
-  localparam int unsigned RECOVERY_BEATS = 4;
+  localparam int unsigned RECOVERY_BEATS = 2;
   localparam int unsigned RECOVERY_WIDTH = (ROB_ENTRIES + RECOVERY_BEATS - 1) / RECOVERY_BEATS;
   typedef struct packed {
     logic active;
