@@ -5,7 +5,7 @@ module rv32_rename_four #(
   parameter int unsigned WRITEBACK_PORTS=2,
   parameter int unsigned LOOKUP_PORTS=5
 ) (
-  input logic clkInput,rstNInput,freezeInput,enableInput,
+  input logic clkInput,rstNInput,freezeInput,enableInput,wholeGroupInput,
   input rv32_pkg::decoded_uop_t [3:0] decodedInput,
   input logic [3:0] validInput,
   output logic [3:0] fireOutput,
@@ -104,7 +104,7 @@ module rv32_rename_four #(
   );
   rv32_wide_rename_plan u_plan (
     .enableInput(enableInput && !freezeInput && !flushInput.valid && !recoveryInput.active),
-    .validInput,.decodedInput,.mapReadInput(mapRead),.oldDestinationInput(previous),.sourceReadInput(sourceValues),
+    .validInput,.wholeGroupInput,.decodedInput,.mapReadInput(mapRead),.oldDestinationInput(previous),.sourceReadInput(sourceValues),
     .freePhysicalInput(previewPhysical),.physicalCreditsInput(freeCount),.nextRobTagInput(nextTagOutput),
     .robCreditsInput(robCredits),.rsCreditsInput,.loadCreditsInput,.storeCreditsInput,
     .loadSlotInput(loadPreviewInput),.storeSlotInput(storePreviewInput),

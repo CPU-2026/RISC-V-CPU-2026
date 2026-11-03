@@ -7,7 +7,8 @@
 module rv32_dcache #(
   parameter int unsigned SETS = rv32_pkg::DCACHE_SETS,
   parameter int unsigned WAYS = rv32_pkg::DCACHE_WAYS,
-  parameter bit EARLY_WORD_RETURN = 1'b0
+  parameter bit EARLY_WORD_RETURN = 1'b0,
+  parameter int unsigned STORE_LOCATION_ENTRIES = 4
 ) (
   input logic clkInput, rstNInput,
   input rv32_pkg::dcache_cpu_request_input_t cpuRequestInput,
@@ -131,6 +132,52 @@ module rv32_dcache #(
       MEM_HALF:wordRawInner={16'b0,wordRawInner[15:0]};
       default:;
     endcase
+  end
+
+  // Exact location metadata, not a data cache or a speculative way guess.
+  localparam int LOCATION_INDEX_W = STORE_LOCATION_ENTRIES>1 ? $clog2(STORE_LOCATION_ENTRIES) : 1;
+  logic [STORE_LOCATION_ENTRIES-1:0] hitLocationValidInner;
+  logic [31:OFFSET_W] hitLocationLineInner [STORE_LOCATION_ENTRIES];
+  logic [WAY_W-1:0] hitLocationWayInner [STORE_LOCATION_ENTRIES];
+  logic [LOCATION_INDEX_W-1:0] hitLocationVictimInner, hitLocationTrainIndexInner;
+  logic hitLocationTrainInner, storeHintMatchInner, storeHintFireInner;
+  logic [WAY_W-1:0] storeHintWayInner;
+  always_comb begin : hit_location_query
+    hitLocationTrainInner = readValidInner && hitWayInner >= 0 &&
+      !requestInner[readIndexInner].request.write;
+    hitLocationTrainIndexInner = hitLocationVictimInner;
+    // Lowest invalid row first; otherwise use the next row after the last
+    // trained position. With two entries this reproduces the production policy.
+    for (int h=STORE_LOCATION_ENTRIES-1;h>=0;h--)
+      if (!hitLocationValidInner[h]) hitLocationTrainIndexInner = LOCATION_INDEX_W'(h);
+    for (int h=0; h<STORE_LOCATION_ENTRIES; h++)
+      if (hitLocationValidInner[h] &&
+          hitLocationLineInner[h] == requestInner[readIndexInner].request.address[31:OFFSET_W])
+        hitLocationTrainIndexInner = LOCATION_INDEX_W'(h);
+  end
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) begin
+      hitLocationValidInner <= '0;
+      hitLocationVictimInner <= 1'b0;
+    end else begin
+      // Conservative invalidation of both ways precedes victim replacement.
+      for (int h=0; h<STORE_LOCATION_ENTRIES; h++)
+        if (allocateMissInner >= 0 && hitLocationLineInner[h][OFFSET_W+:INDEX_W] ==
+            requestInner[readIndexInner].request.address[OFFSET_W+:INDEX_W])
+          hitLocationValidInner[h] <= 1'b0;
+      if (hitLocationTrainInner) begin
+        hitLocationValidInner[hitLocationTrainIndexInner] <= 1'b1;
+        hitLocationVictimInner <= hitLocationTrainIndexInner == LOCATION_INDEX_W'(STORE_LOCATION_ENTRIES-1) ?
+          LOCATION_INDEX_W'(0) : hitLocationTrainIndexInner + LOCATION_INDEX_W'(1);
+      end
+    end
+  end
+  // Payload needs no reset: only exact valid records can authorize a write.
+  always_ff @(posedge clkInput) begin
+    if (rstNInput && hitLocationTrainInner) begin
+      hitLocationLineInner[hitLocationTrainIndexInner] <= requestInner[readIndexInner].request.address[31:OFFSET_W];
+      hitLocationWayInner[hitLocationTrainIndexInner] <= WAY_W'(hitWayInner);
+    end
   end
 
   // Per-row narrow buffering uses the existing raw/ready state. The late word
@@ -291,10 +338,25 @@ module rv32_dcache #(
   assign initializedOutput = rstNInput;
   assign cpuReqReadyOutput = rstNInput && countInner < COUNT_W'(REQUEST_DEPTH);
   assign acceptInner = cpuRequestInput.valid && cpuReqReadyOutput;
-  // Empty means there is no older Store, request, or MSHR owner. This is
-  // acceptance -> synchronous read only, never request -> response bypass.
-  assign acceptLookupInner = acceptInner && countInner == 0 && !readValidInner &&
-    !cpuRequestInput.write && cpuRequestInput.address != AXI_EXIT_ADDR;
+  // OLD lookup/fill/Store work retains SRAM priority. An accepted Load may
+  // use an otherwise idle read edge while unrelated older Loads are pending.
+  // A queued Store to the same line (or exit MMIO) blocks capture. Other
+  // lines may be read out of order; no Store or miss-allocation order changes.
+  logic queuedStoreInner,readEdgeAvailableInner;
+  always_comb begin
+    queuedStoreInner=1'b0;
+    for(int row=0;row<REQUEST_DEPTH;row++)
+      queuedStoreInner|=requestInner[row].active && requestInner[row].request.write &&
+        (requestInner[row].request.address[31:OFFSET_W]==cpuRequestInput.address[31:OFFSET_W] ||
+         requestInner[row].request.address==AXI_EXIT_ADDR);
+  end
+  assign readEdgeAvailableInner=!readValidInner ||
+    (hitWayInner>=0 && !requestInner[readIndexInner].request.write && responseInner==int'(readIndexInner));
+  assign acceptLookupInner=acceptInner && !queuedStoreInner && readEdgeAvailableInner &&
+    lookupInner<0 && !fillBeatInner && storeInner<0 &&
+    !cpuRequestInput.write && cpuRequestInput.address!=AXI_EXIT_ADDR && !set_locked(cpuRequestInput.address);
+  assign lookupAddressInner=acceptLookupInner ? set_of(cpuRequestInput.address) :
+    set_of(requestInner[REQUEST_W'(lookupCandidateInner)].request.address);
   assign idleOutput = rstNInput && countInner == 0 && !readValidInner;
 
   // Allocation is not on the response/LSU-selection path. Keeping it separate
@@ -335,6 +397,14 @@ module rv32_dcache #(
       anyMiss = anyMiss || missesInner[m].valid;
     end
     firstInner = oldest_request(activeInner);
+    storeHintMatchInner = 1'b0;
+    storeHintWayInner = '0;
+    for (int h=0; h<STORE_LOCATION_ENTRIES; h++)
+      if (firstInner >= 0 && hitLocationValidInner[h] &&
+          hitLocationLineInner[h] == requestInner[firstInner].request.address[31:OFFSET_W]) begin
+        storeHintMatchInner = 1'b1;
+        storeHintWayInner = hitLocationWayInner[h];
+      end
     exitValidOutput = rstNInput && firstInner >= 0 &&
       requestInner[firstInner].request.write &&
       requestInner[firstInner].request.address == AXI_EXIT_ADDR && exitReadyInput;
@@ -444,10 +514,18 @@ module rv32_dcache #(
         cpuResponseOutput.readData = readHitRawInner;
       else cpuResponseOutput.readData = normalReadDataInner;
     end
+    storeHintFireInner = rstNInput && !fillBeatInner && firstInner >= 0 &&
+      requestInner[firstInner].request.write &&
+      requestInner[firstInner].request.address != AXI_EXIT_ADDR &&
+      !requestInner[firstInner].ready && !requestInner[firstInner].hasMiss &&
+      !requestInner[firstInner].deferred && storeHintMatchInner &&
+      !set_locked(requestInner[firstInner].request.address) &&
+      (!readValidInner || (hitWayInner >= 0 &&
+        !requestInner[readIndexInner].request.write && responseInner == int'(readIndexInner)));
     storeInner = -1;
     if (!fillBeatInner && firstInner >= 0 && requestInner[firstInner].request.write &&
         !set_locked(requestInner[firstInner].request.address) &&
-        (requestInner[firstInner].ready || (readValidInner && int'(readIndexInner) == firstInner && hitWayInner >= 0)))
+        (storeHintFireInner || requestInner[firstInner].ready || (readValidInner && int'(readIndexInner) == firstInner && hitWayInner >= 0)))
       storeInner = firstInner;
     allocateMissInner = -1;
     if (readValidInner && hitWayInner < 0 && !storeAllocationHazardInner[readIndexInner] &&
@@ -490,8 +568,6 @@ module rv32_dcache #(
     lookupInner = (!readValidInner || continueHit) && !fillBeatInner && storeInner < 0 ? lookupCandidateInner : -1;
     // Only lookupInner authorizes a read. With no candidate the truncated -1
     // selects a legal, inactive request row; its address is never consumed.
-    lookupAddressInner = countInner == 0 ? set_of(cpuRequestInput.address) :
-      set_of(requestInner[REQUEST_W'(lookupCandidateInner)].request.address);
     readable = 0;
     writable = 0;
     for (int m = 0; m < MSHR_DEPTH; m++)
@@ -567,7 +643,8 @@ module rv32_dcache #(
         metaWdataInner = {requestInner[owner].request.write, missesInner[fillMissInner].line[31:OFFSET_W+INDEX_W]};
       end
     end else if (rstNInput && storeInner >= 0) begin
-      way = readValidInner && int'(readIndexInner) == storeInner && hitWayInner >= 0 ?
+      way = storeHintFireInner ? int'(storeHintWayInner) :
+        readValidInner && int'(readIndexInner) == storeInner && hitWayInner >= 0 ?
         hitWayInner : int'(requestInner[storeInner].way);
       for (int i = 0; i < 4; i++) begin
         globalByte = int'(requestInner[storeInner].request.address[OFFSET_W-1:0]) + i;
@@ -719,6 +796,8 @@ module rv32_dcache #(
       for (int s = 0; s < SETS; s++) begin
         if (fillFireInner && set_of(missesInner[fillMissInner].line) == INDEX_W'(s))
           plruInner[s] <= plru_touch(plruInner[s], missesInner[fillMissInner].way);
+        else if (storeHintFireInner && set_of(requestInner[firstInner].request.address) == INDEX_W'(s))
+          plruInner[s] <= plru_touch(plruInner[s], storeHintWayInner);
         else if (readValidInner && hitWayInner >= 0 && set_of(requestInner[readIndexInner].request.address) == INDEX_W'(s))
           plruInner[s] <= plru_touch(plruInner[s], WAY_W'(hitWayInner));
         for (int w = 0; w < WAYS; w++) begin
@@ -753,12 +832,9 @@ module rv32_dcache #(
 `ifndef SYNTHESIS
   always @(posedge clkInput) if (rstNInput) begin
     if (acceptLookupInner) begin
-      assert (acceptInner && allocationInner >= 0 && activeInner == 0 &&
-              !readValidInner && !fillBeatInner && storeInner < 0 && lookupInner < 0)
+      assert (acceptInner && allocationInner >= 0 && !queuedStoreInner && readEdgeAvailableInner &&
+               !fillBeatInner && storeInner < 0 && lookupInner < 0 && !set_locked(cpuRequestInput.address))
         else $fatal(1, "DCache accepted read conflicts with older work");
-      for (int m = 0; m < MSHR_DEPTH; m++)
-        assert (!missesInner[m].valid)
-          else $fatal(1, "DCache empty request credits conceal an MSHR owner");
     end
     if (lookupInner >= 0) assert (lookupInner == lookupCandidateInner)
       else $fatal(1, "DCache lookup metadata grant mismatch");
@@ -816,6 +892,22 @@ module rv32_dcache #(
     end
     if (readValidInner) assert (requestInner[readIndexInner].active);
     if (acceptInner) assert (int'(cpuRequestInput.address[OFFSET_W-1:0]) + bytes_for_size(cpuRequestInput.size) <= DCACHE_LINE_BYTES);
+  end
+`endif
+`ifndef SYNTHESIS
+  // Independent tag witness follows actual enabled metadata SRAM writes.
+  logic [TAG_W-1:0] hintWitnessTag [SETS][WAYS];
+  always @(posedge clkInput) if (rstNInput) begin
+    if (storeHintFireInner) begin
+      assert (storeInner == firstInner && lookupInner < 0 && !fillBeatInner &&
+        validInner[set_of(requestInner[firstInner].request.address)][storeHintWayInner] &&
+        hintWitnessTag[set_of(requestInner[firstInner].request.address)][storeHintWayInner] ==
+          requestInner[firstInner].request.address[31:OFFSET_W+INDEX_W])
+        else $fatal(1,"Store location stale or conflicting physical write");
+    end
+    for (int w=0; w<WAYS; w++)
+      if (metaEnableInner[w] && metaWriteInner[w])
+        hintWitnessTag[metaAddressInner[w]][w] <= metaWdataInner[TAG_W-1:0];
   end
 `endif
 endmodule

@@ -164,35 +164,45 @@ module rv32_prf_lanes #(
       end
     end
   end
-  // Keep the production masked-OR writer topology: higher WB port > all
-  // allocations; amongst allocations the younger lane wins (normally unique).
+  // Resolve writer priority once by physical identity, BEFORE row decode.
+  // Suppressing a writer only when a later writer has the same tag is exactly
+  // equivalent to the original per-row winner masks, including WB collisions.
+  logic [VALUE_WRITERS-1:0] writeValidInner, writeReadyInner, writeWinnerInner;
+  phy_tag_t [VALUE_WRITERS-1:0] writeTagInner;
+  logic [VALUE_WRITERS-1:0][31:0] writeDataInner;
+  for (genvar writer = 0; writer < VALUE_WRITERS; writer++) begin : g_global_writer
+    if (writer < LANES) begin : g_alloc
+      assign writeValidInner[writer] = allocationFireOutput[writer];
+      assign writeTagInner[writer] = allocationPhyOutput[writer];
+      assign writeDataInner[writer] = allocationInput[writer].value;
+      assign writeReadyInner[writer] = allocationInput[writer].valueValid;
+    end else begin : g_wb
+      assign writeValidInner[writer] = writebackInput[writer-LANES].valid;
+      assign writeTagInner[writer] = writebackInput[writer-LANES].phyTag;
+      assign writeDataInner[writer] = writebackInput[writer-LANES].value;
+      assign writeReadyInner[writer] = 1'b1;
+    end
+    always_comb begin : resolve_same_tag
+      logic later;
+      later = 1'b0;
+      for (int peer = writer+1; peer < VALUE_WRITERS; peer++)
+        later |= writeValidInner[peer] && writeTagInner[writer] == writeTagInner[peer];
+      writeWinnerInner[writer] = writeValidInner[writer] && !later;
+    end
+  end
   for (genvar row = 0; row < PRF_DEPTH; row++) begin : g_value_write
-    logic [VALUE_WRITERS-1:0] hit, winner;
+    logic [VALUE_WRITERS-1:0] hit;
     logic [31:0] data;
     logic isReady;
-    for (genvar lane = 0; lane < LANES; lane++) begin : g_alloc_hit
-      assign hit[lane] = row != 0 && allocationFireOutput[lane] && allocationPhyOutput[lane] == phy_tag_t'(row);
-    end
-    for (genvar portIndex = 0; portIndex < WRITEBACK_PORTS; portIndex++) begin : g_wb_hit
-      assign hit[portIndex+LANES] = row != 0 && writebackInput[portIndex].valid && writebackInput[portIndex].phyTag == phy_tag_t'(row);
+    for (genvar writer = 0; writer < VALUE_WRITERS; writer++) begin : g_hit
+      assign hit[writer] = row != 0 && writeWinnerInner[writer] && writeTagInner[writer] == phy_tag_t'(row);
     end
     always_comb begin
-      winner = '0;
-      for (int writer = 0; writer < VALUE_WRITERS; writer++) begin
-        logic later;
-        later = 1'b0;
-        for (int peer = writer+1; peer < VALUE_WRITERS; peer++) later |= hit[peer];
-        winner[writer] = hit[writer] && !later;
-      end
       data = '0;
       isReady = 1'b0;
-      for (int lane = 0; lane < LANES; lane++) begin
-        data |= allocationInput[lane].value & {32{winner[lane]}};
-        isReady |= allocationInput[lane].valueValid && winner[lane];
-      end
-      for (int portIndex = 0; portIndex < WRITEBACK_PORTS; portIndex++) begin
-        data |= writebackInput[portIndex].value & {32{winner[portIndex+LANES]}};
-        isReady |= winner[portIndex+LANES];
+      for (int writer = 0; writer < VALUE_WRITERS; writer++) begin
+        data |= writeDataInner[writer] & {32{hit[writer]}};
+        isReady |= writeReadyInner[writer] && hit[writer];
       end
     end
     if (row == 0) begin : g_zero

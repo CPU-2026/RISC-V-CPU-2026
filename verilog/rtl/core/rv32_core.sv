@@ -236,6 +236,7 @@ module rv32_core #(
   recovery_step_t recoveryStepInner;
   logic recoveryBusyInner, pipelineFrozenInner;
   logic frontendFrozenInner;
+  logic frontendWholeGroupInner;
   logic branchFlushCandidateInner, jumpFlushCandidateInner;
   logic [31:0] branchFlushPcInner, jumpFlushPcInner;
   logic predictorUpdateValidInner, predictorMispredictInner;
@@ -740,7 +741,9 @@ module rv32_core #(
 
   rv32_frontend #(.RESET_PC(RESET_PC), .LEGACY_HALT(LEGACY_HALT), .FETCH_WIDTH(FETCH_WIDTH),
     .DECODE_WIDTH(DECODE_WIDTH), .RENAME_WIDTH(ISSUE_WIDTH), .FQ_DEPTH(FQ_DEPTH), .IQ_DEPTH(IQ_DEPTH)) u_frontend (
-    .freezeInput(frontendFrozenInner),
+    .freezeInput(haltedInner),
+    .fetchFreezeInput(frontendFrozenInner),
+    .recoveryActiveInput(recoveryBusyInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .predictorQueryOutput(predictorQueryOutputInner),
     .fetchProgramCounterOutput(predictorPcInner),
@@ -759,7 +762,7 @@ module rv32_core #(
     .instructionSecondOutput(frontendSecondInstructionInner), .decodedSecondOutput(decodedSecondInner),
     .iqSecondReadyInput(issueSecondFireInner),
     .decodedLanesOutput(wideDecodedInner), .iqLaneValidOutput(wideValidInner),
-    .iqReadyCountInput(wideIssueCountInner),
+    .iqReadyCountInput(wideIssueCountInner), .wholeGroupOutput(frontendWholeGroupInner),
     .fetchInfoOutput(fetchInfoOutputInner),
     .fqCountOutput(), .iqCountOutput()
   );
@@ -873,7 +876,8 @@ module rv32_core #(
     rv32_rename_four #(.COMMIT_WIDTH(COMMIT_WIDTH),.WRITEBACK_PORTS(WRITEBACK_PORTS),.LOOKUP_PORTS(ROB_LOOKUP_PORTS)) u_rename (
       .clkInput,.rstNInput,.freezeInput(haltedInner),
       .enableInput(bootDoneInner && !pipelineFrozenInner && !globalFlushInner),
-      .decodedInput(wideDecodedInner),.validInput(wideValidInner),.fireOutput(wideFireInner),.countOutput(wideIssueCountInner),
+      .decodedInput(wideDecodedInner),.validInput(wideValidInner),.wholeGroupInput(frontendWholeGroupInner),
+      .fireOutput(wideFireInner),.countOutput(wideIssueCountInner),
       .rsCreditsInput(wideRsCreditsInner),.loadCreditsInput(wideLoadCreditsInner),.storeCreditsInput(wideStoreCreditsInner),
       .loadPreviewInput(wideLoadPreviewInner),.storePreviewInput(wideStorePreviewInner),
       .rsOutput(wideRsAllocInner),.rsAuxOutput(wideRsAuxInner),

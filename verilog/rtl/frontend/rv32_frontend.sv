@@ -10,6 +10,8 @@ module rv32_frontend #(
 ) (
   input logic clkInput, rstNInput,
   input logic freezeInput,
+  // Stop new prediction/request independently from old safe transport.
+  input logic fetchFreezeInput, recoveryActiveInput,
   output rv32_pkg::fetch_query_output_t predictorQueryOutput,
   output logic [31:0] fetchProgramCounterOutput,
   input rv32_pkg::prediction_output_t predictionInput,
@@ -36,6 +38,7 @@ module rv32_frontend #(
   output rv32_pkg::decoded_uop_t [3:0] decodedLanesOutput,
   output logic [3:0] iqLaneValidOutput,
   input logic [2:0] iqReadyCountInput,
+  output logic wholeGroupOutput,
   input logic [127:0] imemPacketInstructionsInput,
   output logic [2:0] fetchCountOutput
 );
@@ -70,6 +73,7 @@ module rv32_frontend #(
   logic [REQ_SLOT_W-1:0] reqHeadSlotInner, reqTailSlotInner;
   logic requestFireInner, responseAcceptInner, haltResponseInner;
   logic fetchAllowedInner;
+  logic recoveryResponseSafeInner;
   logic fqReadyInner, fqValidInner, iqReadyInner;
   logic fqPushInner, fqPopInner;
   decode_context_t fqInputInner, fqHeadInner, iqHeadInner;
@@ -107,7 +111,7 @@ module rv32_frontend #(
         end
       end
     end else if (FETCH_WIDTH==2 && !LEGACY_HALT && fetchHintInput.hit) begin
-      if (!pcInner[2] && !fetchHintInput.firstControl) begin
+      if (pcInner[$clog2(CACHE_LINE_BYTES)-1:2] != ($clog2(CACHE_LINE_BYTES)-2)'(CACHE_LINE_BYTES/4-1) && !fetchHintInput.firstControl) begin
         packetCountInner=3'd2;
         queryLaneInner=fetchHintInput.secondControl ? 2'd1 : 2'd0;
       end
@@ -128,13 +132,20 @@ module rv32_frontend #(
   assign reqTailSlotInner = reqTailInner[REQ_SLOT_W-1:0];
   // Prediction is combinational. I$ retains the instruction until the same
   // FQ acceptance edge; no SRAM-BTB join queue or prediction pipeline remains.
+  // Actual returned instructions, not the NEXT fetch PC, authorize old
+  // response transport during recovery. Flush has already cleared old queues;
+  // only non-control hit packets can be newly requested while replay is active.
+  assign recoveryResponseSafeInner = !recoveryActiveInput ||
+    (FETCH_WIDTH == 2 && !LEGACY_HALT &&
+     !is_control(imemResponseInput.instruction) &&
+     (requestWordsInner[reqHeadSlotInner] < 2 || !is_control(imemSecondInstructionInput)));
   assign imemRspReadyOutput = rstNInput && !freezeInput && !redirectInput.valid && !stopFetchInner &&
-    reqCountInner != 0 && fqReadyInner;
+    reqCountInner != 0 && fqReadyInner && recoveryResponseSafeInner;
   assign imemFlushOutput = redirectInput.valid;
   assign responseAcceptInner = imemResponseInput.valid && imemRspReadyOutput;
   assign haltResponseInner = LEGACY_HALT && responseAcceptInner &&
       imemResponseInput.instruction == HALT_INSN;
-  assign fetchAllowedInner = rstNInput && !freezeInput &&
+  assign fetchAllowedInner = rstNInput && !freezeInput && !fetchFreezeInput &&
         (reqCountInner < REQ_SEQ_W'(REQUEST_DEPTH) || responseAcceptInner) &&
         fqReadyInner && !haltResponseInner && !stopFetchInner && !redirectInput.valid;
   assign imemRequestOutput.valid = fetchAllowedInner;
@@ -156,6 +167,7 @@ module rv32_frontend #(
   assign fqPushInner = responseAcceptInner;
   assign fqPopInner = fqValidInner && iqReadyInner;
   if (DECODE_WIDTH!=4 && RENAME_WIDTH!=4) begin : g_no_wide_interface
+    assign wholeGroupOutput=1'b0;
     assign decodedLanesOutput='0;
     assign iqLaneValidOutput='0;
   end
@@ -212,11 +224,22 @@ module rv32_frontend #(
       assign readyCount=$clog2(RENAME_WIDTH+1)'(iqReadyInput)+
         $clog2(RENAME_WIDTH+1)'(RENAME_WIDTH==2 && iqSecondReadyInput);
     end
+`ifndef SYNTHESIS
+    // All entries admitted after redirect and before replay completion must
+    // remain non-control. This is a transport safety invariant, not prediction.
+    always @(posedge clkInput) if (rstNInput && recoveryActiveInput && !redirectInput.valid) begin
+      assert (readyCount == 0) else $fatal(1,"recovery transport allocated backend work");
+      for (int lane=0;lane<RENAME_WIDTH;lane++)
+        if (queueValid[lane])
+          assert (!is_control(queueDecoded[lane].instruction))
+            else $fatal(1,"control entered recovery IQ");
+    end
+`endif
     rv32_decode_issue_queue #(.DECODE_WIDTH(DECODE_WIDTH), .ISSUE_WIDTH(RENAME_WIDTH),
          .FQ_DEPTH(FQ_DEPTH), .IQ_DEPTH(IQ_DEPTH), .LEGACY_HALT(LEGACY_HALT), .FETCH_WIDTH(PACKET_WIDTH)) u_decode_issue (
       .clkInput, .rstNInput, .freezeInput, .flushInput(redirectInput.valid),
       .inValidInput(fqPushInner), .inCountInput(inputCount), .inDataInput(packetWords),
-      .inReadyOutput(fqReadyInner), .decodedOutput(queueDecoded), .validOutput(queueValid),
+      .inReadyOutput(fqReadyInner), .decodedOutput(queueDecoded), .validOutput(queueValid), .wholeGroupOutput,
       .readyCountInput(readyCount), .availableCountOutput(), .decodeFireCountOutput(),
       .fqCountOutput, .iqCountOutput
     );
@@ -267,9 +290,9 @@ module rv32_frontend #(
       fqDataInner = '0;
       fqDataInner[0] = fqInputInner;
       if (inputWordsInner == 2) begin
-        fqDataInner[0].predictedNextProgramCounter = fqInputInner.programCounter | 32'd4;
+        fqDataInner[0].predictedNextProgramCounter = fqInputInner.programCounter + 32'd4;
         fqDataInner[1] = '{instruction: imemSecondInstructionInput,
-          programCounter: fqInputInner.programCounter | 32'd4,
+          programCounter: fqInputInner.programCounter + 32'd4,
           predictedNextProgramCounter: fqInputInner.predictedNextProgramCounter,
           predictorCheckpointId: fqInputInner.predictorCheckpointId + bpu_ckpt_id_t'(1)};
       end
@@ -407,7 +430,7 @@ module rv32_frontend #(
   always @(posedge clkInput) if (rstNInput) begin
     assert (reqCountInner <= REQ_SEQ_W'(REQUEST_DEPTH)) else $fatal(1, "fetch transaction overflow");
     assert (!fqPushInner || fqReadyInner) else $fatal(1, "unaccepted FQ response");
-    if(FETCH_WIDTH==2&&secondAllowedInner)assert(!pcInner[2]&&fetchHintInput.hit&&!fetchHintInput.firstControl);
+    if(FETCH_WIDTH==2&&secondAllowedInner)assert(pcInner[$clog2(CACHE_LINE_BYTES)-1:2]!=($clog2(CACHE_LINE_BYTES)-2)'(CACHE_LINE_BYTES/4-1)&&fetchHintInput.hit&&!fetchHintInput.firstControl);
     if (FETCH_WIDTH==4 && requestFireInner) begin
       assert(packetCountInner>=1 && int'(packetCountInner)<=4-int'(pcInner[3:2]))
         else $fatal(1,"four-fetch packet crossed aligned boundary");

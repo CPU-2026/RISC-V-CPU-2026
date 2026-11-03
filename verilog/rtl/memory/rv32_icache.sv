@@ -64,9 +64,7 @@ module rv32_icache #(
   endfunction
   function automatic logic [63:0] packet_words(input logic [CACHE_LINE_BITS-1:0] lineData,
                                                input logic [31:0] address);
-    logic [63:0] blockData;
-    blockData=64'(lineData>>(32'(address[OFFSET_W-1:3])<<6));
-    return address[2]?{32'b0,blockData[63:32]}:blockData;
+    return 64'(lineData>>(32'(address[OFFSET_W-1:2])<<5));
   endfunction
   generate if(FETCH_WIDTH>=2)begin : g_predecode
     // Metadata only: instruction DATA still lives exclusively in real SRAM.
@@ -101,8 +99,8 @@ module rv32_icache #(
       assign predecodeOutput.thirdControl=controls[2];
       assign predecodeOutput.fourthControl=controls[3];
     end else begin
-      assign predecodeOutput.secondControl=predecodeHitInner&&!predecodeAddressInput[2]&&
-        controlMaskInner[predecodeAddressInput[INDEX_W+OFFSET_W-1:OFFSET_W]][{predecodeAddressInput[OFFSET_W-1:3],1'b1}];
+      assign predecodeOutput.secondControl=predecodeHitInner&&predecodeAddressInput[OFFSET_W-1:2]!=WORD_W'(CACHE_LINE_BYTES/4-1)&&
+        controlMaskInner[predecodeAddressInput[INDEX_W+OFFSET_W-1:OFFSET_W]][predecodeAddressInput[OFFSET_W-1:2]+WORD_W'(1)];
       assign predecodeOutput.thirdControl=1'b0;
       assign predecodeOutput.fourthControl=1'b0;
     end
@@ -264,7 +262,7 @@ module rv32_icache #(
   always @(posedge clkInput) if (rstNInput) begin
     assert (countInner <= COUNT_W'(REQUEST_DEPTH)) else $fatal(1, "ICache request capacity exceeded");
     if(FETCH_WIDTH==2&&requestFireInner&&secondInput)
-      assert(hitInner&&predecodeAddressInput==cpuRequestInput.address&&!cpuRequestInput.address[2]&&!predecodeOutput.firstControl)
+      assert(hitInner&&predecodeAddressInput==cpuRequestInput.address&&cpuRequestInput.address[OFFSET_W-1:2]!=WORD_W'(CACHE_LINE_BYTES/4-1)&&!predecodeOutput.firstControl)
         else $fatal(1,"dual request lacked valid earliest-CFI predecode");
     assert (!fillFireInner || !(readValidInner && refillSlotInner == readIndexInner))
       else $fatal(1, "ICache refill collided with old synchronous read");

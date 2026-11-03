@@ -551,7 +551,7 @@ module rv32_lsu #(
   // Preserve the original final Load-address event override exactly. The
   // eight full payload-producing lqEarlyForward lanes remain unchanged.
   always_comb begin : response_forward_priority
-    logic [STORE_DATA_LANES:0] notifications;
+    logic [STORE_DATA_LANES-1:0] notifications;
     notifications = '0;
     if (lqAddressReadyInner[responseResultIndexInner]) begin
       for (int lane = 0; lane < STORE_DATA_LANES; lane++) begin
@@ -561,10 +561,6 @@ module rv32_lsu #(
             lqTagInner[responseResultIndexInner], lqAddressInner[responseResultIndexInner],
             lqSizeInner[responseResultIndexInner]);
       end
-      notifications[STORE_DATA_LANES] = storeAddressEventInner && sqDataReadyInner[addressIndexInput] &&
-        notify_matches(SQ_INDEX_W'(addressIndexInput), addressInput.address,
-          lqTagInner[responseResultIndexInner], lqAddressInner[responseResultIndexInner],
-          lqSizeInner[responseResultIndexInner]);
     end
     responseForwardPriorityInner = |notifications;
     if (loadAddressEventInner && addressIndexInput == $bits(addressIndexInput)'(responseResultIndexInner))
@@ -584,6 +580,9 @@ module rv32_lsu #(
     addressedForwardInner = query_store_forward(
       lqTagInner[addressIndexInput], addressInput.address, lqSizeInner[addressIndexInput]);
 
+  // Store-address arrival updates SQ only; it no longer notifies waiting
+  // Loads. Load-address SQ queries and Store-data notifications remain. A Load
+  // missing both events waits for the older Store to commit/send, then Cache.
   // All matching LQ rows may acquire registered results on this edge. CDB
   // selection above still reads only the old result registers, never intents.
   always_comb begin
@@ -605,12 +604,6 @@ module rv32_lsu #(
               lqEarlyForwardInner[forwardIndexInner] = 1'b1;
               lqEarlyValueInner[forwardIndexInner] = storeDataInput[lane].value;
             end
-          end
-          if (storeAddressEventInner && sqDataReadyInner[addressIndexInput] &&
-              notify_matches(SQ_INDEX_W'(addressIndexInput), addressInput.address,
-                lqTagInner[forwardIndexInner], lqAddressInner[forwardIndexInner], lqSizeInner[forwardIndexInner])) begin
-            lqEarlyForwardInner[forwardIndexInner] = 1'b1;
-            lqEarlyValueInner[forwardIndexInner] = sqDataInner[addressIndexInput];
           end
         end
         if (loadAddressEventInner && addressIndexInput == $bits(addressIndexInput)'(forwardIndexInner)) begin
@@ -850,11 +843,9 @@ module rv32_lsu #(
         lqSizeInner[seqIndexInner] <= MEM_WORD;
         lqUnsignedInner[seqIndexInner] <= 1'b0;
         lqAddressReadyInner[seqIndexInner] <= 1'b0;
-        lqAddressInner[seqIndexInner] <= '0;
         lqSentInner[seqIndexInner] <= 1'b0;
         lqResultReadyInner[seqIndexInner] <= 1'b0;
         lqBroadcastedInner[seqIndexInner] <= 1'b0;
-        lqResultInner[seqIndexInner] <= '0;
       end
       for (seqIndexInner = 0; seqIndexInner < SQ_DEPTH; seqIndexInner = seqIndexInner + 1) begin
         sqValidInner[seqIndexInner] <= 1'b0;
@@ -1019,7 +1010,6 @@ module rv32_lsu #(
           sqAddressInner[addressIndexInput] <= addressInput.address;
           sqAddressReadyInner[addressIndexInput] <= 1'b1;
         end else begin
-          lqAddressInner[addressIndexInput] <= addressInput.address;
           lqAddressReadyInner[addressIndexInput] <= 1'b1;
         end
       end
@@ -1039,7 +1029,6 @@ module rv32_lsu #(
                lqTagInner[fifoIndexInner[responseOwnerInner]] == fifoTagInner[responseOwnerInner] &&
                lqSentInner[fifoIndexInner[responseOwnerInner]] &&
                !lqResultReadyInner[fifoIndexInner[responseOwnerInner]]) begin
-             lqResultInner[fifoIndexInner[responseOwnerInner]] <= dmemResponseInput.readData;
              lqResultReadyInner[fifoIndexInner[responseOwnerInner]] <= 1'b1;
           end
           fifoValidInner[responseOwnerInner] <= 1'b0;
@@ -1063,13 +1052,39 @@ module rv32_lsu #(
         if (lqEarlyForwardInner[seqIndexInner] &&
             !(dmemRequestOutput.valid && dmemReqReadyInput && loadRequestSelectedInner &&
               loadSelectIndexInner == LQ_INDEX_W'(seqIndexInner))) begin
-          lqResultInner[seqIndexInner] <= lqEarlyValueInner[seqIndexInner];
           lqResultReadyInner[seqIndexInner] <= 1'b1;
           lqSentInner[seqIndexInner] <= 1'b1;
           lqBroadcastedInner[seqIndexInner] <= 1'b0;
         end
       end
     end
+  end
+  // Result-ready/valid authenticate these data flops. Keep both write guards
+  // and the original SQ-forward-over-response priority; invalid data is not reset.
+  always_ff @(posedge clkInput) begin
+    if (rstNInput && !coreStoppedInput) begin
+      if (dmemResponseInput.valid && fifoValidInner[responseOwnerInner] &&
+          !fifoDropInner[responseOwnerInner] &&
+          !(flushInfoInput.valid && !rob_is_older(fifoTagInner[responseOwnerInner], flushInfoInput.robTag)) &&
+          lqValidInner[fifoIndexInner[responseOwnerInner]] &&
+          lqTagInner[fifoIndexInner[responseOwnerInner]] == fifoTagInner[responseOwnerInner] &&
+          lqSentInner[fifoIndexInner[responseOwnerInner]] &&
+          !lqResultReadyInner[fifoIndexInner[responseOwnerInner]])
+        lqResultInner[fifoIndexInner[responseOwnerInner]] <= dmemResponseInput.readData;
+      for (int row = 0; row < LQ_DEPTH; row++)
+        if (lqEarlyForwardInner[row] &&
+            !(dmemRequestOutput.valid && dmemReqReadyInput && loadRequestSelectedInner &&
+              loadSelectIndexInner == LQ_INDEX_W'(row)))
+          lqResultInner[row] <= lqEarlyValueInner[row];
+    end
+  end
+  // OLD validity/address-ready qualify this payload. Preserve the existing
+  // allocation+address identity and strictly-older recovery authentication.
+  always_ff @(posedge clkInput) begin
+    if (rstNInput && !coreStoppedInput && addressInput.valid && !addressInput.isStore &&
+        loadAddressMatchInner &&
+        (!flushInfoInput.valid || rob_is_older(addressInput.robTag, flushInfoInput.robTag)))
+      lqAddressInner[addressIndexInput] <= addressInput.address;
   end
 `ifndef SYNTHESIS
   always @(posedge clkInput) if (rstNInput) begin
