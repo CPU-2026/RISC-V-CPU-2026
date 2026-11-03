@@ -119,10 +119,14 @@ module rv32_bpu_direction #(
       if (!rstNInput)
         localPhtInner[counterRow] <= 3'b011;
       else if (!freezeInput && branchInput.valid && branchLocalIdxInner == BHT_INDEX_W'(counterRow)) begin
-        if (branchInput.taken && localPhtInner[counterRow] != 3'b111)
-          localPhtInner[counterRow] <= localPhtInner[counterRow] + 3'b001;
-        else if (!branchInput.taken && localPhtInner[counterRow] != 3'b000)
-          localPhtInner[counterRow] <= localPhtInner[counterRow] - 3'b001;
+        // One rail check and shared carry/borrow toggles per three-bit row.
+        if (localPhtInner[counterRow] != {3{branchInput.taken}})
+          localPhtInner[counterRow] <= {
+            localPhtInner[counterRow][2] ^
+              ((localPhtInner[counterRow][1] ^ !branchInput.taken) &
+               (localPhtInner[counterRow][0] ^ !branchInput.taken)),
+            localPhtInner[counterRow][1] ^ (localPhtInner[counterRow][0] ^ !branchInput.taken),
+            ~localPhtInner[counterRow][0]};
       end
     end
   end

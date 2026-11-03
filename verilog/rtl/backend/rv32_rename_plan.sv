@@ -5,7 +5,7 @@ module rv32_wide_rename_plan #(
   parameter int unsigned LANES=4,
   localparam int unsigned COUNT_W=$clog2(LANES+1)
 ) (
-  input logic enableInput,
+  input logic enableInput, wholeGroupInput,
   input logic [LANES-1:0] validInput,
   input rv32_pkg::decoded_uop_t [LANES-1:0] decodedInput,
   input rv32_pkg::rat_read_output_t [LANES-1:0] mapReadInput,
@@ -33,6 +33,7 @@ module rv32_wide_rename_plan #(
 );
   import rv32_pkg::*;
   logic [LANES-1:0] writesInner,linkInner,loadInner,storeInner,haltInner;
+  logic [LANES-1:0] prefixFireInner;
   logic [LANES-1:0] poolMemberInner[7];
   logic [COUNT_W-1:0] physicalRankInner[LANES],loadRankInner[LANES],storeRankInner[LANES];
   phy_tag_t destinationInner[LANES];
@@ -72,11 +73,15 @@ module rv32_wide_rename_plan #(
     for(genvar pool=0;pool<7;pool++)begin : g_pool_credit
       assign poolFits[pool]=population(poolMemberInner[pool] & THROUGH)<=rsCreditsInput[pool];
     end
-    assign fireOutput[lane]=enableInput && ((validInput & THROUGH)==THROUGH) &&
+    assign prefixFireInner[lane]=enableInput && ((validInput & THROUGH)==THROUGH) &&
       !(|(haltInner & BEFORE)) && (lane+1<=int'(robCreditsInput)) &&
       population(writesInner & THROUGH)<=physicalCreditsInput && (&poolFits) &&
       population(loadInner & THROUGH)<=loadCreditsInput &&
       population(storeInner & THROUGH)<=storeCreditsInput;
+    // Gate BEFORE every allocation payload is formed. Old-IQ operation
+    // retains ordinary prefix allocation; only empty-IQ proposals are atomic.
+    assign fireOutput[lane]=prefixFireInner[lane] &&
+      (!wholeGroupInput || prefixFireInner == validInput);
     assign destinationInner[lane]=writesInner[lane] ? freePhysicalInput[physicalRankInner[lane]] : phy_tag_t'(0);
   end
   assign issueCountOutput=population(fireOutput);
