@@ -33,6 +33,21 @@ module rv32_decode_issue_queue #(
   logic fqReady, iqReady;
   logic [ICW-1:0] iqAvailableInner;
   logic wholeGroupFireInner;
+  logic emptyIngressInner, directIngressInner;
+  logic [DCW-1:0] storedDecodeInner;
+  decode_context_t [DECODE_WIDTH-1:0] storedWordsInner;
+  // Only BOTH old queues empty: the IQ can hold the complete new packet even
+  // if rename rejects it. Ready in this mode is independent of incoming valid
+  // and backend ready. No partial packet consumption, extra slot, or new level.
+  assign emptyIngressInner=DECODE_WIDTH==4 && ISSUE_WIDTH==4 && FETCH_WIDTH<=4 &&
+    fqOccupancy==0 && iqOccupancy==0;
+  assign directIngressInner=emptyIngressInner && rstNInput && !freezeInput && !flushInput && inValidInput;
+  assign availableDecode=directIngressInner ? DCW'(inCountInput) : storedDecodeInner;
+  for(genvar word=0;word<DECODE_WIDTH;word++)begin : g_ingress_word
+    if(word<FETCH_WIDTH)
+      assign fqWords[word]=directIngressInner ? inDataInput[word] : storedWordsInner[word];
+    else assign fqWords[word]=storedWordsInner[word];
+  end
   // Proposal is based solely on OLD queue state, never on backend ready.
   // The backend must either accept every proposed valid lane or none.
   assign wholeGroupOutput = rstNInput && !freezeInput && !flushInput &&
@@ -52,10 +67,10 @@ module rv32_decode_issue_queue #(
   rv32_prefix_fifo #(.DEPTH(FQ_DEPTH), .WIDTH($bits(decode_context_t)),
       .PUSH_WIDTH(FETCH_WIDTH), .POP_WIDTH(DECODE_WIDTH)) u_fq (
     .clkInput, .rstNInput, .freezeInput, .flushInput,
-    .inValidInput(inValidInput), .inCountInput, .inDataInput,
+    .inValidInput(inValidInput && !emptyIngressInner), .inCountInput, .inDataInput,
     .inReadyOutput(fqReady), .inCapacityOutput(fqCapacity),
-    .outCountOutput(availableDecode), .outDataOutput(fqWords),
-    .outReadyCountInput(decodeCount), .countOutput(fqOccupancy)
+    .outCountOutput(storedDecodeInner), .outDataOutput(storedWordsInner),
+    .outReadyCountInput(emptyIngressInner ? DCW'(0) : decodeCount), .countOutput(fqOccupancy)
   );
   for (genvar lane=0; lane<DECODE_WIDTH; lane++) begin : g_decoder
     rv32_decoder #(.LEGACY_HALT(LEGACY_HALT)) u_decoder (
@@ -79,7 +94,7 @@ module rv32_decode_issue_queue #(
       assign decodedOutput[lane]=validOutput[lane] ? decoded_uop_t'(iqWords[lane]) : decoded_uop_t'('0);
     end
   end
-  assign inReadyOutput=fqReady && !freezeInput && !flushInput;
+  assign inReadyOutput=(emptyIngressInner || fqReady) && !freezeInput && !flushInput;
   assign decodeFireCountOutput=(!freezeInput && !flushInput) ? decodeCount : '0;
   assign fqCountOutput=$bits(fqCountOutput)'(fqOccupancy);
   assign iqCountOutput=$bits(iqCountOutput)'(iqOccupancy);
