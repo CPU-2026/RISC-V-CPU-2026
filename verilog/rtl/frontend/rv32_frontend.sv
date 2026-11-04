@@ -205,6 +205,9 @@ module rv32_frontend #(
     logic [RENAME_WIDTH-1:0] queueValid;
     logic [$clog2(PACKET_WIDTH+1)-1:0] inputCount;
     logic [$clog2(RENAME_WIDTH+1)-1:0] readyCount;
+    logic responseProposal;
+    assign responseProposal=imemResponseInput.valid && rstNInput && !freezeInput &&
+      !redirectInput.valid && !stopFetchInner && reqCountInner!=0 && recoveryResponseSafeInner;
     assign inputCount=$bits(inputCount)'(requestWordsInner[reqHeadSlotInner]);
     always_comb begin
       packetWords='0;
@@ -238,7 +241,7 @@ module rv32_frontend #(
     rv32_decode_issue_queue #(.DECODE_WIDTH(DECODE_WIDTH), .ISSUE_WIDTH(RENAME_WIDTH),
          .FQ_DEPTH(FQ_DEPTH), .IQ_DEPTH(IQ_DEPTH), .LEGACY_HALT(LEGACY_HALT), .FETCH_WIDTH(PACKET_WIDTH)) u_decode_issue (
       .clkInput, .rstNInput, .freezeInput, .flushInput(redirectInput.valid),
-      .inValidInput(fqPushInner), .inCountInput(inputCount), .inDataInput(packetWords),
+      .inValidInput(responseProposal), .inCountInput(inputCount), .inDataInput(packetWords),
       .inReadyOutput(fqReadyInner), .decodedOutput(queueDecoded), .validOutput(queueValid), .wholeGroupOutput,
       .readyCountInput(readyCount), .availableCountOutput(), .decodeFireCountOutput(),
       .fqCountOutput, .iqCountOutput

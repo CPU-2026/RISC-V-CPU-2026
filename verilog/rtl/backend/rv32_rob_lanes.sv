@@ -227,8 +227,17 @@ module rv32_rob_lanes #(
     end
   end
   if(SPLIT_LOAD_LOOKUP)begin:g_load_lookup_output
-    assign lookupLoadOutput='{valid:g_shared_read[COMMIT_WIDTH+2].valid &&
-      g_shared_read[COMMIT_WIDTH+2].tag==lookupLoadInput.robTag,
+    // Check stored low bits against the constant row using OLD state. The
+    // late query only supplies a row decode and the remaining identity bits;
+    // no selected full-tag mux followed by an equality comparator is needed.
+    // Keep the low-bit check: even arbitrary malformed stored tags must not hit.
+    logic [DEPTH-1:0] rowMatch;
+    for (genvar row=0;row<DEPTH;row++) begin : g_live_row
+      assign rowMatch[row]=validInner[row] && tagInner[row][SLOT_W-1:0]==SLOT_W'(row) &&
+        lookupLoadInput.robTag[SLOT_W-1:0] == SLOT_W'(row) &&
+        tagInner[row][ROB_TAG_W-1:SLOT_W] == lookupLoadInput.robTag[ROB_TAG_W-1:SLOT_W];
+    end
+    assign lookupLoadOutput='{valid:|rowMatch,
       programCounter:'0,predictedProgramCounter:'0,predictorCheckpointId:'0,isReturn:1'b0};
   end else begin:g_no_load_lookup_output
     assign lookupLoadOutput='0;

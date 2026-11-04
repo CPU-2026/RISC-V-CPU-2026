@@ -1126,7 +1126,7 @@ module rv32_core #(
     .issueOutput(loadRsIssueOutputInner), .issueReadyInput(loadRsIssueReadyInner),
     .issueAuxOutput(loadAuxInner), .occupancyOutput(), .issueLaneValidOutput(), .issueLaneOutput(), .issueLaneAuxOutput()
   );
-  rv32_rs #(.DEPTH(STORE_ADDR_RS_ENTRIES), .AUX_W(4), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH)) u_store_addr_rs (
+  rv32_rs #(.DEPTH(STORE_ADDR_RS_ENTRIES), .AUX_W(4), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH), .REUSE_ON_ISSUE(1'b1), .WB_ISSUE_BYPASS(1'b1)) u_store_addr_rs (
     .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
