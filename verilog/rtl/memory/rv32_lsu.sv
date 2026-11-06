@@ -67,7 +67,9 @@ module rv32_lsu #(
   output logic [3:0][$clog2(LQ_DEPTH)-1:0] loadPreviewIndexOutput,
   output logic [3:0][$clog2(SQ_DEPTH)-1:0] storePreviewIndexOutput,
   output logic [$clog2(LQ_DEPTH+1)-1:0] loadCreditsOutput,
-  output logic [$clog2(SQ_DEPTH+1)-1:0] storeCreditsOutput
+  output logic [$clog2(SQ_DEPTH+1)-1:0] storeCreditsOutput,
+  // Permission for NEW reordering only; normal LSU drain/response is unchanged.
+  input logic loadYieldEnableInput
 );
   import rv32_pkg::*;
   if (RENAME_WIDTH != 1 && RENAME_WIDTH != 2 && RENAME_WIDTH != 4) begin : g_invalid_rename_width
@@ -216,7 +218,17 @@ module rv32_lsu #(
   logic storeAllocDataReadyResolvedInner;
   logic [31:0] storeAllocDataValueResolvedInner;
   logic [COMMIT_WIDTH-1:0] storeCommitMatchInner, storeRetireFireInner;
-  logic storeSendSelectedInner;
+  logic storeAvailableInner, storeSendSelectedInner;
+  logic storeYieldDebtInner, loadBypassStoreInner, postedStoreBlocksLoadInner;
+  logic [SQ_DEPTH-1:0] postedStoreMaskInner;
+  wire [SQ_DEPTH-1:0] pressureSqValidInner;
+  wire pressureLowInner;
+  for(genvar row=0;row<SQ_DEPTH;row++)begin : g_pressure_sq
+    assign pressureSqValidInner[row]=sqValidInner[row];
+  end
+  // OLD allocated SQ occupancy includes uncommitted/speculative Stores.
+  // Outstanding owners include cancelled Loads until their real response.
+  assign pressureLowInner=($countones(pressureSqValidInner)<=4) && (int'(fifoCountInner)<=0);
   logic loadAddressMatchInner, storeAddressMatchInner;
   logic loadRequestSelectedInner;
   integer combIndexInner;
@@ -404,6 +416,16 @@ module rv32_lsu #(
     return 1'b0;
   endfunction
 
+  function automatic logic yield_ram_access(
+    input logic [31:0] address, input mem_size_e size
+  );
+    logic [32:0] last;
+    last={1'b0,address}+33'(mem_bytes(size))-33'(1);
+    return (size==MEM_BYTE || size==MEM_HALF || size==MEM_WORD) &&
+      address<32'h10000000 && last<33'h010000000 &&
+      address[31:$clog2(DCACHE_LINE_BYTES)]==last[31:$clog2(DCACHE_LINE_BYTES)];
+  endfunction
+
   // Forward notifications are for OLD reserved rows only, never allocation
   // intents. Keep their authentication independent of allocReady/issueFire.
   assign storeAddressEventInner = addressInput.valid && addressInput.isStore &&
@@ -547,22 +569,26 @@ module rv32_lsu #(
     end
   endfunction
 
-  // Only the returning row's priority bit is needed by CDB qualification.
-  // Preserve the original final Load-address event override exactly. The
-  // eight full payload-producing lqEarlyForward lanes remain unchanged.
+  // OLD row pairs qualify independently of either late response/SV index.
+  // No valid-row assumptions: preserve the original priority bit even when
+  // the returning row is inactive. Event authentication remains separate.
+  wire [SQ_DEPTH-1:0] oldNotifyMatchInner [LQ_DEPTH];
+  for(genvar notifyLoad=0;notifyLoad<LQ_DEPTH;notifyLoad++)begin : g_notify_load
+    for(genvar notifyStore=0;notifyStore<SQ_DEPTH;notifyStore++)begin : g_notify_store
+      assign oldNotifyMatchInner[notifyLoad][notifyStore]=
+        lqAddressReadyInner[notifyLoad] && sqAddressReadyInner[notifyStore] &&
+        notify_matches(SQ_INDEX_W'(notifyStore), sqAddressInner[notifyStore],
+          lqTagInner[notifyLoad], lqAddressInner[notifyLoad], lqSizeInner[notifyLoad]);
+    end
+  end
   always_comb begin : response_forward_priority
     logic [STORE_DATA_LANES-1:0] notifications;
-    notifications = '0;
-    if (lqAddressReadyInner[responseResultIndexInner]) begin
-      for (int lane = 0; lane < STORE_DATA_LANES; lane++) begin
-        notifications[lane] = storeDataEventInner[lane] &&
-          sqAddressReadyInner[storeDataIndexInput[lane]] &&
-          notify_matches(storeDataIndexInput[lane], sqAddressInner[storeDataIndexInput[lane]],
-            lqTagInner[responseResultIndexInner], lqAddressInner[responseResultIndexInner],
-            lqSizeInner[responseResultIndexInner]);
-      end
+    notifications='0;
+    for(int lane=0;lane<STORE_DATA_LANES;lane++)begin
+      notifications[lane]=storeDataEventInner[lane] &&
+        oldNotifyMatchInner[responseResultIndexInner][storeDataIndexInput[lane]];
     end
-    responseForwardPriorityInner = |notifications;
+    responseForwardPriorityInner=|notifications;
     if (loadAddressEventInner && addressIndexInput == $bits(addressIndexInput)'(responseResultIndexInner))
       responseForwardPriorityInner = addressedForwardValidInner;
   end
@@ -613,6 +639,41 @@ module rv32_lsu #(
         end
       end
     end
+  end
+
+  // No new storage or direct retirement bypass. These intents can only set
+  // the ROB's registered ready bit; commit still consumes the OLD ready bit.
+  wire [SQ_DEPTH-1:0] completionAddressReadyInner, completionDataReadyInner;
+  for(genvar row=0;row<SQ_DEPTH;row++)begin : g_completion_events
+    wire completionLive;
+    wire [STORE_DATA_LANES-1:0] dataEvents;
+    assign completionLive=!coreStoppedInput &&
+      (!flushInfoInput.valid || rob_is_older(sqTagInner[row],flushInfoInput.robTag));
+    for(genvar lane=0;lane<STORE_DATA_LANES;lane++)begin : g_lane
+      assign dataEvents[lane]=storeDataEventInner[lane] && storeDataIndexInput[lane]==SQ_INDEX_W'(row);
+    end
+    assign completionAddressReadyInner[row]=sqAddressReadyInner[row] ||
+      (completionLive && storeAddressEventInner && addressIndexInput==$bits(addressIndexInput)'(row));
+    assign completionDataReadyInner[row]=sqDataReadyInner[row] ||
+      (completionLive && ((|dataEvents) || (sqDataTagInner[row]!='0 && sqWbInner[row].valid)));
+  end
+
+  // These equations depend on completion events but no memory request does.
+  // Keep their combinational cone separate: no WB -> request -> response loop.
+  always_comb begin : completion_bitmap
+    int completionRow;
+    // Only OLD valid uncommitted SQ identities may publish completion. Use
+    // actual authenticated events, never allocation intents or future state.
+    storeCompleteOutput = '0;
+    for (completionRow = 0; completionRow < SQ_DEPTH; completionRow = completionRow + 1) begin
+      if (sqValidInner[completionRow] && completionAddressReadyInner[completionRow] &&
+          completionDataReadyInner[completionRow] && !sqCommittedInner[completionRow]) begin
+        storeCompleteOutput.readyMask |= ROB_ENTRIES'(1) << sqTagInner[completionRow][ROB_TAG_W-2:0];
+        if (sqTagInner[completionRow][ROB_TAG_W-1])
+          storeCompleteOutput.epochMask |= ROB_ENTRIES'(1) << sqTagInner[completionRow][ROB_TAG_W-2:0];
+      end
+    end
+
   end
 
   cdb_result_t storeAllocWbInner;
@@ -756,18 +817,6 @@ module rv32_lsu #(
     storeAllocIndexOutput = sqTailSeqInner[SQ_INDEX_W-1:0];
     storeAllocReadyOutput = storeAllocFoundInner && !flushInfoInput.valid;
 
-    // Combinational qualification of every OLD SQ row. No address/data event
-    // bypass and no reporting register: the ROB consumes all bits on this edge.
-    storeCompleteOutput = '0;
-    for (combIndexInner = 0; combIndexInner < SQ_DEPTH; combIndexInner = combIndexInner + 1) begin
-      if (sqValidInner[combIndexInner] && sqAddressReadyInner[combIndexInner] &&
-          sqDataReadyInner[combIndexInner] && !sqCommittedInner[combIndexInner]) begin
-        storeCompleteOutput.readyMask |= ROB_ENTRIES'(1) << sqTagInner[combIndexInner][ROB_TAG_W-2:0];
-        if (sqTagInner[combIndexInner][ROB_TAG_W-1])
-          storeCompleteOutput.epochMask |= ROB_ENTRIES'(1) << sqTagInner[combIndexInner][ROB_TAG_W-2:0];
-      end
-    end
-
     selectedForwardInner = '0;
     if (loadSelectFoundInner)
       selectedForwardInner = query_store_forward(loadSelectTagInner,
@@ -779,11 +828,33 @@ module rv32_lsu #(
     loadNeedsMemoryInner = !coreStoppedInput && selectedLoadLiveInner && !loadBlockedInner &&
                           int'(fifoCountInner) < DATA_REQUEST_ENTRIES;
 
-    storeSendSelectedInner = sqValidInner[sqHeadIndexInner] &&
+    storeAvailableInner = sqValidInner[sqHeadIndexInner] &&
       sqCommittedInner[sqHeadIndexInner];
     for (int lane = 0; lane < COMMIT_WIDTH; lane++)
       if (sqValidInner[sqHeadIndexInner] && storeRetireFireInner[lane] && storeCommitIndexInput[lane] == sqHeadIndexInner)
-        storeSendSelectedInner = 1'b1;
+        storeAvailableInner = 1'b1;
+
+    // Include ALL old posted Stores and actual same-edge retiring Stores.
+    // Committed identities can outlive the ROB age window: do NOT age-filter them.
+    postedStoreMaskInner='0;
+    for(int s=0;s<SQ_DEPTH;s++)
+      postedStoreMaskInner[s]=sqValidInner[s] && sqCommittedInner[s];
+    for(int lane=0;lane<COMMIT_WIDTH;lane++)
+      if(storeRetireFireInner[lane]) postedStoreMaskInner[storeCommitIndexInput[lane]]=1'b1;
+    postedStoreBlocksLoadInner=1'b0;
+    for(int s=0;s<SQ_DEPTH;s++)
+      if(postedStoreMaskInner[s] &&
+         (!sqAddressReadyInner[s] || !sqDataReadyInner[s] ||
+          !yield_ram_access(sqAddressInner[s],sqSizeInner[s]) ||
+          byte_overlap(loadSelectAddressInner,lqSizeInner[loadSelectIndexInner],
+            sqAddressInner[s],sqSizeInner[s],sqNextWordInner[s],sqPrevWordInner[s])))
+        postedStoreBlocksLoadInner=1'b1;
+    loadBypassStoreInner=loadYieldEnableInput && !coreStoppedInput && !flushInfoInput.valid &&
+      storeAvailableInner && !storeYieldDebtInner && loadNeedsMemoryInner &&
+      yield_ram_access(loadSelectAddressInner,lqSizeInner[loadSelectIndexInner]) &&
+      !postedStoreBlocksLoadInner && pressureLowInner;
+    // This is the ACTUAL Store grant, also used by BOTH old SQ dequeue paths.
+    storeSendSelectedInner=storeAvailableInner && !loadBypassStoreInner;
 
     dmemRequestOutput.valid = 1'b0;
     dmemRequestOutput.write = 1'b0;
@@ -823,6 +894,17 @@ module rv32_lsu #(
            !rob_is_younger(sqTagInner[combIndexInner], flushInfoInput.robTag)))
         sqRetainedCountInner = sqRetainedCountInner + 1'b1;
     end
+  end
+
+  // Debt survives flush/replay: a committed/actually-retiring Store survives too.
+  // Ready or a proposal never consumes the one-Load allowance.
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if(!rstNInput) storeYieldDebtInner<=1'b0;
+    else if(storeSendSelectedInner && dmemRequestOutput.valid && dmemReqReadyInput)
+      storeYieldDebtInner<=1'b0;
+    else if(loadBypassStoreInner && loadRequestSelectedInner && dmemRequestOutput.valid &&
+            !dmemRequestOutput.write && dmemReqReadyInput)
+      storeYieldDebtInner<=1'b1;
   end
 
   always_ff @(posedge clkInput or negedge rstNInput) begin
@@ -1087,6 +1169,20 @@ module rv32_lsu #(
       lqAddressInner[addressIndexInput] <= addressInput.address;
   end
 `ifndef SYNTHESIS
+  always @(posedge clkInput) if(rstNInput) begin
+    assert(!(storeSendSelectedInner && loadRequestSelectedInner))
+      else $fatal(1,"single yield double memory grant");
+    if(storeYieldDebtInner) begin
+      assert(sqValidInner[sqHeadIndexInner] && sqCommittedInner[sqHeadIndexInner])
+        else $fatal(1,"single yield lost posted Store debt owner");
+      if(storeAvailableInner) assert(storeSendSelectedInner && !loadBypassStoreInner)
+        else $fatal(1,"single yield Store starvation");
+    end
+    if(loadBypassStoreInner)
+      assert(loadYieldEnableInput && !coreStoppedInput && !flushInfoInput.valid &&
+        !storeYieldDebtInner && storeAvailableInner && !postedStoreBlocksLoadInner && pressureLowInner)
+        else $fatal(1,"single yield unsafe permission");
+  end
   always @(posedge clkInput) if (rstNInput) begin
     if (RENAME_WIDTH==4) begin
       assert ($countones(loadAllocationLanesFireOutput)<=int'(loadCreditsOutput) &&

@@ -120,7 +120,8 @@ module rv32_bpu_ras #(
                             ((robInput[0].replayRasWindow[laneInner].opcode == OPCODE_JALR) &&
                              (robInput[0].replayRasWindow[laneInner].funct3 == 3'b000))) && replayRdLinkInner;
             replayRetInner = (robInput[0].replayRasWindow[laneInner].opcode == OPCODE_JALR) &&
-                           (robInput[0].replayRasWindow[laneInner].funct3 == 3'b000) && replayRs1LinkInner;
+                           (robInput[0].replayRasWindow[laneInner].funct3 == 3'b000) && replayRs1LinkInner &&
+              robInput[0].replayRasWindow[laneInner].rd != robInput[0].replayRasWindow[laneInner].rs1;
             if (replayRetInner && (specRasTopNext != '0))
               specRasTopNext = specRasTopNext - RAS_TOP_W'(1);
             if (replayCallInner && specRasTopNext < RAS_TOP_W'(RAS_STORAGE_ENTRIES)) begin

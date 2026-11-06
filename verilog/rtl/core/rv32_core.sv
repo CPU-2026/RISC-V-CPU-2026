@@ -455,7 +455,8 @@ module rv32_core #(
     (robCommitInstrInner[6:0] == OPCODE_JALR) &&
     (robCommitInstrInner[14:12] == 3'b000) &&
      ((robCommitInstrInner[19:15] == 5'd1) ||
-      (robCommitInstrInner[19:15] == 5'd5));
+      (robCommitInstrInner[19:15] == 5'd5)) &&
+     robCommitInstrInner[11:7] != robCommitInstrInner[19:15];
   always_comb begin
     predictorRobInputInner = '0;
     for (int lane = 0; lane < COMMIT_WIDTH; lane++) begin
@@ -468,7 +469,8 @@ module rv32_core #(
         (robCommitOutputInner[lane].instruction[11:7] == 1 || robCommitOutputInner[lane].instruction[11:7] == 5);
       predictorRobInputInner[lane].isHeadReturn = robCommitOutputInner[lane].instruction[6:0] == OPCODE_JALR &&
         robCommitOutputInner[lane].instruction[14:12] == 0 &&
-        (robCommitOutputInner[lane].instruction[19:15] == 1 || robCommitOutputInner[lane].instruction[19:15] == 5);
+        (robCommitOutputInner[lane].instruction[19:15] == 1 || robCommitOutputInner[lane].instruction[19:15] == 5) &&
+        robCommitOutputInner[lane].instruction[11:7] != robCommitOutputInner[lane].instruction[19:15];
       predictorRobInputInner[lane].headProgramCounter = robCommitOutputInner[lane].programCounter;
     end
     for (robInputIndexInner = 0; robInputIndexInner < RECOVERY_WIDTH;
@@ -902,7 +904,8 @@ module rv32_core #(
     issueIsCallInner = issueIsJumpInner &&
                      ((decodedInner.rd == 5'd1) || (decodedInner.rd == 5'd5));
     issueIsReturnInner = (decodedInner.operation == OP_JALR) &&
-                        ((decodedInner.rs1 == 5'd1) || (decodedInner.rs1 == 5'd5));
+                        ((decodedInner.rs1 == 5'd1) || (decodedInner.rs1 == 5'd5)) &&
+                         decodedInner.rd != decodedInner.rs1;
     issueDestPhyInner = decodedInner.writesRd ? prfAllocPhyInner : '0;
     issueSrc1ReadyInner = !decodedInner.usesRs1 || prfSrc1ReadyInner;
     issueSrc1ValueInner = decodedInner.usesRs1 ? prfSrc1ValueInner : 32'b0;
@@ -1283,6 +1286,7 @@ module rv32_core #(
   rv32_lsu #(.STORE_DATA_LANES(STORE_VALUE_RS_ENTRIES), .TAGGED_DMEM(TAGGED_DMEM),
              .WRITEBACK_PORTS(WRITEBACK_PORTS), .COMMIT_WIDTH(COMMIT_WIDTH), .RENAME_WIDTH(ISSUE_WIDTH)) u_lsu (
     .coreStoppedInput(haltedInner),
+    .loadYieldEnableInput(bootDoneInner && !pipelineFrozenInner && !globalFlushInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .loadAllocationInput(lsuLoadAllocationInputInner),
@@ -1328,7 +1332,8 @@ module rv32_core #(
     assign prfReadInputInner[COMMIT_WIDTH+3] = '{physicalRegister:ratReadSecondOutputInner.source2Phy};
     assign issueSecondIsJumpInner = decodedSecondInner.operation == OP_JAL || decodedSecondInner.operation == OP_JALR;
     assign issueSecondIsReturnInner = decodedSecondInner.operation == OP_JALR &&
-      (decodedSecondInner.rs1 == 1 || decodedSecondInner.rs1 == 5);
+      (decodedSecondInner.rs1 == 1 || decodedSecondInner.rs1 == 5) &&
+      decodedSecondInner.rd != decodedSecondInner.rs1;
     assign issueSecondDestPhyInner = decodedSecondInner.writesRd ? prfAllocSecondPhyInner : '0;
     assign raw1 = ratRenameInputInner.valid && decodedSecondInner.usesRs1 && decodedSecondInner.rs1 == decodedInner.rd;
     assign raw2 = ratRenameInputInner.valid && decodedSecondInner.usesRs2 && decodedSecondInner.rs2 == decodedInner.rd;

@@ -6,7 +6,7 @@
 
 | 项目 | 配置 |
 |---|---|
-| 取指 / 译码 / 分配 / 提交 | 2 / 4 / 4 / 4 |
+| 取指 / 译码 / 分配 / 提交 | 4 / 4 / 4 / 4 |
 | FQ / IQ / ROB / PRF | 8 / 8 / 32 / 64 项 |
 | 执行与写回 | 双ALU、单AGU、三路CDB；Load/MUL/DIV共享一路CDB |
 | 七池RS | Integer4、Multiply1、Divide1、Branch4、Load2、StoreAddr2、StoreValue2 |
