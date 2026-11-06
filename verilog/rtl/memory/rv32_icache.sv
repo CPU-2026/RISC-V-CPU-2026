@@ -86,12 +86,12 @@ module rv32_icache #(
     assign predecodeOutput.firstControl=predecodeHitInner&&
       controlMaskInner[predecodeAddressInput[INDEX_W+OFFSET_W-1:OFFSET_W]][predecodeAddressInput[OFFSET_W-1:2]];
     if (FETCH_WIDTH==4) begin : g_four_hints
-      // Relative lanes, clipped at the aligned 16-byte packet boundary.
+      // Relative lanes may cross 16 bytes; clip only at the ICache line end.
       logic [3:0] controls;
       always_comb begin
         controls='0;
         for (int lane=0;lane<4;lane++)
-          if (predecodeHitInner && lane < 4-int'(predecodeAddressInput[3:2]))
+          if (predecodeHitInner && lane < CACHE_LINE_BYTES/4-int'(predecodeAddressInput[OFFSET_W-1:2]))
             controls[lane]=controlMaskInner[predecodeAddressInput[INDEX_W+OFFSET_W-1:OFFSET_W]]
               [int'(predecodeAddressInput[OFFSET_W-1:2])+lane];
       end

@@ -1,3 +1,129 @@
+## 2026-11-07：正式采用跨16B四取指（优先于以下历史）
+
+用户“采纳生产”，在已审计`fetch4-cross16-ppa-20261107-r01`及两软件资格通过后正式发布。面积34947.061567 μm²（+0.713718%），Fmax估计319.301528 MHz（+0.997817%），六项几何IPC1.137201912621（+6.947322%），评分4.372501753378e-07（+30.260993%）。面积<36000、Fmax>300、IPC>1.0985三项均通过；IPC×Fmax估算+8.014461%，非墙钟实测，频率为同理想时钟／无寄生STA估计、非后布局结果。
+默认fetch/decode/rename/commit为4/4/4/4，双ALU／三CDB保持。只替换pkg／frontend／ICache三RTL：任意字位置连续最多4条、允许跨16B但不跨64B行、最早CFI截断、cold单条、单预测及逐条PC／CID不变。两请求包槽／派生8条指令信用，FQ8／IQ8／ROB32／PRF64／checkpoint64／I$1KiB保持，四取指仍采用保守恢复冻结，不加入双取指专属恢复扩展；LSU已采用通知提前计算／SQ完成旁路／SQ4-owner0仲裁／Load预取／标准RAS、Cache／AXI／Slave及其他容量执行宽度保持。
+两软件默认宽度头与取包几何共4项构建输入变化、122项保持。主树只读旧快照/Input逐字段写目标，模板Register单写／统一sync保持；所有状态writer／预测及训练不改，无模块next-state复制或生产观察探针。全新Release／断言四构建原六答案／退休／init+core+drain及两外部副本各374104条退休PC／周期匹配。周期7620/12379/3740/5477/148089/159739；qsort相对双取指多614拍，其他五项改善。限定原六资格，不是全状态／全输入形式等价。
+44RTL／公共SRAM／converted与已审计候选精确同源，复用本次已认证全新整核综合／ABC／STA及native／converted筛选，不重新综合或冒称另建生产路径RTL模型。发布前备份三RTL／四软件／文档／旧指针，旧黄金／镜像／Slave／既有code及三树HEAD索引保持；历史证书不回写。采用证书`sync/evidence/fetch4-cross16-production-adoption-20261107-r01/adoption.json`，正式指针`sync/evidence/current-production.json`；软件说明`docs/hardware-baseline-fetch4-cross16.md`。
+单候选授权完成，全部综合／ABC／STA继续暂停，未提交／推送；不自动继续实验、组合、综合或清理，无额外面积专项，不算完整新优化轮。
+
+## 2026-11-06：正式采用LSU通知资格提前计算（优先于以下历史）
+
+用户明确“采用”，在已审计整核PPA及本次两软件资格通过后发布`lsu-notify-precompute-ppa-20261106-r01`。面积34699.405687 μm²（+0.679820%），Fmax316.146959 MHz（+3.056499%），六项几何IPC1.063329023912（不变），评分3.356723806268e-07（+1.669462%）。面积增234.300600 μm²，面积<36000／Fmax>300通过，长期IPC>1.0985仍未达。IPC×Fmax估算+3.056499%，非墙钟实测；同理想时钟无寄生STA估计，不是后布局频率。
+只替换`rtl/memory/rv32_lsu.sv`的返回通知优先级组合拓扑：旧LQ×SQ常数行先计算同START同WIDTH／年龄及年轻未知地址或同word屏障，晚到SV／返回身份仅选一位。notify函数／完整事件身份与flush、Load地址事件最终覆盖、全部SQ／LQ状态写入／完整转发／SQ完成旁路／owner取消／SQ4-owner0仲裁／Load预取／标准RAS及容量宽度和Slave保持。不组合ROB候选，不恢复已否决方案。
+两软件126项构建输入全部保持，无需算法改写；主树旧快照/Input逐字段写目标、模板Register单写／统一sync纪律不变，不恢复生产观察探针。全新Release／断言四构建原六答案／退休／init+core+drain及两外部副本各374104条退休PC／周期匹配。周期7676/16908/3984/5509/147475/162806全部保持，独立软件raw审计通过；限定原六资格，不是全状态／全输入形式等价。
+44RTL／公共SRAM／converted与已测候选精确同源，复用其已审计整核综合／ABC／STA及native／converted局部619252组任意旧态／真实LSU差分／六有效负向和原六完整日志，本次无新综合或生产路径RTL模型重建。发布前备份一RTL／文档／旧指针，旧黄金／镜像／Slave／既有code和三树HEAD索引保持，旧证书不回写。采用证书`sync/evidence/lsu-notify-precompute-production-adoption-20261106-r01/adoption.json`，正式指针`sync/evidence/current-production.json`；软件说明`docs/hardware-baseline-lsu-notify-precompute.md`。
+单候选授权完成，全部综合／ABC／STA继续暂停，未提交／推送。不自动继续实验、组合、综合或清理，无额外面积专项，不算完整新优化轮。
+
+## 2026-11-06：正式采用旧SQ完成事件旁路（优先于以下历史）
+
+用户“采纳当前的SQ完成旁路”后明确“综合”，在本次新整核PPA独立审计、面积<36000／Fmax>300及两软件资格通过后采用`store-completion-events-ppa-20261106-r01`。面积34465.105087 μm²（-0.432579%），Fmax306.770521 MHz（-2.127022%），六项几何IPC1.063329023912（+0.366506%），评分3.301604769298e-07（+0.180573%）。IPC×Fmax估算-1.768312%，非墙钟实测；长期IPC>1.0985仍未达。
+仅一LSU完成bitmap：旧有效未提交SQ完整身份的真实地址／数据／非P0匹配WB可通知ROB寄存ready，退休仍读旧ready。SQ／LQ全部状态写入、实际Store退休／访存接受、Store→Load转发、owner／取消、SQ4-owner0仲裁、Cache预取、标准RAS、容量宽度和Slave保持，不恢复已否决地址→Load数据通知，不含三取指。
+两软件各SQ组合查询／头文件与CPU接线共6项构建输入同步、120项保持，主树旧快照/Input逐字段写目标，模板Register单写／统一sync保持。只在完成锥读取完整WB，旧SV／LQ转发锥仍只读early-ALU；旧SV owner保存软件数据依赖身份，对应RTL SQ dataTag，不创建模块next-state或生产观察探针。全新Release／断言四构建原六答案／退休／init+core+drain与两外部副本各374104条退休PC／周期匹配。周期7676/16908/3984/5509/147475/162806，相对标准RAS−345/−85/+31/+32/+1105/+953，median IPC+4.494528%，整体+0.366506%，四项回退已披露。限定原六资格，不是全状态／全输入形式等价。
+44RTL／公共SRAM／converted与已审计r02精确同源，本次从elaborate全新六checkpoint／整核opt／ABC／STA及独立逐叶面积／248原宏／工具约束／raw退休评分审计，不拼接旧PPA。复用筛选完整双模型资格，不冒称另建生产路径RTL模型。软件r01只因验证入口未导出路径ImportError停止，未构建；r02仅修导入，六源保持，原失败保留。发布前备份一RTL／六软件／文档／旧指针；旧黄金／镜像／Slave／既有code及三树HEAD索引保持，旧证书不回写。采用证书`sync/evidence/store-completion-events-production-adoption-20261106-r02/adoption.json`，正式指针`sync/evidence/current-production.json`；软件说明`docs/hardware-baseline-store-completion.md`。
+单候选授权完成，全部综合／ABC／STA恢复暂停，未提交／推送。不自动继续实验、组合、综合或清理，无额外面积专项，不算完整新优化轮。
+
+## 2026-11-06：正式采用标准同link JALR只push修正（优先于以下历史）
+
+用户“替换生产并综合”，在本次新整核PPA独立审计、面积<36000及Fmax>300和两软件资格通过后采用`ras-same-link-ppa-20261106-r01`。面积34614.841687 μm²（+0.313261%），Fmax313.437404 MHz（-0.306091%），六项几何IPC1.059446088949（+1.509617%），评分3.295653702718e-07（+5.191507%）。IPC×Fmax估算+1.198905%，非墙钟实测；长期IPC>1.0985仍未达。
+仅四RTL frontend／core／rename-plan／RAS分类：JALR pop=rs1Link && rd!=rs1、push=rdLink，x1/x5同link只push，异link保留pop后push。同步投机／BTB类型／标量双宽四宽ROB／真实退休／原始指令恢复，RAS容量8、满空与恢复节奏不变；不组合总线2∶1，不改SQ4／owner0仲裁、Cache／Slave／容量／宽度。
+两软件各CPU／StaticArbiter共4项构建输入同步、122项保持，decoded hint沿既有退休／恢复路径；主树旧快照/Input逐字段写目标、模板Register单写／统一sync保持。精确复用r04已审计全新Release／断言四构建原六答案／退休／init+core+drain及两外部副本各374104条退休PC／周期资格，不重复构建、不冒称另建生产路径RTL模型。周期8021/16993/3953/5477/146370/161853；towers少372拍、multiply少413拍，qsort多1拍。局部双模型24576组合、真实RAS／SRAM及七有效RTL负向通过；原三夹具失败证据保持，限定原六资格而非全状态／全输入形式等价。
+44RTL／公共SRAM／converted精确同源，本次从elaborate全新六checkpoint／整核opt／ABC／STA，独立Liberty逐叶面积／248原宏形状／工具库约束／raw退休评分审计通过，不拼接旧PPA。发布前备份四RTL／四软件／文档／旧指针；旧黄金／镜像／Slave／已有code和三树HEAD索引保持，旧证书不回写。证书`sync/evidence/ras-same-link-production-adoption-20261106-r01/adoption.json`，正式指针`sync/evidence/current-production.json`；软件说明`docs/hardware-baseline-ras-same-link.md`。
+单候选授权已完成，全部综合／ABC／STA恢复暂停，未提交／推送。不自动继续实验、组合、综合或清理，无额外面积专项，不算完整新优化轮。
+
+## 2026-11-06：正式采用SQ≤4／owner=0安全Load让行仲裁（优先于以下历史）
+
+用户“采用SQ <=4 且owner = 0的并进行综合”，在新整核PPA及两软件资格通过后采用`lsu-sq4-owner0-ppa-20261106-r02`。面积34506.745567 μm²（+0.259469%），Fmax314.399754 MHz（+2.364139%），六项几何IPC1.043690365779（+0.759869%），评分3.133003593523e-07（+4.965701%）。IPC×Fmax估算+3.141972%，不是墙钟实测。面积<36000及Fmax>300通过，长期IPC>1.0985未达；rsort+2262拍，其他五项改善。
+仅LSU＋core两RTL：旧态全部已分配SQ≤4且LSU运输owner=0时，原最老合法Load可越过全部字节不重叠的已提交／同拍真实退休普通RAM Store一次，随后强制真实Store接受；债务跨flush保持、两处SQ只认真实Store grant，恢复冻结／冲刷／退出不新增让行。不改Cache／Slave／容量／执行宽度／原转发，保留既有Load下一行预取。
+两软件9项构建输入同步、117项保持；运输owner计数包括取消后的真实返回，Cache新增纯功能终结事件查询而非改变Cache算法或生产观察探针。主树旧快照/Input逐字段写目标，模板Register单写／统一sync，raw proposal-valid与实际接受分离保持。r01新增顶层标量被原纪律检查拒绝，r02模板SQ计数混用epoch尾指针与物理头槽导致周期漂移，两次失败保留；r03用旧有效行计数，未放宽检查。全新Release／断言四构建原六答案／374104条退休／init+core+drain及两外部副本退休PC周期匹配RTL；周期8022/17406/3953/5849/146369/161862。限定原六资格，不是完整状态／全输入形式等价。
+44项RTL／公共SRAM／converted与已审计sq4-owner0精确同源，本次从elaborate全新六checkpoint／整核opt／ABC／STA及独立Liberty逐叶面积／248原宏形状／工具库约束／raw退休评分审计完成，不拼接旧PPA；原r01在ABC因服务器重启中断，五个checkpoint与失败产物保留；r02从elaborate全新重测，无checkpoint继承。r02完成后首审因来源标签变量遮蔽失败，旧失败保留；r03依据原五checkpoint路径与哈希重绑定来源，完整重审同一PPA，不重跑综合／ABC／STA。采用阶段复用r02新PPA与r03审计和已通过的软件r03资格，不重复软件构建，也不冒称另建生产路径RTL模型。备份／旧黄金／镜像／Slave／既有code及三树HEAD索引保持，旧证书不回写。采用证书`sync/evidence/lsu-sq4-owner0-production-adoption-20261106-r03/adoption.json`；正式指针`sync/evidence/current-production.json`；软件说明`docs/hardware-baseline-lsu-sq4-owner0.md`。
+单候选授权已完成，全部综合／ABC／STA恢复暂停，未提交／推送；不自动继续实验／组合／综合或清理，无额外面积专项，不算完整新优化轮。
+
+## 2026-11-05：正式采用Load触发下一行预取（优先于以下历史）
+
+用户明确“采纳”，采用已审计`load-prefetch-ppa-20261105-r01`。面积34417.443067 μm²（+0.523014%），Fmax307.138572 MHz（-1.979604%），六项几何IPC1.035819497011（+2.458373%），评分2.984787940536e-07（+6.899400%）。IPC×Fmax估算+0.430103%，不是墙钟实测。面积<36000及Fmax>300通过，长期IPC>1.0985未达；towers+10拍，其他五项改善。
+仅DCache＋backend两项RTL采用r02同源候选：真实接受普通RAM Load触发下一条32字节行，4项最近源行／单pending目标，最多一个typed内部预取，共享8请求／4MSHR／2bit ID。需求优先、入槽占用≤6／MSHR≤2；未占MSHR冲突可丢弃，已占MSHR保留脏victim／写回／回填所有权。全部CPU返回排除预取类型，不占LSU身份；退出接受后停止新预取。不改容量／宽度／BPU或Slave，不带已否决方案。
+两软件10项构建输入同步，116项保持：DCache预取和CPU／MemArbiter原始proposal-valid接线；实际接受事件仍单独门控。主树只读旧快照/Input逐字段写目标，模板Register单写／统一sync保持，无模块下一状态复制或生产观察探针。全新Release／断言四构建原六答案／退休／init+core+drain匹配，两外部副本各374104条退休PC／周期匹配RTL；周期8025/17410/3971/5874/153886/159600。r01两软件rsort均少5拍被门禁拦住；外部状态见证定位满Cache时raw-valid被旧接受门控隐藏，r02仅修软件映射，旧失败／诊断保留，RTL／PPA不变。限定原六资格，不是完整状态或全输入形式等价。
+44项RTL／公共SRAM及converted精确同源认证，复用已审计整核综合／ABC／STA和native／converted筛选，本次不新综合，也不冒称另建生产路径RTL模型。旧黄金／镜像／Slave／既有code和三树HEAD索引保持，历史证书不回写。采用证书`sync/evidence/load-prefetch-production-adoption-20261105-r02/adoption.json`，正式指针`sync/evidence/current-production.json`；软件说明`docs/hardware-baseline-load-prefetch.md`。
+全部综合继续暂停，未提交／推送；不自动继续实验／组合／综合或清理，无额外面积专项，不算完整新优化轮。
+
+## 2026-11-05：Load预取整核PPA完成，面积／频率通过，尚未采用
+
+`load-prefetch-ppa-20261105-r01`完成用户授权的唯一一次全新整核opt综合／ABC／STA，独立Liberty逐叶面积／248原SRAM宏形状数量／工具／库／约束／六checkpoint／raw退休和评分审核通过。面积34417.44306697736 μm²（相对生产+0.5230142443%），Fmax307.13857228554286 MHz（−1.9796040792%），六项几何IPC1.0358194970105774（+2.4583730405%），评分2.9847879405359694e-07（+6.8994001670%）。IPC×Fmax估算+0.4301029084%，非墙钟实测。面积<36000及Fmax>300通过，长期IPC>1.0985仍未达。原六周期8025/17410/3971/5874/153886/159600，towers+10拍，其余五项改善，不能称逐项无退化。
+
+44项RTL／公共SRAM／converted和原六双模型完整日志精确复用已审计r02，不重复已完成仿真，从elaborate新测无checkpoint继承，不拼接旧PPA。原248宏形状不变。r26追加认证指标并继承全部历史否决，不伪称已删原始产物恢复。收口再次核原始PPA产物、认证输入、保护／生产指针和三树HEAD索引通过。证书`sync/evidence/load-prefetch-ppa-20261105-r01/finalization.json`与同目录`post-completion-verification.json`，报告`sync/LOAD-PREFETCH-PPA-RESULTS-20261105.md`，说明`sync/LOAD-PREFETCH-PPA-20261105.md`。
+
+单候选授权结束，全部综合／ABC／STA恢复暂停。生产RTL、两软件126项、Slave／正式指针保持，未采用／提交／推送；不自动启动新实验／组合／综合、采用或清理。无额外面积专项，不算完整新优化轮。以下保留执行阶段归属。
+
+## 2026-11-05：用户授权Load预取候选一次全新整核PPA（历史执行阶段）
+
+用户“开始综合”仅授权已审计`load-prefetch-screen-20261105-r02`同源候选一次新整核opt综合／ABC／STA及独立审计，不授权采用或其他候选／组合／清理。入口`sync/run_load_prefetch_ppa_20261105.py`，审计`sync/audit_load_prefetch_ppa_20261105.py`；工作根`.cpu2026-synthesis/load-prefetch-ppa-20261105-r01/`，服务`cpu2026-load-prefetch-ppa-20261105-r01`，说明`sync/LOAD-PREFETCH-PPA-20261105.md`。
+
+复用已审计44项RTL／SRAM／converted与原六双模型完整日志及IPC，不重复仿真资格，不改候选／生产／两软件／Slave。周期8025/17410/3971/5874/153886/159600，几何IPC1.0358194970105774（+2.458373040548%，towers+10拍）。从elaborate新测、六阶段checkpoint，无旧checkpoint继承；同AppImage三工具／五库／248原宏／2ns／INVx1／5fF与理想时钟无寄生口径。独立Liberty逐叶面积／宏形状／约束／工具／checkpoint／raw退休及评分审核，收口保护指针／输入／三树HEAD索引；cleanup-aware指标追加不访问已删历史原始产物，继承全部否决决定。当前无新面积／Fmax／评分结论，最终看`sync/evidence/load-prefetch-ppa-20261105-r01/finalization.json`。单项结束全部综合恢复暂停，不自动采用、追加实验／组合／综合或清理；未提交／推送，无额外面积专项，不算完整新优化轮。
+
+## 2026-11-05：Load触发下一行预取筛选通过，几何IPC+2.458373%，未综合／采用
+
+用户“尝试load-based预取”授权一个隔离正确性／IPC候选。只改DCache和backend，实际接受普通RAM Load触发下一条32字节行，4项源行去重／单pending目标，最多一个显式typed内部预取，共享原8请求／4MSHR／2bit ID，无LSU假请求或新数据buffer。入槽请求占用≤6／MSHR≤2，miss分配前≥3则放弃；需求Tag和待发送miss优先。未占MSHR预取遇同set Store或同行miss可丢弃；占用MSHR后保留真实victim／脏写回／set锁及回填所有权，所有CPU返回路径排除预取，退出接受后停止新预取。
+
+r01整核预检通过，局部夹具将响应valid与ready写在同组合块而触发UNOPTFLAT，运行前停止。r02仅把ready等式拆成连续赋值，不关闭诊断，44项RTL逐字节同r01，旧失败／脚本／模型保留。r02局部真实Cache／SRAM／行控制器双模型字节／不可变owner oracle、整行及寄存早字两环境和三个有效RTL负向通过；全新整核native／converted原六答案／374104条退休／九字段架构退休匹配生产，完整日志逐字节一致。独立raw周期／退休／答案、源码／夹具／负向／真实预取读握手及保护／正式指针／三树HEAD索引核验通过。
+
+周期8025/17410/3971/5874/153886/159600，相对生产−580/−140/−14/+10/−1833/−8901。逐项IPC+7.227414/+0.804136/+0.352556/−0.170242/+1.191141/+5.577068%；六项几何IPC1.0358194970105774（+2.458373040548%），最弱median改善，towers小幅退化，不能称逐项无退化，长期IPC>1.0985仍未达。实际预取行读102/37/41/3/298/748，总行读154/55/153/16/797/4958（相对原总读+2/+2/+1/+3/+134/+62），脏写0/0/0/0/268/3026。入槽可命中驻留行，预取读是总读子集；含投机，不推导精确命中率、固定节省拍数或未测污染因果。
+
+证书`sync/evidence/load-prefetch-screen-20261105-r02/finalization.json`及同目录`post-completion-verification.json`，说明`sync/LOAD-PREFETCH-SCREEN-20261105.md`。无综合／ABC／STA、新面积／频率／评分，不拼接生产PPA，不算完整优化轮。授权已结束，不自动采用、追加候选／组合／综合／清理；生产44项RTL／SRAM、两软件126项、Slave和正式指针保持，综合继续暂停，未提交／推送。
+
+## 2026-11-05：Load预取研究先查Slave容量，原六从机均未满（未实现／综合）
+
+用户“研究基于load的预取”后追加先看从机容量／是否满，执行只读生产观察和固定流下一行时机分析，不实现预取。现存同源native／converted模型仅外部新链接驱动，原六所有答案／周期8605/17550/3985/5864/155719/168501及C/L/W/R/P完整日志逐字节保持，新增五队列step前后记录两模型相同。独立raw队列峰值／满周期／valid背压／服务守恒和跨拍连续性通过。
+
+Slave的AR／AW／W／R／B各16项，原六五队列满周期全部0，所有通道valid&&!ready和R/B容量引起服务阻塞也全0。AR／AW／W峰值均1，R均11，B为1/1/1/1/8/11。全观测读服务占用率（含取指）16.271502/3.379110/33.007028/12.485076/3.637987/23.548961%，最长连续40/48/48/40/48/48拍。真实从机可每拍同时服务1读字＋1写字，不是共用单服务口；一条D$32字节行仍占8个读传输。4MSHR峰值2/2/2/1/2/4，仅rsort满48拍；8项D$请求槽满0/0/116/162/284/33292拍，满状态不直接等同被阻塞的新需求或省拍数。AXIData8描述符均未满。证书`sync/evidence/slave-capacity-profile-20261105-r01/finalization.json`。
+
+复用固定C/L/W流的Load首次源行→下一行提示，在目标首次需求和取行之前的候选数100/37/112/0/289/510；vvadd的112个候选提前量32/69/111拍。独立直接raw首访／分类／提前量审计通过，证书`sync/evidence/load-nextline-opportunities-20261105-r01/finalization.json`。全程去重只是离线分析便利，没有有限预测器／额外流量／污染／排队反馈模型，不是预取IPC或命中率实测。当前从机没有容量背压瓶颈，支持研究限流预取，但不能保证加入后不抢带宽／信用。
+
+仅形成Load触发下一行、最多1条预取在途、需求留信用等研究建议。现有MSHR依赖真实request owner及2bit ID，必须先设计预取类型／无架构返回／Store陈旧数据防护／Tag端口及普通RAM边界；按PC步长还需可靠PC通道。说明`sync/LOAD-PREFETCH-RESEARCH-20261105.md`。两软件Slave仅只读源码核对，没有新两软件观察模型，不冒称本次三端重新逐拍。无新RTL模型／候选实现／综合／ABC／STA或PPA；生产／两软件126项／Slave／指针和三树HEAD索引保持，综合继续暂停。研究结束不自动实现／实验／采用／综合或清理，未提交／推送，不算完整轮。
+
+## 2026-11-05：用户明确否决仅Store数据RS4项，生产保持2项
+
+用户获知仅SV4／SA2／消费2候选原六几何IPC−1.461943440%和vvadd−9.018264840%后明确“不采纳”。追加决定`sync/evidence/sv-capacity4-rejected-20261105-r01/decision.json`，否决`sv-capacity4-screen-20261105-r02`及r01同源尝试。原筛选／审计完成证书不回写，源码／模型／trace及r01失败证据保留，不自动恢复、采用或继续该方案，不启动其他实验／综合／清理。生产仍ROB载荷复位分离、SV容量2项；两软件／正式指针／三树HEAD索引保持，综合继续暂停，未提交／推送。以下“不替用户否决”保留决策前归属。
+
+## 2026-11-05：仅Store数据RS容量4项筛选完成，几何IPC−1.461943%，未采用／综合
+
+用户授权SV容量2→4、SA仍2、Store数据消费最多2条／拍的独立筛选。候选仅pkg／core分离STORE_VALUE_ISSUE_WIDTH=2，所有数据消费数组／循环／RS发射／LSU输入保持两条，容量及分配信用4；两ALU同拍旁路、三CDB普通唤醒、实际离站信用及其他42项RTL／SRAM保持，不带已否决前端或Load选择候选。
+
+首轮`sv-capacity4-screen-20261105-r01`局部真实RS运行到末尾覆盖检查失败，未跑IPC；r02仅补双操作数同时由ALU0／1到达的定向激励，不删除检查，44项RTL逐字节保持，原失败快照／脚本／日志保留。r02局部列表oracle native／converted各4125拍、容量退回2／误扩消费4／共享CDB误开同拍三个有效RTL负向、真实RS→两通道LSU公开端口集成通过；新整核两模型原六答案／374104条退休／九字段架构退休匹配生产，完整日志一致，无环／锁存。独立raw周期／退休／答案、源码范围／夹具／负向／保护和三树HEAD索引审计通过。
+
+周期8605/17550/4380/5832/155722/168384，相对生产0/0/+395/−32/+3/−117。vvadd IPC−9.018264840%，towers+0.548696845%，qsort−0.001926510%，rsort+0.069484036%，其余不变；六项几何IPC0.9961864233581463，−1.461943440020%。四项真实SV占用达到4，扩容实际生效但目标vvadd明显退化，不将旧SV背压直接当作加槽必有收益，不伪称已定位Cache／请求序等具体因果。建议不推进，不替用户明确否决。
+
+最终证书`sync/evidence/sv-capacity4-screen-20261105-r02/finalization.json`，说明`sync/SV-CAPACITY4-20261105.md`。无综合／ABC／STA、新面积／Fmax／评分或吞吐估算，不算完整优化轮。筛选授权结束，不自动采用、继续候选／组合／综合／清理；生产44项RTL／SRAM、两软件126项输入、正式指针和三树HEAD索引保持，全部综合继续暂停，未提交／推送。
+
+## 2026-11-05：用户明确否决最老可发出Load，其他候选仅建议
+
+用户“不采纳，其他候选优化有什么”明确不采用`lsu-eligible-load-screen-20261105-r01`。追加决定`sync/evidence/lsu-eligible-load-rejected-20261105-r01/decision.json`，原筛选／审计完成证书不回写，候选源码／模型／trace／证据保留。不得自动恢复／采用或继续此方案；用户询问其他候选只授权分析建议，不授权实施、组合、综合或清理。生产仍ROB载荷复位分离、Load仍用原选择规则，两软件／正式指针／三树HEAD索引保持；综合继续暂停，未提交／推送。以下“不替用户否决”保留决策前归属。
+
+## 2026-11-05：最老可发出Load隔离筛选完成，整体IPC微降，未采用／综合
+
+用户授权“尝试一下，虽然这个可能会增加组合逻辑”，只筛选一个独立`lsu-eligible-load-screen-20261105-r01`。从当前ROB载荷复位分离生产复制44项RTL，只改`rv32_lsu.sv`：对每个旧Load先用旧SQ判断未知地址或字节重叠阻塞，再由原年龄树选择最老合格候选。保留旧Load匹配AGU当拍地址、最终原SQ准入门、Store优先级、SQ转发／通知、Load结果仲裁和全部状态写入，不猜测访存依赖，不新增容量／级数／端口，不带已否决前端部分接受。
+
+局部native／converted独立公开端口数学字节区间／非环绕年龄oracle各9014次检查，覆盖149次跳过阻塞旧项、未知Store、匹配AGU／错误身份、字节／半字／字和跨word、背压／halt／flush／tag回绕／工作后reset。四个源码负向均实际构建成功并检出；原真实LSU owner／取消／同tag复用／退休／posted Store回归两模型通过。新整核无组合环／锁存，双模型原六答案／374104条退休／九字段架构退休匹配同源生产基线，两模型完整日志一致，独立raw／源码复现／保护和三树HEAD索引审计通过。
+
+周期8605/17550/3985/5864/155708/168514，相对生产0/0/0/0/−11/+13。qsort IPC+0.007064505%、rsort−0.007714493%，其他不变；几何IPC1.0109650809515047，相对−0.000108422327%，基本持平但非正收益，未改善最弱median。不据微小周期变化伪称已证明Cache／BPU等因果。建议不推进，不替用户追加明确否决；未综合／ABC／STA，无新面积／频率／评分，组合逻辑实际代价未知。
+
+证书`sync/evidence/lsu-eligible-load-screen-20261105-r01/finalization.json`，说明`sync/LSU-ELIGIBLE-LOAD-20261105.md`。筛选授权已完成，不自动采用、扩展实验／组合、综合或清理；生产44项RTL／公共SRAM、两软件126项、正式指针及三树HEAD／索引保持。综合继续暂停，未提交／推送，不算完整优化轮。
+
+## 2026-11-05：前端两层部分接受筛选通过，原六IPC持平，用户不采用
+
+用户要求尝试空IQ及空FQ新包直通的部分接受，隔离`partial-frontend-bypass-screen-20261105-r01`只改queue／rename-plan：上游整包单次握手、资源允许的连续前缀分配、剩余后缀压紧入IQ。没有软件、容量、宽度、BPU或访存协议变更。FW2／FW4实际队列＋planner独立oracle在两种来源分别覆盖真前缀，四个有效RTL负向、真实RAT／PRF状态及恢复／freeze／flush／容量native／converted通过；新整核两模型原六项答案／退休／九字段架构退休匹配已采用同源基线，两模型完整日志一致。独立源复现／raw退休与周期重数／保护／三树HEAD索引审计通过。
+
+原六周期8605/17550/3985/5864/155719/168501全不变，几何IPC1.010966177065（+0%）。未综合／ABC／STA，无新面积／频率／评分，不拼接生产PPA。筛选证书`sync/evidence/partial-frontend-bypass-screen-20261105-r01/finalization.json`。已启动外部只读统计用于区分未触发与触发但无省拍，仅链接现成模型，不改RTL，不作PPA或采用授权。
+
+用户获知结果后明确“那不应用了”：追加`sync/evidence/partial-frontend-bypass-rejected-20261105-r01/decision.json`，不采用、不自动继续此方案或其他实验／综合／清理。原筛选证书不回写，候选源码／模型／trace／证据保留。生产继续ROB载荷复位分离、前端两层仍整组接受；44项RTL／SRAM、两软件126项构建输入、正式指针及三树HEAD／索引保持。全部综合继续暂停，未提交／推送，不算完整优化轮。说明`sync/PARTIAL-FRONTEND-BYPASS-20261105.md`。
+
+## 2026-11-04：正式采用ROB载荷复位分离（优先于以下历史）
+
+用户要求“采纳ROB 复位分离”，仅采用已审计`rename-area-ppa-sequence-20261104-r01/rob-payload-reset`。面积34238.371507 μm²（-1.349543%），Fmax313.341493 MHz（+1.744186%），六项几何IPC1.010966177065（不变），评分2.792146575072e-07（+4.546957%）。IPC×Fmax估算+1.744186%，非墙钟实测。
+仅替换`rv32_rob_lanes.sv`：载荷raw不复位，每行initialized复位并屏蔽未初始化读出；valid／ready／完整tag控制复位及写优先级保持。initialized不跟随valid清除，保留取消项replay和失效端口载荷。不带PRF或ROB SRAM候选，不改容量／宽度／BPU／访存协议。现有frontend格式及等宽截取修复原样保留并记录旧指针差异。
+44项RTL／公共SRAM与已审计候选同源，复用该候选已完成整核综合／ABC／STA及native／converted局部与原六资格；本次不新综合、不声称另建生产路径RTL模型或全状态形式等价。两软件126项构建输入不变，无需改算法；全新Release／断言四构建原六答案／退休／init+core+drain及外部副本各374104条退休PC／周期匹配。周期8605/17550/3985/5864/155719/168501。旧黄金／镜像／Slave／既有code和三树HEAD／索引保持。
+面积<36000及Fmax>300通过，长期IPC>1.0985未达。面积／频率合格候选中评分最优，不是无面积限制的最高IPC或最高评分者；历史排名／否决保持。采用证书`sync/evidence/rob-payload-reset-production-adoption-20261104-r01/adoption.json`；正式指针`sync/evidence/current-production.json`；软件说明`docs/hardware-baseline-rob-payload-reset.md`。
+全部综合／ABC／STA继续暂停，未提交／推送；不自动继续新实验／组合／清理，不算完整新优化轮。
+
 ## 2026-11-04：用户明确不采用Victim4，追加否决决定
 
 用户获知Victim4面积35615.175487 μm²、Fmax293.157744 MHz、几何IPC+0.133898%及评分−9.118523%后明确“不采用”。已追加`sync/evidence/dcache-victim4-rejected-20261104-r01/decision.json`，记录禁止自动采用该候选，不以排名改变用户决定；r20只追加否决与rejected_roots，r19历史指标／排名及原筛选／PPA证书不回写。
@@ -704,6 +830,45 @@ multiply的633次退休误预测及736/866拍flush/恢复均未减少；有退�
 初始保留器在IPC并列时按枚举顺序留下三Load父版本。随后另建保留器，只在实测IPC完全相等时优先较高实测评分，因此最新最高IPC代表为物理代价更好的组合版，评分冠军仍为地址专项。旧索引、旧保留器及全部测量不改，不改变门槛或采用许可。该补验不是新完整优化轮次，正式生产和两软件仍不变。
 
 来源：[组合补验](../../sync/ROUND27-COMBINATION-20261103.md)、[并列选择凭据](../../sync/evidence/best-results-retained-20261103-r04/tie-resolution.json)。
+
+## 11 月 4 日：PRF／ROB面积结构四项隔离筛选（执行中）
+
+用户根据当前diagnose层次报告要求按顺序开始实验：PRF上一拍转发优先级共享、PRF读译码重组、ROB载荷复位分离、ROB单行SRAM载荷＋4组共享最近写记录。四项各自从当前生产工作树快照出发，不组合，不改变容量、宽度、访存或BPU，不恢复已否决PRF排名。
+
+旧实验工作根已清空，不能复用旧模型；此次新建native／converted基线及原六项九字段退休日志，随后每项做环／锁存检查、局部双模型公开端口差分与独立数据／队列oracle、两个有效源码负向，再新建原六项双模型并重数raw日志。当前frontend用户格式与等宽截取修复独立记差异，不回写工作树。生产／两软件／正式指针和三树HEAD／索引保持。
+
+四项局部源码／夹具lint预检通过，不当作运行时正确性或IPC资格。服务启动首次因本机不支持MemoryOOMGroup属性被拒，尚未启动实验；移除该属性，使用已有OOMPolicy=kill及资源检查器接续，失败单独保留。新工作根`.cpu2026-synthesis/rename-area-sequence-20261104-r01/`，说明`sync/RENAME-AREA-SCREENING-20261104.md`；最终看`sync/evidence/rename-area-sequence-20261104-r01/finalization.json`。
+
+本次只筛选，综合／ABC／STA继续暂停，无新面积／Fmax／评分，不自动采用，也不计作完整优化轮。执行中不提前宣称通过或面积收益。
+
+### PRF／ROB四项筛选最终收口
+
+四项全部局部native／converted公开端口差分＋独立oracle、各两个有效RTL负向和原六项全新双模型完成。四项周期均`8605/17550/3985/5864/155719/168501`，几何IPC均 **1.010966177065**，逐项与本次新基线持平；答案／退休数／九字段架构退休匹配，native／converted完整日志一致。PRF各局部模型12843次检查，ROB各局部模型2136拍含取消项历史replay和工作后reset。
+
+原r01服务在全测量结束后的审计前缀比较中失败：read-decode新增两行解释注释未排除。原失败脚本、inputs和job保持，新增r02只读审计仅修源码边界，另核全部步骤日志哈希、负向原因与答案；未改RTL／模型／测量，未重跑构建、仿真或综合。最终证书`sync/evidence/rename-area-sequence-20261104-r02/finalization.json`通过，工作根保留r01归属。保护输入／正式指针及三树HEAD／Git索引核验通过。
+
+这是面积结构的正确性／IPC筛选，不是面积实测：无新面积／频率／评分，不能据此认定省面积或排名。生产和两软件不改，全部综合／ABC／STA继续暂停；本有限序列结束，不自动组合／采用／继续其他实验。
+
+### PRF／ROB四项逐项整核PPA获授权（执行中）
+
+用户进一步要求“开始逐项综合”，仅授权上述四项按原序各一次新整核opt综合／ABC／STA，不授权组合或采用。新根`.cpu2026-synthesis/rename-area-ppa-sequence-20261104-r01/`精确复制r02筛选已认证44项RTL、converted和IPC资格；不重跑仿真，各自从elaborate开始、六checkpoint、无历史checkpoint继承。同AppImage／五库／2ns／INVx1与5fF、原理想时钟无寄生口径；前三项248原宏，ROB SRAM项另外32个1×129宏亦全额计价。
+
+逐项独立Liberty逐叶面积／宏形状／约束／阶段／STA／原六raw退休与评分审计，通过后追加cleanup-aware指标，历史否决和指标不回写；生产对比仅据保留认证记录，不恢复已删原始网表。四项结束全部综合恢复暂停，生产和两软件不改，不自动组合／采用／清理。入口和说明见`sync/RENAME-AREA-PPA-20261104.md`；最终以同名证据根finalization.json为准，执行中不提前认定面积收益。
+
+### PRF／ROB四项独立PPA完成，未采用
+
+四项各自全新elaborate、六阶段checkpoint、整核opt展平、ABC和STA及独立逐叶Liberty面积／实际宏／约束／raw退休／评分审计全部通过。同源复用此前已认证native／converted资格，IPC均1.010966177065、六周期均`8605/17550/3985/5864/155719/168501`；本次未重复仿真，无旧checkpoint或旧PPA拼接。
+
+| 独立候选 | 面积 μm² | Fmax MHz | 评分 | 相对生产面积 | 频率 | 评分 |
+|---|---:|---:|---:|---:|---:|---:|
+| PRF上一拍转发共享 | 34683.207307 | 307.322929 | 2.668719718965e-7 | −0.067845% | −0.210084% | −0.074542% |
+| PRF读译码 | 34754.824267 | 308.526665 | 2.668142463234e-7 | +0.138504% | +0.180777% | −0.096156% |
+| ROB载荷复位分离 | 34238.371507 | 313.341493 | 2.792146575072e-7 | −1.349543% | +1.744186% | +4.546957% |
+| ROB单行SRAM载荷 | 33700.451751 | 268.414155 | 2.468769102511e-7 | −2.899442% | −12.844037% | −7.561337% |
+
+第三项同时省468.382500 μm²并提频，面积／频率通过，是本次推荐者；第四项更省面积但频率失败，不建议采用。原248宏及新增32个1×129宏（第四项280例）均全额计价，转发／initialized和控制开销已包含。r21–r24追加已审计指标并保留历史否决，r24面积／频率合格评分冠军为第三项；长期IPC目标仍未达。历史生产比较依据既有认证记录，不声称已删原始网表恢复。
+
+最终证书`sync/evidence/rename-area-ppa-sequence-20261104-r01/finalization.json`，报告`sync/RENAME-AREA-PPA-RESULTS-20261104.md`。生产／两软件／正式指针与三树HEAD／Git索引保持，未采用、组合或提交推送。该有限授权结束，全部综合／ABC／STA恢复暂停，不自动继续候选、采用或清理，不计作完整新优化轮。
 
 ## 后续边界与经验
 

@@ -8,7 +8,8 @@ module rv32_dcache #(
   parameter int unsigned SETS = rv32_pkg::DCACHE_SETS,
   parameter int unsigned WAYS = rv32_pkg::DCACHE_WAYS,
   parameter bit EARLY_WORD_RETURN = 1'b0,
-  parameter int unsigned STORE_LOCATION_ENTRIES = 4
+  parameter int unsigned STORE_LOCATION_ENTRIES = 4,
+  parameter bit LOAD_PREFETCH = 1'b0
 ) (
   input logic clkInput, rstNInput,
   input rv32_pkg::dcache_cpu_request_input_t cpuRequestInput,
@@ -47,6 +48,7 @@ module rv32_dcache #(
     logic [WAY_W-1:0] way;
     logic [1:0] miss;
     logic hasMiss, active, ready, deferred;
+    logic prefetch; // Internal request type: NO LSU transaction/architectural result.
   } request_entry_t;
   typedef struct packed {
     logic [31:0] line;
@@ -99,6 +101,83 @@ module rv32_dcache #(
       sramAddressInner = set_of(cpuRequestInput.address);
   end
 `endif
+  // One queued/in-flight typed prefetch at most, fully charged to the SAME
+  // eight request slots and four MSHRs. Four recent source lines deduplicate
+  // interleaved Load streams; payload is read only under reset valid bits.
+  logic prefetchPendingInner, prefetchEnqueueInner, prefetchDuplicateInner, prefetchStoppedInner;
+  logic [31:0] prefetchTargetInner, prefetchNextLineInner;
+  logic [3:0] prefetchSeenValidInner;
+  logic [31:0] prefetchSeenLineInner [4];
+  logic [1:0] prefetchSeenVictimInner;
+  logic prefetchSeenInner, prefetchTriggerInner;
+  logic [REQUEST_DEPTH-1:0] prefetchMaskInner, prefetchAbortInner;
+  logic [REQUEST_DEPTH-1:0] demandLookupMaskInner;
+  logic [2:0] prefetchMissCountInner;
+  logic prefetchStoreConflictInner;
+  for(genvar p=0;p<REQUEST_DEPTH;p++)begin : g_prefetch_type
+    assign prefetchMaskInner[p]=requestInner[p].active && requestInner[p].prefetch;
+  end
+  always_comb begin : prefetch_old_state
+    prefetchMissCountInner='0;
+    for(int m=0;m<MSHR_DEPTH;m++)prefetchMissCountInner+=3'(missesInner[m].valid);
+    prefetchSeenInner=1'b0;
+    for(int h=0;h<4;h++)
+      if(prefetchSeenValidInner[h] && prefetchSeenLineInner[h]==line_of(cpuRequestInput.address))
+        prefetchSeenInner=1'b1;
+    prefetchNextLineInner=line_of(cpuRequestInput.address)+32'(DCACHE_LINE_BYTES);
+    prefetchTriggerInner=LOAD_PREFETCH && !prefetchStoppedInner && acceptInner && !cpuRequestInput.write &&
+      cpuRequestInput.address[31:28]==0 && prefetchNextLineInner[31:28]==0 && !prefetchSeenInner;
+    prefetchDuplicateInner=1'b0;prefetchStoreConflictInner=1'b0;
+    prefetchAbortInner='0;
+    for(int row=0;row<REQUEST_DEPTH;row++)begin
+      if(requestInner[row].active && line_of(requestInner[row].request.address)==prefetchTargetInner)
+        prefetchDuplicateInner=1'b1;
+      if(requestInner[row].active && requestInner[row].request.write &&
+          set_of(requestInner[row].request.address)==set_of(prefetchTargetInner))
+        prefetchStoreConflictInner=1'b1;
+      if(prefetchMaskInner[row] && !requestInner[row].hasMiss)begin
+        // Before reserving a victim, demand Store/set hazards or a demand
+        // which already owns this line simply discard the optional request.
+        if(prefetchStoppedInner || prefetchMissCountInner>=3 || find_miss(line_of(requestInner[row].request.address))>=0)
+          prefetchAbortInner[row]=1'b1;
+        for(int st=0;st<REQUEST_DEPTH;st++)
+          if(requestInner[st].active && requestInner[st].request.write &&
+              set_of(requestInner[st].request.address)==set_of(requestInner[row].request.address))
+            prefetchAbortInner[row]=1'b1;
+        if(acceptInner && cpuRequestInput.write &&
+            set_of(cpuRequestInput.address)==set_of(requestInner[row].request.address))
+          prefetchAbortInner[row]=1'b1;
+      end
+    end
+  end
+  // Only an idle CPU proposal slot may admit a prefetch. Keep at least one
+  // request credit and one MSHR free after its eventual miss allocation.
+  assign prefetchEnqueueInner=LOAD_PREFETCH && rstNInput && !prefetchStoppedInner && prefetchPendingInner &&
+    !cpuRequestInput.valid && !(|prefetchMaskInner) && countInner<=COUNT_W'(REQUEST_DEPTH-2) &&
+    prefetchMissCountInner<=2 && !prefetchDuplicateInner && !prefetchStoreConflictInner &&
+    find_miss(prefetchTargetInner)<0;
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if(!rstNInput)begin
+      prefetchPendingInner<=0;prefetchTargetInner<=0;
+      prefetchSeenValidInner<=0;prefetchSeenVictimInner<=0;prefetchStoppedInner<=0;
+    end else begin
+      if(prefetchEnqueueInner || prefetchDuplicateInner || prefetchStoreConflictInner ||
+          prefetchMissCountInner>=3 || countInner>COUNT_W'(REQUEST_DEPTH-2))
+        prefetchPendingInner<=0;
+      if(prefetchTriggerInner)begin
+        prefetchPendingInner<=1;prefetchTargetInner<=prefetchNextLineInner;
+        prefetchSeenValidInner[prefetchSeenVictimInner]<=1;
+        prefetchSeenVictimInner<=prefetchSeenVictimInner+2'd1;
+      end
+      if(acceptInner && cpuRequestInput.write && cpuRequestInput.address==AXI_EXIT_ADDR)begin
+        prefetchStoppedInner<=1;prefetchPendingInner<=0;
+      end
+    end
+  end
+  always_ff @(posedge clkInput)begin
+    if(rstNInput && prefetchTriggerInner)
+      prefetchSeenLineInner[prefetchSeenVictimInner]<=line_of(cpuRequestInput.address);
+  end
   logic [REQUEST_DEPTH-1:0] activeInner, releasedInner;
   integer firstInner, hitWayInner, freeMissInner, allocationInner;
   integer lookupInner, lookupCandidateInner, responseInner, storeInner, allocateMissInner;
@@ -143,7 +222,7 @@ module rv32_dcache #(
   logic hitLocationTrainInner, storeHintMatchInner, storeHintFireInner;
   logic [WAY_W-1:0] storeHintWayInner;
   always_comb begin : hit_location_query
-    hitLocationTrainInner = readValidInner && hitWayInner >= 0 &&
+    hitLocationTrainInner = readValidInner && !requestInner[readIndexInner].prefetch && hitWayInner >= 0 &&
       !requestInner[readIndexInner].request.write;
     hitLocationTrainIndexInner = hitLocationVictimInner;
     // Lowest invalid row first; otherwise use the next row after the last
@@ -357,7 +436,7 @@ module rv32_dcache #(
     !cpuRequestInput.write && cpuRequestInput.address!=AXI_EXIT_ADDR && !set_locked(cpuRequestInput.address);
   assign lookupAddressInner=acceptLookupInner ? set_of(cpuRequestInput.address) :
     set_of(requestInner[REQUEST_W'(lookupCandidateInner)].request.address);
-  assign idleOutput = rstNInput && countInner == 0 && !readValidInner;
+  assign idleOutput = rstNInput && countInner == 0 && !readValidInner && !prefetchPendingInner;
 
   // Allocation is not on the response/LSU-selection path. Keeping it separate
   // also makes the absence of a combinational request -> response bypass clear.
@@ -366,7 +445,7 @@ module rv32_dcache #(
     allocationInner = -1;
     for (int i = 0; i < REQUEST_DEPTH; i++) begin
       slot = (int'(cursorInner) + i) & (REQUEST_DEPTH-1);
-      if (acceptInner && allocationInner < 0 && !requestInner[slot].active) allocationInner = slot;
+      if ((acceptInner || prefetchEnqueueInner) && allocationInner < 0 && !requestInner[slot].active) allocationInner = slot;
     end
   end
 
@@ -375,7 +454,7 @@ module rv32_dcache #(
   // after fillMiss -> owner -> request selection. Payload extraction is shared.
   for (genvar miss = 0; miss < MSHR_DEPTH; miss++) begin : gen_fill_response
     assign fillCanRespondInner[miss] = !requestInner[missesInner[miss].owner].request.write &&
-      !missesInner[miss].responded;
+      !missesInner[miss].responded && !requestInner[missesInner[miss].owner].prefetch;
     assign fillTransactionInner[miss] = requestInner[missesInner[miss].owner].request.transaction;
   end
 
@@ -396,7 +475,7 @@ module rv32_dcache #(
       if (freeMissInner < 0 && !missesInner[m].valid) freeMissInner = m;
       anyMiss = anyMiss || missesInner[m].valid;
     end
-    firstInner = oldest_request(activeInner);
+    firstInner = oldest_request(activeInner & ~prefetchMaskInner);
     storeHintMatchInner = 1'b0;
     storeHintWayInner = '0;
     for (int h=0; h<STORE_LOCATION_ENTRIES; h++)
@@ -442,7 +521,7 @@ module rv32_dcache #(
     earlyInner = fillBeatInner && fillCanRespondInner[memResponseInput.transaction];
     wordReturnInner=EARLY_WORD_RETURN && rstNInput && memWordResponseInput.valid && !earlyInner &&
     missesInner[wordMissInner].valid && missesInner[wordMissInner].readSent && !missesInner[wordMissInner].responded &&
-    requestInner[wordOwnerInner].active && !requestInner[wordOwnerInner].request.write &&
+    requestInner[wordOwnerInner].active && !requestInner[wordOwnerInner].request.write && !requestInner[wordOwnerInner].prefetch &&
     !storeHazardInner[wordOwnerInner] &&
     // Requested-line words are independent of the retained dirty victim.
     memWordResponseInput.address[31:OFFSET_W]==missesInner[wordMissInner].line[31:OFFSET_W] &&
@@ -459,7 +538,7 @@ module rv32_dcache #(
     wordCaptureInner = '0;
     for (int row = 0; row < REQUEST_DEPTH; row++)
       wordCaptureInner[row] = wordCaptureValidInner && REQUEST_W'(row)!=wordOwnerInner &&
-        requestInner[row].active && !requestInner[row].ready && !requestInner[row].request.write &&
+        requestInner[row].active && !requestInner[row].prefetch && !requestInner[row].ready && !requestInner[row].request.write &&
         !storeAllocationHazardInner[row] &&
         requestInner[row].request.address[31:2]==memWordResponseInput.address[31:2] &&
         int'(requestInner[row].request.address[1:0])+bytes_for_size(requestInner[row].request.size)<=4;
@@ -467,7 +546,7 @@ module rv32_dcache #(
     // age arbitration before the late SRAM tag-hit qualification arrives.
     normalBufferedMaskInner = '0;
     for (int row = 0; row < REQUEST_DEPTH; row++)
-      if (requestInner[row].active && !requestInner[row].request.write &&
+      if (requestInner[row].active && !requestInner[row].prefetch && !requestInner[row].request.write &&
           !storeHazardInner[row] && requestInner[row].ready)
         normalBufferedMaskInner[row] = 1'b1;
     normalBufferedWinnerInner = '0;
@@ -481,7 +560,7 @@ module rv32_dcache #(
       // A late hit needs only the precomputed "no older buffered row" bit.
       // If its own row was already ready, both alternatives name that row.
       normalHitEligibleInner[row] = readValidInner && readIndexInner == REQUEST_W'(row) &&
-        requestInner[row].active && !requestInner[row].request.write &&
+        requestInner[row].active && !requestInner[row].prefetch && !requestInner[row].request.write &&
         !storeHazardInner[row] && !responsePrior;
     end
     normalHitWinsInner = hitWayInner >= 0 && (|normalHitEligibleInner);
@@ -528,14 +607,14 @@ module rv32_dcache #(
         (storeHintFireInner || requestInner[firstInner].ready || (readValidInner && int'(readIndexInner) == firstInner && hitWayInner >= 0)))
       storeInner = firstInner;
     allocateMissInner = -1;
-    if (readValidInner && hitWayInner < 0 && !storeAllocationHazardInner[readIndexInner] &&
+    if (readValidInner && hitWayInner < 0 && !prefetchAbortInner[readIndexInner] && !storeAllocationHazardInner[readIndexInner] &&
         find_miss(line_of(requestInner[readIndexInner].request.address)) < 0 &&
         !set_locked(requestInner[readIndexInner].request.address)) allocateMissInner = freeMissInner;
     candidates = 0;
     for (int i = 0; i < REQUEST_DEPTH; i++) begin
       id = find_miss(line_of(requestInner[i].request.address));
       if (!readValidInner && requestInner[i].active && !requestInner[i].ready &&
-          !requestInner[i].hasMiss && !requestInner[i].request.write && !storeAllocationHazardInner[i] && id >= 0 &&
+          !requestInner[i].hasMiss && !requestInner[i].prefetch && !requestInner[i].request.write && !storeAllocationHazardInner[i] && id >= 0 &&
           !requestInner[missesInner[id].owner].request.write && missesInner[id].fillWord == 0 &&
           !missesInner[id].responded && fillMissInner != id) candidates[i] = 1;
     end
@@ -547,10 +626,10 @@ module rv32_dcache #(
       !requestInner[readIndexInner].request.write && responseInner == int'(readIndexInner);
     lookupActive = activeInner;
     if (!fillBeatInner && responseInner >= 0) lookupActive[responseInner] = 1'b0;
-    lookupFirst = oldest_request(lookupActive);
+    lookupFirst = oldest_request(lookupActive & ~prefetchMaskInner);
     candidates = 0;
     for (int i = 0; i < REQUEST_DEPTH; i++)
-      if (requestInner[i].active &&
+      if (requestInner[i].active && !prefetchAbortInner[i] &&
            !(readValidInner && int'(readIndexInner) == i) &&
            !requestInner[i].ready && !requestInner[i].hasMiss && i != mergeSlotInner &&
            requestInner[i].request.address != AXI_EXIT_ADDR &&
@@ -559,11 +638,14 @@ module rv32_dcache #(
           (!requestInner[i].request.write || i == firstInner) &&
           (!requestInner[i].deferred || (i == firstInner && freeMissInner >= 0 &&
             !set_locked(requestInner[i].request.address))) &&
-           (anyMiss || i == firstInner || i == lookupFirst)) candidates[i] = 1;
+           (anyMiss || i == firstInner || i == lookupFirst || requestInner[i].prefetch)) candidates[i] = 1;
     // A miss invalidates its reserved victim way at allocation. A Load
     // can therefore hit another valid way while that set is locked.
     // A failed probe becomes deferred until the set unlocks; Stores
     // and new miss allocation retain the original whole-set lock.
+    demandLookupMaskInner=candidates & ~prefetchMaskInner;
+    if(|demandLookupMaskInner)candidates=demandLookupMaskInner;
+    else if(cpuRequestInput.valid)candidates='0;
     lookupCandidateInner = oldest_request(candidates);
     lookupInner = (!readValidInner || continueHit) && !fillBeatInner && storeInner < 0 ? lookupCandidateInner : -1;
     // Only lookupInner authorizes a read. With no candidate the truncated -1
@@ -575,6 +657,15 @@ module rv32_dcache #(
         if (!missesInner[m].readSent && !victim_hazard(m) && !storeAllocationHazardInner[missesInner[m].owner]) readable[m] = 1;
         if (missesInner[m].dirty && !missesInner[m].writeSent) writable[m] = 1;
       end
+    // Accepted demand misses precede unsent prefetch misses. Once a bus
+    // handshake occurred it is not preemptible; ownership lasts through fill.
+    begin
+      logic [3:0] demandReadable;
+      demandReadable='0;
+      for(int m=0;m<MSHR_DEPTH;m++)
+        demandReadable[m]=readable[m] && !requestInner[missesInner[m].owner].prefetch;
+      if(|demandReadable)readable=demandReadable;
+    end
     readMissInner = oldest_miss(readable);
     writeMissInner = oldest_miss(writable);
     memRequestOutput = '0;
@@ -590,7 +681,10 @@ module rv32_dcache #(
       memRequestOutput.writeTransaction = 2'(writeMissInner);
       memRequestOutput.writeData = victimPayloadInner[writeMissInner];
     end
-    releasedInner = 0;
+    releasedInner = prefetchAbortInner;
+    // A resident target consumes only its low-priority tag probe, no bus read.
+    if(readValidInner && requestInner[readIndexInner].prefetch && hitWayInner>=0)
+      releasedInner[readIndexInner]=1'b1;
     if (responseInner >= 0 && !wordReturnInner && (!fillBeatInner || responseInner != owner)) releasedInner[responseInner] = 1;
     if (storeInner >= 0) releasedInner[storeInner] = 1;
     if (fillFireInner) releasedInner[owner] = 1;
@@ -710,7 +804,7 @@ module rv32_dcache #(
         for (int w = 0; w < WAYS; w++) validInner[s][w] <= 0;
       end
     end else begin
-      countInner <= COUNT_W'(int'(countInner) + int'(acceptInner) - $countones(releasedInner));
+      countInner <= COUNT_W'(int'(countInner) + int'(acceptInner) + int'(prefetchEnqueueInner) - $countones(releasedInner));
       if (allocationInner >= 0) cursorInner <= REQUEST_W'(allocationInner + 1);
       readValidInner <= lookupInner >= 0 || acceptLookupInner;
       if (acceptLookupInner) begin
@@ -730,7 +824,10 @@ module rv32_dcache #(
       end
       for (int i = 0; i < REQUEST_DEPTH; i++) begin
         if (i == allocationInner) begin
-          requestInner[i] <= '{request:cpuRequestInput, active:1'b1, default:'0};
+          requestInner[i] <= '{request:prefetchEnqueueInner ?
+            dcache_cpu_request_input_t'{valid:1'b1,write:1'b0,address:prefetchTargetInner,
+              writeData:'0,writeStrobe:'0,size:MEM_WORD,transaction:'0} : cpuRequestInput,
+            active:1'b1,prefetch:prefetchEnqueueInner,default:'0};
           // Request address/size are immutable until this slot is reallocated.
           // Compute its inclusive byte end on the SAME allocation edge, not
           // on the critical response/Store-hazard qualification path.
@@ -859,7 +956,7 @@ module rv32_dcache #(
     logic [REQUEST_DEPTH-1:0] originalCandidates;
     originalCandidates = normalBufferedMaskInner;
     for (int row = 0; row < REQUEST_DEPTH; row++)
-      if (requestInner[row].active && !requestInner[row].request.write && !storeHazardInner[row] &&
+      if (requestInner[row].active && !requestInner[row].prefetch && !requestInner[row].request.write && !storeHazardInner[row] &&
           readValidInner && readIndexInner == REQUEST_W'(row) && hitWayInner >= 0)
         originalCandidates[row] = 1'b1;
     assert (normalResponseInner == oldest_request(originalCandidates))
@@ -874,6 +971,12 @@ module rv32_dcache #(
   end
   always @(posedge clkInput) if (rstNInput) begin
     assert (countInner == $countones(activeInner) && countInner <= COUNT_W'(REQUEST_DEPTH));
+    assert($countones(prefetchMaskInner)<=1)else $fatal(1,"prefetch multiple owners");
+    assert(!(acceptInner && prefetchEnqueueInner))else $fatal(1,"prefetch stole CPU allocation");
+    if(prefetchEnqueueInner)assert(countInner<=COUNT_W'(REQUEST_DEPTH-2) && prefetchMissCountInner<=2)
+      else $fatal(1,"prefetch demand-credit reservation");
+    if(responseInner>=0)assert(!requestInner[responseInner].prefetch)
+      else $fatal(1,"prefetch produced architectural response");
     if (exitValidOutput) assert (requestInner[firstInner].request.size == MEM_WORD &&
       requestInner[firstInner].request.writeStrobe == 4'hf);
     if (memWriteResponseInput.valid) assert (writeAckInner >= 0)

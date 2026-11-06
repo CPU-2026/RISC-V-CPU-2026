@@ -147,7 +147,8 @@ module rv32_wide_rename_plan #(
           isHalt:decodedInput[lane].halt,hasException:1'b0,
           predictedProgramCounter:decodedInput[lane].predictedNextProgramCounter,
           predictorCheckpointId:decodedInput[lane].predictorCheckpointId,
-          isReturn:decodedInput[lane].operation==OP_JALR && (decodedInput[lane].rs1==1 || decodedInput[lane].rs1==5)};
+          isReturn:decodedInput[lane].operation==OP_JALR && (decodedInput[lane].rs1==1 || decodedInput[lane].rs1==5) &&
+             decodedInput[lane].rd!=decodedInput[lane].rs1};
         rsOutput[lane]='{valid:1'b1,operation:decodedInput[lane].operation,robTag:tag,
           destinationPhy:destinationInner[lane],source1Ready:ready1,source1Tag:source1,source1Value:value1,
           source2Ready:ready2,source2Tag:source2,source2Value:value2,

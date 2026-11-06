@@ -39,7 +39,8 @@ module rv32_rob_lanes #(
   if (DEPTH<LANES || DEPTH>ROB_ENTRIES || (DEPTH&(DEPTH-1))!=0) begin : g_invalid_depth
     initial $fatal(1,"array ROB depth must be a supported power of two");
   end
-  rob_allocation_input_t payloadInner[DEPTH];
+  rob_allocation_input_t payloadInner[DEPTH], payloadRawInner[DEPTH];
+  logic [DEPTH-1:0] payloadInitializedInner;
   rob_tag_t tagInner[DEPTH];
   logic [DEPTH-1:0] validInner, readyInner;
   rob_tag_t headInner, tailInner;
@@ -394,14 +395,25 @@ module rv32_rob_lanes #(
       for (int lane=0;lane<COMMIT_WIDTH;lane++)
         retired|=commitFireOutput[lane] && SLOT_W'(headInner+rob_tag_t'(lane))==SLOT_W'(row);
     end
+    // Reset representation remains ZERO even on invalid ports/replay.
+    // The marker is NOT validInner: canceled and retired payloads stay readable.
+    assign payloadInner[row]=payloadInitializedInner[row] ? payloadRawInner[row] : rob_allocation_input_t'(0);
+    always_ff @(posedge clkInput) begin
+      if (rstNInput && !freezeInput && writeHit)
+        payloadRawInner[row]<=writeGroupPayload[row&(LANES-1)];
+    end
+    always_ff @(posedge clkInput or negedge rstNInput) begin
+      if (!rstNInput) payloadInitializedInner[row]<=1'b0;
+      else if (!freezeInput && writeHit) payloadInitializedInner[row]<=1'b1;
+    end
     always_ff @(posedge clkInput or negedge rstNInput) begin
       if (!rstNInput) begin
-        validInner[row]<=0;readyInner[row]<=0;tagInner[row]<='0;payloadInner[row]<='0;
+        validInner[row]<=0;readyInner[row]<=0;tagInner[row]<='0;
       end else if (!freezeInput) begin
         if (flushInput.valid && validInner[row] && rob_is_younger(tagInner[row],flushInput.robTag)) validInner[row]<=0;
         if (retired) validInner[row]<=0;
         if (writeHit) begin
-          validInner[row]<=1;tagInner[row]<=writeGroupTag[row&(LANES-1)];payloadInner[row]<=writeGroupPayload[row&(LANES-1)];
+          validInner[row]<=1;tagInner[row]<=writeGroupTag[row&(LANES-1)];
           readyInner[row]<=writeGroupPayload[row&(LANES-1)].ready || writeGroupPayload[row&(LANES-1)].isHalt;
         end else if (completed) readyInner[row]<=1;
       end
