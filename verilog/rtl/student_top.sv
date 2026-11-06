@@ -6,7 +6,9 @@ module student_top #(
     parameter int unsigned FQ_DEPTH = rv32_pkg::default_fq_entries(DECODE_WIDTH),
     parameter int unsigned IQ_DEPTH = rv32_pkg::default_iq_entries(DECODE_WIDTH),
     // Trailing parameter preserves legacy positional parameter ordering.
-    parameter int unsigned ISSUE_WIDTH = RENAME_WIDTH
+    parameter int unsigned ISSUE_WIDTH = RENAME_WIDTH,
+    parameter int unsigned ICACHE_SETS = rv32_pkg::ICACHE_SETS,
+    parameter int unsigned ICACHE_WAYS = rv32_pkg::ICACHE_WAYS
 ) (
     input  wire        clock,
     input  wire        reset,    // 高电平复位，初始化时保持 5 周期高电平
@@ -98,7 +100,7 @@ module student_top #(
     );
     assign imemResponseValidInner = icacheResponseInner.valid;
     assign imemInstructionInner = icacheResponseInner.instruction;
-    rv32_icache #(.FETCH_WIDTH(FETCH_WIDTH)) u_icache (
+    rv32_icache #(.FETCH_WIDTH(FETCH_WIDTH), .SETS(ICACHE_SETS), .WAYS(ICACHE_WAYS)) u_icache (
       .clkInput(clock), .rstNInput(resetNInner), .freezeInput(haltedInner),
       .secondInput(imemSecondRequestInner), .secondInstructionOutput(imemSecondInstructionInner),
       .packetInstructionsOutput(imemPacketInstructionsInner),

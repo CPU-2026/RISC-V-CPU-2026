@@ -23,9 +23,11 @@ module rv32_bpu_checkpoint #(
   initial begin
     // The configured core owns ROB + I$ requests + FQ + IQ instructions.
     // A local array-size override cannot change the package identity width.
-    assert (CKPT_ENTRIES == BPU_CKPT_ENTRIES && CKPT_ENTRIES == (1 << BPU_CKPT_ID_W) &&
-            CKPT_ENTRIES >= ROB_ENTRIES + FETCH_REQUEST_ENTRIES + FQ_ENTRIES + IQ_ENTRIES &&
-            CKPT_ENTRIES <= 64)
+    // Capacity and CID width are derived together. The former fixed 64-entry
+    // ceiling is not a storage limit: both arrays and all indices use these
+    // parameters, including independently configured larger ROBs.
+    assert (CKPT_ENTRIES >= 2 && CKPT_ENTRIES == BPU_CKPT_ENTRIES && CKPT_ENTRIES == (1 << BPU_CKPT_ID_W) &&
+             CKPT_ENTRIES >= ROB_ENTRIES + FETCH_REQUEST_ENTRIES + FQ_ENTRIES + IQ_ENTRIES)
       else $fatal(1, "BPU checkpoint parameter must match package/CID width and cover configured live budget");
   end
 `endif

@@ -1,18 +1,27 @@
-# 验证范围
+# 验证范围与入口
 
-构建/运行/提交见 [template.md](template.md)，当前硬件见 [architecture.md](architecture.md)。本页记录已有结果，文档整理未重跑硬件测试。
+本页区分已认证结果与可运行入口；**本次文档整理未重跑测试**。构建／提交细节见 [template.md](template.md)，架构见 [architecture.md](architecture.md)。
 
-## 当前状态（2026-10-29）
+## 已认证范围（2026-11-07采用版本）
 
-- 默认4/4/4/4、双ALU三CDB、单AGU、8 KiB D$，native lint无LATCH/UNOPTFLAT。
-- 默认课程入口六perf原答案通过，按外部退出完成周期计的几何IPC为 **0.858427672694**。
-- 原隔离候选六perf通过独立退休ISA、退出值及退休数检查，core周期IPC为0.859877973781；与课程计时边界不同，不能直接比较退化/收益。原报告/二进制已不可用，不能把摘要当原件。
-- 当前默认未完成完整25课程/定向/LINK、sv2v整核全量重验；旧配置验收不能继承，既有恢复专项失败/夹具限制未因六perf通过消除。
-- 最终面积/Fmax缺失，正式PPA暂停，不能宣称性能资格通过。
+| 层次 | 已完成的资格 |
+|---|---|
+| 前端局部 | native／sv2v：真实frontend/FQ/IQ/decoder/checkpoint的768包oracle，真实ICache/SRAM的275项检查，6个有效RTL负向。 |
+| 整核RTL | 原六perf答案、退休数、374104条九字段架构退休匹配基线；同候选native／converted完整日志一致。 |
+| 两软件同步 | 全新Release／断言四构建，原六答案、退休及init+core+drain匹配；两个外部副本各374104条退休PC／周期匹配RTL。 |
+| 发布收口 | 精确源码、PPA复用、备份、正式指针及发布后复验通过；不是另建生产路径RTL模型。 |
 
-来源：[采用凭据](../../sync/evidence/superscalar4-production-adoption-20261029-r01/adoption.json)，新验证报告SHA-256为`6d01c60c1b0696bf600a7ab1a42e0b15a7672aa9021ad29eb03e9da45d63772e`。同级`sync/`及未跟踪工件不随克隆提供，历史里程碑见 [process.md](process.md)。
+原六为median、multiply、vvadd、towers、qsort、rsort；周期对照统一见 [process.md](process.md#四取指边界对照)。来源：[筛选最终证书](../../sync/evidence/fetch4-cross16-screen-20261107-r01/finalization.json)、[采用最终收口](../../sync/evidence/fetch4-cross16-production-adoption-20261107-r01/finalization.json)、[发布后复验](../../sync/evidence/fetch4-cross16-production-adoption-20261107-r01/post-completion-verification.json)。
 
-## 验证入口与计时
+**不能外推**：原六通过不代表完整25课程／全部定向与LINK重验、任意输入形式等价、全部异常支持或所有参数组合通过。10月29日旧四宽结果仅为历史，不能作为后续源码的验收。
+
+## 工作树参数化验证
+
+独立ROB/PRF、I$组数／相联度及checkpoint扩展的配置、组合和入口集中在[参数化配置](parameterized-configuration.md#无综合验证)。本次整理不宣布其新增资格通过；以各输出根的`finalization.json`及独立raw审计为准，不继承旧PPA或两软件资格。
+
+## 常用入口
+
+以下在硬件仓库根目录运行；运行命令不等于已有通过记录。
 
 ```bash
 make test MAX_CYCLES=100000000
@@ -20,6 +29,11 @@ make perf MAX_CYCLES=100000000
 python3 -B -m unittest discover -s scripts/tests -v
 ```
 
-宽度专项：`scripts/check_issue_width.py`、`check_decode_width.py`、`check_rename_width.py`、`check_dual_commit.py`。软件对拍另需C++20和同级模拟器；旧`check_course_sync.py/check_axi_sync.py`须先核对配置/接口，`check_dcache_sync.py`仍依赖已移除的软件DMEM接口，不能作为活动通过记录。
+宽度专项：`scripts/check_issue_width.py`、`check_decode_width.py`、`check_rename_width.py`、`check_dual_commit.py`。对拍另需C++20和同级软件模拟器；旧`check_course_sync.py`／`check_axi_sync.py`须先核对配置与接口，`check_dcache_sync.py`依赖已移除的软件DMEM接口，不能直接当作活动验收。
 
-退出Store退休冻结核心、已提交SQ/Cache/AXI继续至对应B握手，不扫描dirty；复位释放后有独立boot一拍，课程sim计入、旧软件活动total不计入。逐拍比较不得平移事件凑周期。模块/整核、原生/转换、ISA正确/逐拍等价必须分开记录。
+## 计时与事件边界
+
+- 退出Store退休后冻结核心，已提交SQ/Cache/AXI继续排空，到**对应B握手**结束；不扫描所有dirty行。
+- 课程sim包含复位释放后的独立boot一拍；旧软件活动total不包含，不能混比core周期、活动周期与课程退出周期。
+- 逐拍事件不得平移凑周期；模块／整核、native／转换、ISA正确／逐拍一致分别记录。
+- 同级`sync/`、证书及实验工件不随本仓库克隆提供；历史缺失工件不以摘要冒充原件。
