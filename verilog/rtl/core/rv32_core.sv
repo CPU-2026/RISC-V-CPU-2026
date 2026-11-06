@@ -1021,6 +1021,7 @@ module rv32_core #(
     .allocLanesInput(wideRsAllocInner[0]),.allocLanesAuxInput(wideIntAuxInner),
     .allocLanesFireOutput(wideRsFireInner[0]),.allocCreditsOutput(wideIntCreditsInner),
     .writebackInput(writebackInputInner),
+    .issueWritebackInput(writebackInputInner),
     .issueOutput(intRsIssueOutputInner), .issueReadyInput(intIssueReadyInner),
     .issueAuxOutput(intIssueAuxInner),
     .occupancyOutput(), .issueLaneValidOutput(intIssueLaneValidInner),
@@ -1049,6 +1050,7 @@ module rv32_core #(
     .allocLanesInput(wideRsAllocInner[1]),.allocLanesAuxInput(wideMulAuxInner),
     .allocLanesFireOutput(wideRsFireInner[1]),.allocCreditsOutput(wideMulCreditsInner),
     .writebackInput(writebackInputInner),
+    .issueWritebackInput(writebackInputInner),
     .issueOutput(mulRsIssueOutputInner), .issueReadyInput(mulIssueReadyInner),
     .issueAuxOutput(mulIssueAuxInner), .occupancyOutput(), .issueLaneValidOutput(), .issueLaneOutput(), .issueLaneAuxOutput()
   );
@@ -1074,6 +1076,7 @@ module rv32_core #(
     .allocLanesInput(wideRsAllocInner[2]),.allocLanesAuxInput(wideDivAuxInner),
     .allocLanesFireOutput(wideRsFireInner[2]),.allocCreditsOutput(wideDivCreditsInner),
     .writebackInput(writebackInputInner),
+    .issueWritebackInput(writebackInputInner),
     .issueOutput(divRsIssueOutputInner), .issueReadyInput(divIssueReadyInner),
     .issueAuxOutput(divIssueAuxInner), .occupancyOutput(), .issueLaneValidOutput(), .issueLaneOutput(), .issueLaneAuxOutput()
   );
@@ -1100,6 +1103,7 @@ module rv32_core #(
     .allocLanesInput(wideRsAllocInner[3]),.allocLanesAuxInput(wideBranchAuxInner),
     .allocLanesFireOutput(wideRsFireInner[3]),.allocCreditsOutput(wideBranchCreditsInner),
     .writebackInput(writebackInputInner),
+    .issueWritebackInput(writebackInputInner),
     .issueOutput(branchRsIssueOutputInner), .issueReadyInput(branchIssueReadyInner),
     .issueAuxOutput(branchIssueAuxInner), .occupancyOutput(), .issueLaneValidOutput(), .issueLaneOutput(), .issueLaneAuxOutput()
   );
@@ -1126,6 +1130,7 @@ module rv32_core #(
     .allocLanesInput(wideRsAllocInner[4]),.allocLanesAuxInput(wideLoadAuxInner),
     .allocLanesFireOutput(wideRsFireInner[4]),.allocCreditsOutput(wideLoadRsCreditsInner),
     .writebackInput(writebackInputInner),
+    .issueWritebackInput(writebackInputInner),
     .issueOutput(loadRsIssueOutputInner), .issueReadyInput(loadRsIssueReadyInner),
     .issueAuxOutput(loadAuxInner), .occupancyOutput(), .issueLaneValidOutput(), .issueLaneOutput(), .issueLaneAuxOutput()
   );
@@ -1135,6 +1140,7 @@ module rv32_core #(
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(saRsAllocInputInner), .allocReadyOutput(saRsAllocReadyInner),
     .allocAuxInput({1'b1, sqAllocIndexInner}), .writebackInput(writebackInputInner),
+    .issueWritebackInput(writebackInputInner),
     .allocSecondInput(saRsAllocSecondInputInner), .allocSecondReadyOutput(saRsAllocSecondReadyInner),
     .allocSecondAuxInput({1'b1, sqAllocSecondIndexInner}),
     .allocLanesInput(wideRsAllocInner[5]),.allocLanesAuxInput(wideSaAuxInner),
@@ -1503,7 +1509,7 @@ module rv32_core #(
         assert(writebackInputInner[lane].valid==(aluResultGrantInner[lane] && !aluLaneResultInner[lane].isControl))
           else $fatal(1,"independent ALU grant did not reach its own CDB");
       if (&aluResultGrantInner)
-        assert(!(aluLaneResultInner[0].isControl && aluLaneResultInner[1].isControl))
+        assert(!(aluLaneResultInner[0].isControl && aluLaneResultInner[ALU_LANES-1].isControl))
           else $fatal(1,"two jump results consumed one predictor port");
     end
     for (int portIndex=0;portIndex<WRITEBACK_PORTS;portIndex++) for (int peer=0;peer<portIndex;peer++)

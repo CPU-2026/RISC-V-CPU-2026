@@ -210,7 +210,6 @@ module rv32_rob #(
   );
 
   always_comb begin
-    lookupOutput = '0;
     headSlotInner = headInner[SLOT_W-1:0];
     tailSlotInner = tailInner[SLOT_W-1:0];
     statusOutput.empty = (countInner == '0);
@@ -220,28 +219,25 @@ module rv32_rob #(
     allocTagOutput = tailInner;
     allocReadyOutput = !flushInput.valid && !statusOutput.full;
 
-    lookupOutput[0].valid = validInner[lookupInput[0].robTag[SLOT_W-1:0]] &&
-                      (tagInner[lookupInput[0].robTag[SLOT_W-1:0]] == lookupInput[0].robTag);
-    lookupOutput[0].programCounter = pcInner[lookupInput[0].robTag[SLOT_W-1:0]];
-    lookupOutput[0].predictedProgramCounter = predictedPcInner[lookupInput[0].robTag[SLOT_W-1:0]];
-    lookupOutput[0].predictorCheckpointId =
-      predictorCkptIdInner[lookupInput[0].robTag[SLOT_W-1:0]];
-    lookupOutput[0].isReturn = isRetInner[lookupInput[0].robTag[SLOT_W-1:0]];
+  end
 
-    lookupOutput[1].valid = validInner[lookupInput[1].robTag[SLOT_W-1:0]] &&
-                      (tagInner[lookupInput[1].robTag[SLOT_W-1:0]] == lookupInput[1].robTag);
-    lookupOutput[1].programCounter = pcInner[lookupInput[1].robTag[SLOT_W-1:0]];
-    lookupOutput[1].predictedProgramCounter = predictedPcInner[lookupInput[1].robTag[SLOT_W-1:0]];
-    lookupOutput[1].predictorCheckpointId =
-      predictorCkptIdInner[lookupInput[1].robTag[SLOT_W-1:0]];
-    lookupOutput[1].isReturn = isRetInner[lookupInput[1].robTag[SLOT_W-1:0]];
-
-    lookupOutput[2].valid = validInner[lookupInput[2].robTag[SLOT_W-1:0]] &&
-                      (tagInner[lookupInput[2].robTag[SLOT_W-1:0]] == lookupInput[2].robTag);
-    lookupOutput[3].valid = validInner[lookupInput[3].robTag[SLOT_W-1:0]] &&
-                      (tagInner[lookupInput[3].robTag[SLOT_W-1:0]] == lookupInput[3].robTag);
-    lookupOutput[4].valid = validInner[lookupInput[4].robTag[SLOT_W-1:0]] &&
-                      (tagInner[lookupInput[4].robTag[SLOT_W-1:0]] == lookupInput[4].robTag);
+  // Each lookup is independent. Grouping late Load identity and early ALU
+  // authorization in one procedural output creates a false dependency cycle
+  // in narrow-core configurations. Equations and invalid payloads are unchanged.
+  for (genvar portIndex=0; portIndex<5; portIndex++) begin : g_lookup
+    assign lookupOutput[portIndex].valid = validInner[lookupInput[portIndex].robTag[SLOT_W-1:0]] &&
+      tagInner[lookupInput[portIndex].robTag[SLOT_W-1:0]] == lookupInput[portIndex].robTag;
+    if (portIndex<2) begin : g_metadata
+      assign lookupOutput[portIndex].programCounter = pcInner[lookupInput[portIndex].robTag[SLOT_W-1:0]];
+      assign lookupOutput[portIndex].predictedProgramCounter = predictedPcInner[lookupInput[portIndex].robTag[SLOT_W-1:0]];
+      assign lookupOutput[portIndex].predictorCheckpointId = predictorCkptIdInner[lookupInput[portIndex].robTag[SLOT_W-1:0]];
+      assign lookupOutput[portIndex].isReturn = isRetInner[lookupInput[portIndex].robTag[SLOT_W-1:0]];
+    end else begin : g_no_metadata
+      assign lookupOutput[portIndex].programCounter = '0;
+      assign lookupOutput[portIndex].predictedProgramCounter = '0;
+      assign lookupOutput[portIndex].predictorCheckpointId = '0;
+      assign lookupOutput[portIndex].isReturn = 1'b0;
+    end
   end
 
   // Fold candidates locally rather than feeding a packed output array back

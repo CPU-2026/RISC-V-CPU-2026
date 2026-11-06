@@ -37,7 +37,13 @@ package rv32_pkg;
   parameter int unsigned ALU_UNITS = `CPU_ALU_UNITS;
   parameter int unsigned ALU_CDB_PORTS = `CPU_ALU_CDB_PORTS;
   parameter int unsigned WRITEBACK_PORTS = ALU_CDB_PORTS + 1;
+  // Capacities define public identity types: override at compilation, uniformly
+  // for the package and every consumer, rather than on a single ROB/PRF instance.
+`ifdef CPU_ROB_ENTRIES
+  parameter int unsigned ROB_ENTRIES  = `CPU_ROB_ENTRIES;
+`else
   parameter int unsigned ROB_ENTRIES  = ISSUE_WIDTH == 4 ? 32 : 16;
+`endif
   // Capacity is part of a width configuration, not a fixed scalar constant.
   // Explicit overrides also apply when a top is parameterized rather than
   // compiled with width macros. Both queues count INSTRUCTIONS, not packets.
@@ -65,12 +71,29 @@ package rv32_pkg;
     logic [31:0] address, data;
     logic [3:0] strobe;
   } retirement_trace_t;
+`ifdef CPU_PRF_ENTRIES
+  parameter int unsigned PRF_ENTRIES  = `CPU_PRF_ENTRIES;
+`else
   parameter int unsigned PRF_ENTRIES  = ISSUE_WIDTH == 4 ? 64 : 48;
+`endif
   parameter int unsigned ROB_TAG_W    = $clog2(ROB_ENTRIES) + 1;
   parameter int unsigned PHY_TAG_W    = $clog2(PRF_ENTRIES);
   parameter int unsigned LQ_ENTRIES   = 8;
   parameter int unsigned SQ_ENTRIES   = 8;
-  parameter int unsigned BPU_CKPT_ENTRIES = ISSUE_WIDTH == 4 ? 64 : 32;
+  function automatic int unsigned checkpoint_capacity(input int unsigned requiredEntries);
+    int unsigned capacity;
+    capacity = 1;
+    while (capacity < requiredEntries) capacity = capacity * 2;
+    return capacity;
+  endfunction
+`ifdef CPU_BPU_CKPT_ENTRIES
+  parameter int unsigned BPU_CKPT_ENTRIES = `CPU_BPU_CKPT_ENTRIES;
+`else
+  // Retain the old defaults; grow only when independent capacities require it.
+  parameter int unsigned BPU_CKPT_ENTRIES = checkpoint_capacity(
+    ROB_ENTRIES + (FETCH_WIDTH == 4 ? 8 : 4) +
+    default_fq_entries(DECODE_WIDTH) + default_iq_entries(DECODE_WIDTH));
+`endif
   parameter int unsigned BPU_CKPT_ID_W = $clog2(BPU_CKPT_ENTRIES);
   parameter int unsigned FQ_ENTRIES   = default_fq_entries(DECODE_WIDTH);
   parameter int unsigned IQ_ENTRIES   = default_iq_entries(DECODE_WIDTH);
@@ -106,7 +129,16 @@ package rv32_pkg;
   parameter int unsigned ALU_RESULT_ENTRIES = 1;
   parameter int unsigned CACHE_LINE_BYTES = 64;
   parameter int unsigned CACHE_LINE_BITS = CACHE_LINE_BYTES << 3;
+`ifdef CPU_ICACHE_SETS
+  parameter int unsigned ICACHE_SETS = `CPU_ICACHE_SETS;
+`else
   parameter int unsigned ICACHE_SETS = 16;
+`endif
+`ifdef CPU_ICACHE_WAYS
+  parameter int unsigned ICACHE_WAYS = `CPU_ICACHE_WAYS;
+`else
+  parameter int unsigned ICACHE_WAYS = 1;
+`endif
   parameter int unsigned DCACHE_SETS = 128;
   parameter int unsigned DCACHE_WAYS = 2;
   // DCache line size is decoupled from the ICache line: refill beats, bank

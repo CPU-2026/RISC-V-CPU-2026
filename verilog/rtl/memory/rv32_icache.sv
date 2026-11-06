@@ -3,7 +3,8 @@
 module rv32_icache #(
   parameter int unsigned SETS = rv32_pkg::ICACHE_SETS,
   parameter int unsigned FETCH_WIDTH = 1,
-  parameter int unsigned REQUEST_DEPTH = (rv32_pkg::FETCH_REQUEST_ENTRIES/FETCH_WIDTH > 1) ? rv32_pkg::FETCH_REQUEST_ENTRIES/FETCH_WIDTH : 2
+  parameter int unsigned REQUEST_DEPTH = (rv32_pkg::FETCH_REQUEST_ENTRIES/FETCH_WIDTH > 1) ? rv32_pkg::FETCH_REQUEST_ENTRIES/FETCH_WIDTH : 2,
+  parameter int unsigned WAYS = rv32_pkg::ICACHE_WAYS
 ) (
   input logic clkInput, rstNInput,
   input logic freezeInput,
@@ -27,6 +28,9 @@ module rv32_icache #(
   if (FETCH_WIDTH != 1 && FETCH_WIDTH != 2 && FETCH_WIDTH != 4) begin : g_invalid_fetch_width
     initial $fatal(1, "FETCH_WIDTH must be 1, 2 or 4");
   end
+  if (WAYS != 1 && WAYS != 2 && WAYS != 4) begin : g_invalid_ways
+    initial $fatal(1, "ICache WAYS must be 1, 2 or 4");
+  end
   localparam int unsigned FETCH_DATA_BITS = 32 * FETCH_WIDTH;
   localparam int unsigned OFFSET_W = $clog2(CACHE_LINE_BYTES);
   localparam int unsigned INDEX_W = $clog2(SETS);
@@ -34,10 +38,15 @@ module rv32_icache #(
   localparam int unsigned SLOT_W = $clog2(REQUEST_DEPTH);
   localparam int unsigned COUNT_W = $clog2(REQUEST_DEPTH + 1);
   localparam int unsigned WORD_W = OFFSET_W - 2;
+  localparam int unsigned WAY_W = WAYS > 1 ? $clog2(WAYS) : 1;
+  localparam int unsigned PLRU_W = WAYS == 4 ? 3 : 1;
 
   // Tags/valid bits are registers; instruction DATA exists only in u_data SRAM.
-  logic validInner [SETS];
-  logic [TAG_W-1:0] tagInner [SETS];
+  logic validInner [SETS][WAYS];
+  logic [TAG_W-1:0] tagInner [SETS][WAYS];
+  logic [PLRU_W-1:0] plruInner [SETS];
+  logic [WAY_W-1:0] hitWayInner, predecodeWayInner, fillWayInner, readWayInner;
+  logic predecodeHitInner;
   logic [31:0] requestAddressInner [REQUEST_DEPTH];
   logic [31:0] requestPredictedPcInner [REQUEST_DEPTH];
   bpu_ckpt_id_t requestCheckpointInner [REQUEST_DEPTH];
@@ -56,6 +65,7 @@ module rv32_icache #(
   logic sramEnableInner;
   logic [INDEX_W-1:0] sramAddressInner;
   logic [CACHE_LINE_BITS-1:0] sramRdataInner;
+  logic [CACHE_LINE_BITS-1:0] wayRdataInner [WAYS];
   logic [FETCH_DATA_BITS-1:0] readWordInner, fillWordInner, forwardWordInner;
 
   function automatic logic is_control(input logic [31:0] instruction);
@@ -66,25 +76,74 @@ module rv32_icache #(
                                                input logic [31:0] address);
     return 64'(lineData>>(32'(address[OFFSET_W-1:2])<<5));
   endfunction
+  function automatic logic [PLRU_W-1:0] touch_way(
+    input logic [PLRU_W-1:0] bitsInput, input logic [WAY_W-1:0] wayInput
+  );
+    touch_way = bitsInput;
+    if (WAYS == 2) touch_way = PLRU_W'(wayInput);
+    if (WAYS == 4) begin
+      if (int'(wayInput) >= 2)
+        touch_way = PLRU_W'({1'b1, 1'(bitsInput >> 1), 1'(wayInput)});
+      else
+        touch_way = PLRU_W'({1'b0, 1'(wayInput), bitsInput[0]});
+    end
+  endfunction
+  // Three independent old-state lookups. Refill chooses the lowest invalid
+  // way, otherwise the opposite of the recorded MRU/tree-PLRU direction.
+  always_comb begin
+    hitInner = 1'b0;
+    hitWayInner = '0;
+    predecodeHitInner = 1'b0;
+    predecodeWayInner = '0;
+    for (int way = 0; way < WAYS; way++) begin
+      if (validInner[cpuRequestInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]][way] &&
+          tagInner[cpuRequestInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]][way] == cpuRequestInput.address[31:INDEX_W+OFFSET_W]) begin
+        hitInner = 1'b1;
+        hitWayInner = WAY_W'(way);
+      end
+      if (validInner[predecodeAddressInput[INDEX_W+OFFSET_W-1:OFFSET_W]][way] &&
+          tagInner[predecodeAddressInput[INDEX_W+OFFSET_W-1:OFFSET_W]][way] == predecodeAddressInput[31:INDEX_W+OFFSET_W]) begin
+        predecodeHitInner = 1'b1;
+        predecodeWayInner = WAY_W'(way);
+      end
+    end
+  end
+  always_comb begin
+    fillWayInner = '0;
+    if (WAYS == 2)
+      fillWayInner = WAY_W'(!plruInner[memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]][0]);
+    if (WAYS == 4) begin
+      if (plruInner[memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]][PLRU_W-1])
+        fillWayInner = WAY_W'(((int'(plruInner[memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]]) >> 1) & 1) != 0 ? 0 : 1);
+      else
+        fillWayInner = WAY_W'(plruInner[memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]][0] ? 2 : 3);
+    end
+    for (int way = WAYS-1; way >= 0; way--)
+      if (!validInner[memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]][way]) fillWayInner = WAY_W'(way);
+    // Two old misses may name the same line. Their separate physical replies
+    // refresh the existing way, never install duplicate valid tags in a set.
+    for (int way = 0; way < WAYS; way++)
+      if (validInner[memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]][way] &&
+          tagInner[memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]][way] == memResponseInput.address[31:INDEX_W+OFFSET_W])
+        fillWayInner = WAY_W'(way);
+  end
+  assign sramRdataInner = wayRdataInner[readWayInner];
   generate if(FETCH_WIDTH>=2)begin : g_predecode
     // Metadata only: instruction DATA still lives exclusively in real SRAM.
     // The mask is published by the same fill that publishes its tag/valid.
-    logic [CACHE_LINE_BYTES/4-1:0] controlMaskInner [SETS];
+    logic [CACHE_LINE_BYTES/4-1:0] controlMaskInner [SETS][WAYS];
     logic [CACHE_LINE_BYTES/4-1:0] fillMaskInner;
-    logic predecodeHitInner;
     always_comb begin
       for(int wordIndex=0;wordIndex<CACHE_LINE_BYTES/4;wordIndex++)
         fillMaskInner[wordIndex]=is_control(memResponseInput.data[wordIndex*32+:32]);
     end
     always_ff @(posedge clkInput)
-      if(fillFireInner)controlMaskInner[memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]]<=fillMaskInner;
+      if(fillFireInner)controlMaskInner[memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]][fillWayInner]<=fillMaskInner;
     // The predecode PC comes straight from the old frontend PC register, not
     // the packed request which also carries this prediction's NEXT PC.
-    assign predecodeHitInner=validInner[predecodeAddressInput[INDEX_W+OFFSET_W-1:OFFSET_W]]&&
-      tagInner[predecodeAddressInput[INDEX_W+OFFSET_W-1:OFFSET_W]]==predecodeAddressInput[31:INDEX_W+OFFSET_W];
     assign predecodeOutput.hit=predecodeHitInner;
     assign predecodeOutput.firstControl=predecodeHitInner&&
-      controlMaskInner[predecodeAddressInput[INDEX_W+OFFSET_W-1:OFFSET_W]][predecodeAddressInput[OFFSET_W-1:2]];
+      controlMaskInner[predecodeAddressInput[INDEX_W+OFFSET_W-1:OFFSET_W]][predecodeWayInner][predecodeAddressInput[OFFSET_W-1:2]];
     if (FETCH_WIDTH==4) begin : g_four_hints
       // Relative lanes may cross 16 bytes; clip only at the ICache line end.
       logic [3:0] controls;
@@ -92,7 +151,7 @@ module rv32_icache #(
         controls='0;
         for (int lane=0;lane<4;lane++)
           if (predecodeHitInner && lane < CACHE_LINE_BYTES/4-int'(predecodeAddressInput[OFFSET_W-1:2]))
-            controls[lane]=controlMaskInner[predecodeAddressInput[INDEX_W+OFFSET_W-1:OFFSET_W]]
+            controls[lane]=controlMaskInner[predecodeAddressInput[INDEX_W+OFFSET_W-1:OFFSET_W]][predecodeWayInner]
               [int'(predecodeAddressInput[OFFSET_W-1:2])+lane];
       end
       assign predecodeOutput.secondControl=controls[1];
@@ -100,7 +159,7 @@ module rv32_icache #(
       assign predecodeOutput.fourthControl=controls[3];
     end else begin
       assign predecodeOutput.secondControl=predecodeHitInner&&predecodeAddressInput[OFFSET_W-1:2]!=WORD_W'(CACHE_LINE_BYTES/4-1)&&
-        controlMaskInner[predecodeAddressInput[INDEX_W+OFFSET_W-1:OFFSET_W]][predecodeAddressInput[OFFSET_W-1:2]+WORD_W'(1)];
+        controlMaskInner[predecodeAddressInput[INDEX_W+OFFSET_W-1:OFFSET_W]][predecodeWayInner][predecodeAddressInput[OFFSET_W-1:2]+WORD_W'(1)];
       assign predecodeOutput.thirdControl=1'b0;
       assign predecodeOutput.fourthControl=1'b0;
     end
@@ -109,8 +168,6 @@ module rv32_icache #(
   end endgenerate
 
   assign tailSlotInner = headInner + SLOT_W'(countInner);
-  assign hitInner = validInner[cpuRequestInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]] &&
-    tagInner[cpuRequestInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]] == cpuRequestInput.address[31:INDEX_W+OFFSET_W];
   assign headReadReadyInner = countInner != 0 && !requestReadyInner[headInner] &&
     readValidInner && readIndexInner == headInner;
   generate if (FETCH_WIDTH == 4) begin : g_four_packet_words
@@ -179,14 +236,21 @@ module rv32_icache #(
   // response or a transport. A fill still owns the real synchronous 1RW port.
   // This trades extra idle SRAM reads for a shorter CE control path; logical
   // admission, fill writes, synchronous read capture and queue timing stay put.
-  assign sramEnableInner = rstNInput && !freezeInput && !flushInput;
+  // The public SRAM makes rdata undefined on a disabled edge. A frozen,
+  // not-yet-captured synchronous hit must therefore keep reading its ORIGINAL
+  // row; retaining readValid alone does not retain SRAM data. No fill or CPU
+  // acceptance is authorized by this refresh, including a held freeze+flush.
+  assign sramEnableInner = rstNInput && ((!freezeInput && !flushInput) || (freezeInput && readValidInner));
   assign sramAddressInner = fillFireInner ? memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W] :
+    (freezeInput && readValidInner) ? requestAddressInner[readIndexInner][INDEX_W+OFFSET_W-1:OFFSET_W] :
     cpuRequestInput.address[INDEX_W+OFFSET_W-1:OFFSET_W];
-  sram_fakeram #(.DEPTH(SETS), .WIDTH(CACHE_LINE_BITS), .WRITE_GRANULARITY(32)) u_data (
-    .clk(clkInput), .en(sramEnableInner), .we(fillFireInner),
-    .addr(sramAddressInner), .wdata(memResponseInput.data),
-    .wmask({(CACHE_LINE_BYTES >> 2){1'b1}}), .rdata(sramRdataInner)
-  );
+  for (genvar way = 0; way < WAYS; way++) begin : g_way
+    sram_fakeram #(.DEPTH(SETS), .WIDTH(CACHE_LINE_BITS), .WRITE_GRANULARITY(32)) u_data (
+      .clk(clkInput), .en(sramEnableInner), .we(fillFireInner && fillWayInner == WAY_W'(way)),
+      .addr(sramAddressInner), .wdata(memResponseInput.data),
+      .wmask({(CACHE_LINE_BYTES >> 2){1'b1}}), .rdata(wayRdataInner[way])
+    );
+  end
 
   always_ff @(posedge clkInput or negedge rstNInput) begin
     if (!rstNInput) begin
@@ -195,9 +259,13 @@ module rv32_icache #(
       readValidInner <= 1'b0;
       readIndexInner <= '0;
       readLaneInner <= '0;
+      readWayInner <= '0;
       for (int s = 0; s < SETS; s = s + 1) begin
-        validInner[s] <= 1'b0;
-        tagInner[s] <= '0;
+        plruInner[s] <= '0;
+        for (int way = 0; way < WAYS; way++) begin
+          validInner[s][way] <= 1'b0;
+          tagInner[s][way] <= '0;
+        end
       end
       for (int q = 0; q < REQUEST_DEPTH; q = q + 1) begin
         requestAddressInner[q] <= '0;
@@ -227,10 +295,16 @@ module rv32_icache #(
       if (requestFireInner && hitInner && !refillHitInner) begin
         readIndexInner <= tailSlotInner;
         readLaneInner <= cpuRequestInput.address[OFFSET_W-1:2];
+        readWayInner <= hitWayInner;
       end
       if (fillFireInner) begin
-        validInner[memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]] <= 1'b1;
-        tagInner[memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]] <= memResponseInput.address[31:INDEX_W+OFFSET_W];
+        validInner[memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]][fillWayInner] <= 1'b1;
+        tagInner[memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]][fillWayInner] <= memResponseInput.address[31:INDEX_W+OFFSET_W];
+        plruInner[memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]] <=
+          touch_way(plruInner[memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]], fillWayInner);
+      end else if (requestFireInner && hitInner) begin
+        plruInner[cpuRequestInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]] <=
+          touch_way(plruInner[cpuRequestInput.address[INDEX_W+OFFSET_W-1:OFFSET_W]], hitWayInner);
       end
       for (int q = 0; q < REQUEST_DEPTH; q = q + 1) begin
         // Initialization wins the full pop/push same-slot case. The OLD head
