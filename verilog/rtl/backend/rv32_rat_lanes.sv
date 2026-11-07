@@ -12,8 +12,8 @@ module rv32_rat_lanes #(
   input logic [LANES-1:0][4:0] destinationArchInput,
   input rv32_pkg::rat_rename_input_t [LANES-1:0] renameInput,
   output rv32_pkg::rat_rename_output_t [LANES-1:0] renameOutput,
-  input rv32_pkg::rat_restore_input_t restoreInput,
-  input rv32_pkg::recovery_step_t recoveryInput,
+/* verilator lint_off UNUSEDSIGNAL */   input rv32_pkg::rat_restore_input_t restoreInput, /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   input rv32_pkg::recovery_step_t recoveryInput, /* verilator lint_on UNUSEDSIGNAL */
   input rv32_pkg::rob_replay_narrow_t [rv32_pkg::RECOVERY_WIDTH-1:0] replayInput,
   input rv32_pkg::rat_commit_input_t [COMMIT_WIDTH-1:0] commitInput
 );
@@ -26,7 +26,7 @@ module rv32_rat_lanes #(
   end
   phy_tag_t mapInner [ARCH_REGS], restoreMapInner [ARCH_REGS];
   logic [ARCH_REGS-1:0] archValidInner, archWriteMaskInner;
-  logic [ARCH_REGS*PHY_TAG_W-1:0] archReadDataInner, archWriteDataInner;
+/* verilator lint_off UNUSEDSIGNAL */   logic [ARCH_REGS*PHY_TAG_W-1:0] archReadDataInner, archWriteDataInner; /* verilator lint_on UNUSEDSIGNAL */
   logic replayActiveInner, replayActiveNext;
 
   always_comb begin

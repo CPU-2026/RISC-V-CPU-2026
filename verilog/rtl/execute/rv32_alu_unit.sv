@@ -25,7 +25,7 @@ module rv32_alu_unit #(
   input logic freezeInput,
   input  rv32_pkg::rob_flush_input_t flushInfoInput,
 
-  input  rv32_pkg::execute_request_input_t executeInput,
+/* verilator lint_off UNUSEDSIGNAL */   input  rv32_pkg::execute_request_input_t executeInput, /* verilator lint_on UNUSEDSIGNAL */
   output logic                   inReadyOutput,
 
   input  logic                   outReadyInput,

@@ -41,18 +41,18 @@ module student_top #(
     output wire        bready
 );
     import rv32_pkg::*;
-    logic resetNInner;
+/* verilator lint_off SYNCASYNCNET */     logic resetNInner; /* verilator lint_on SYNCASYNCNET */
     logic haltedInner, trapInner;
     logic imemReadyInner, imemResponseValidInner, imemResponseReadyInner, imemFlushInner;
     logic [31:0] imemInstructionInner;
     logic [31:0] imemSecondInstructionInner;
     logic [127:0] imemPacketInstructionsInner;
-    logic [2:0] imemFetchCountInner;
+/* verilator lint_off UNUSEDSIGNAL */     logic [2:0] imemFetchCountInner; /* verilator lint_on UNUSEDSIGNAL */
     logic [31:0] imemFetchPcInner;
     logic imemSecondRequestInner;
     icache_fetch_hint_t imemFetchHintInner;
     icache_cpu_request_input_t imemRequestInner;
-    icache_cpu_response_output_t icacheResponseInner;
+/* verilator lint_off UNUSEDSIGNAL */     icache_cpu_response_output_t icacheResponseInner; /* verilator lint_on UNUSEDSIGNAL */
     cache_line_request_output_t fetchRequestInner;
     icache_line_response_input_t fetchResponseInner;
     logic fetchReadyInner, fetchResponseReadyInner, fetchFlushInner;
@@ -72,6 +72,14 @@ module student_top #(
     logic [31:0] exitValueInner;
     axi_master_t fetchMasterInner, dataMasterInner, masterInner;
     axi_slave_t slaveInner, fetchSlaveInner, dataSlaveInner;
+    // Legacy/debug outputs are deliberately not consumed by the AXI wrapper.
+    logic unusedImemReqValidInner, unusedCommitValidInner, unusedCommitRdValidInner, unusedCommitMemValidInner;
+    logic [XLEN-1:0] unusedCommitPcInner, unusedCommitInstrInner, unusedCommitRdValueInner;
+    logic [4:0] unusedCommitRdInner;
+    logic [31:0] unusedCommitMemAddrInner, unusedCommitMemDataInner;
+    logic [3:0] unusedCommitMemWstrbInner;
+    retirement_trace_t [COMMIT_WIDTH-1:0] unusedRetirementInner;
+    logic unusedDmemInitializedInner;
     assign resetNInner = !reset;
 
     rv32_core #(.TAGGED_DMEM(1'b1), .LEGACY_HALT(1'b0),
@@ -79,7 +87,7 @@ module student_top #(
                 .DECODE_WIDTH(DECODE_WIDTH), .RENAME_WIDTH(ISSUE_WIDTH), .ISSUE_WIDTH(ISSUE_WIDTH),
                 .FQ_DEPTH(FQ_DEPTH), .IQ_DEPTH(IQ_DEPTH)) u_core (
       .clkInput(clock), .rstNInput(resetNInner),
-      .imemReqValidOutput(), .imemReqAddrOutput(imemFetchPcInner), .imemCacheRequestOutput(imemRequestInner),
+      .imemReqValidOutput(unusedImemReqValidInner), .imemReqAddrOutput(imemFetchPcInner), .imemCacheRequestOutput(imemRequestInner),
       .imemReqReadyInput(imemReadyInner), .imemRspValidInput(imemResponseValidInner),
       .imemRspDataInput(imemInstructionInner), .imemRspReadyOutput(imemResponseReadyInner),
       .imemRspSecondDataInput(imemSecondInstructionInner), .imemFetchHintInput(imemFetchHintInner),
@@ -92,10 +100,11 @@ module student_top #(
       .dmemReqSizeOutput(dmemSizeInner), .dmemReqTransactionOutput(dmemTransactionInner),
       .dmemRspValidInput(dcacheResponseInner.valid), .dmemRspRdataInput(dcacheResponseInner.readData),
       .dmemRspTransactionInput(dcacheResponseInner.transaction),
-      .commitValidOutput(), .commitPcOutput(), .commitInstrOutput(),
-      .commitRdValidOutput(), .commitRdOutput(), .commitRdValueOutput(),
-      .commitMemValidOutput(), .commitMemAddrOutput(), .commitMemDataOutput(), .commitMemWstrbOutput(),
-      .retirementOutput(),
+      .commitValidOutput(unusedCommitValidInner), .commitPcOutput(unusedCommitPcInner), .commitInstrOutput(unusedCommitInstrInner),
+      .commitRdValidOutput(unusedCommitRdValidInner), .commitRdOutput(unusedCommitRdInner), .commitRdValueOutput(unusedCommitRdValueInner),
+      .commitMemValidOutput(unusedCommitMemValidInner), .commitMemAddrOutput(unusedCommitMemAddrInner),
+      .commitMemDataOutput(unusedCommitMemDataInner), .commitMemWstrbOutput(unusedCommitMemWstrbInner),
+      .retirementOutput(unusedRetirementInner),
       .haltedOutput(haltedInner), .trapOutput(trapInner)
     );
     assign imemResponseValidInner = icacheResponseInner.valid;
@@ -130,7 +139,7 @@ module student_top #(
       .memRequestOutput(dataRequestInner), .memReadReadyInput(dataReadReadyInner),
       .memWriteReadyInput(dataWriteReadyInner), .memResponseInput(dataResponseInner), .memWordResponseInput(dataWordResponseInner),
       .memWriteResponseInput(cacheWriteResponseInner), .memRspReadyOutput(dataResponseReadyInner),
-      .memWriteRspReadyOutput(dataWriteResponseReadyInner), .initializedOutput(),
+      .memWriteRspReadyOutput(dataWriteResponseReadyInner), .initializedOutput(unusedDmemInitializedInner),
       .exitReadyInput(exitReadyInner), .exitValidOutput(exitValidInner), .exitValueOutput(exitValueInner)
     );
     rv32_axi_data u_axi_data (

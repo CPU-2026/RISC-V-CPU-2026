@@ -28,7 +28,7 @@ module rv32_decode_issue_queue #(
   decoded_uop_t [DECODE_WIDTH-1:0] decodedWords;
   logic [ISSUE_WIDTH-1:0][$bits(decoded_uop_t)-1:0] iqWords;
   logic [DCW-1:0] availableDecode, decodeCount;
-  logic [$clog2(FQ_DEPTH):0] fqCapacity, fqOccupancy;
+/* verilator lint_off UNUSEDSIGNAL */   logic [$clog2(FQ_DEPTH):0] fqCapacity, fqOccupancy; /* verilator lint_on UNUSEDSIGNAL */
   logic [$clog2(IQ_DEPTH):0] iqCapacity, iqOccupancy;
   logic fqReady, iqReady;
   logic [ICW-1:0] iqAvailableInner;
@@ -44,9 +44,11 @@ module rv32_decode_issue_queue #(
   assign directIngressInner=emptyIngressInner && rstNInput && !freezeInput && !flushInput && inValidInput;
   assign availableDecode=directIngressInner ? DCW'(inCountInput) : storedDecodeInner;
   for(genvar word=0;word<DECODE_WIDTH;word++)begin : g_ingress_word
-    if(word<FETCH_WIDTH)
+    if(word<FETCH_WIDTH) begin : g_packet_word
       assign fqWords[word]=directIngressInner ? inDataInput[word] : storedWordsInner[word];
-    else assign fqWords[word]=storedWordsInner[word];
+    end else begin : g_stored_word
+      assign fqWords[word]=storedWordsInner[word];
+    end
   end
   // Proposal is based solely on OLD queue state, never on backend ready.
   // The backend must either accept every proposed valid lane or none.
@@ -106,7 +108,10 @@ module rv32_decode_issue_queue #(
       assert (readyCountInput==0 || readyCountInput==ICW'(availableDecode))
         else $fatal(1,"whole-group bypass partially accepted");
     assert (readyCountInput<=availableCountOutput) else $fatal(1,"wide IQ consumption exceeds available prefix");
+    // The one-lane bound is tautological; retain this shared width invariant.
+    /* verilator lint_off CMPCONST */
     assert (int'(availableCountOutput)<=ISSUE_WIDTH && int'(decodeCount)<=DECODE_WIDTH)
+    /* verilator lint_on CMPCONST */
       else $fatal(1,"wide decode/issue lane count truncated");
   end
 `endif

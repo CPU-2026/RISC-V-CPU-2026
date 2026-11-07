@@ -22,7 +22,7 @@ module rv32_flush_arbiter #(
   logic [31:0] pcNext [DEPTH];
   bpu_ckpt_id_t ckptIdNext [DEPTH];
 
-  integer selectIndexInner;
+/* verilator lint_off UNUSEDSIGNAL */   integer selectIndexInner; /* verilator lint_on UNUSEDSIGNAL */
   integer combIndexInner, combJInner, countInner, writeIndexInner, insertPosInner;
   integer seqIndexInner;
 

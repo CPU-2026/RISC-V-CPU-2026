@@ -7,7 +7,7 @@ module rv32_bru_unit #(
   input  logic                   flushInput,
   input  rv32_pkg::rob_tag_t      flushTagInput,
 
-  input  rv32_pkg::execute_request_input_t executeInput,
+/* verilator lint_off UNUSEDSIGNAL */   input  rv32_pkg::execute_request_input_t executeInput, /* verilator lint_on UNUSEDSIGNAL */
   output logic                   inReadyOutput,
 
   output rv32_pkg::bru_execute_output_t executeOutput
@@ -16,7 +16,7 @@ module rv32_bru_unit #(
 
   logic bruTakenInner, bruMispredictInner;
   logic [31:0] bruTargetInner, bruNextPcInner, bruLinkInner;
-  branch_operation_output_t bruOperationOutputInner;
+/* verilator lint_off UNUSEDSIGNAL */   branch_operation_output_t bruOperationOutputInner; /* verilator lint_on UNUSEDSIGNAL */
   logic validInner;
   rob_tag_t tagInner;
   logic [31:0] pcInner, targetInner, nextPcInner, returnAddressInner;

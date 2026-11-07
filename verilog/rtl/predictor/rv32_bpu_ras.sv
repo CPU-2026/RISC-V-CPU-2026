@@ -6,10 +6,10 @@ module rv32_bpu_ras #(
   input logic rstNInput,
   input logic freezeInput,
 
-  input rv32_pkg::predictor_fetch_info_t fetchInfoInput,
-  input rv32_pkg::squash_input_t         squashInput,
+/* verilator lint_off UNUSEDSIGNAL */   input rv32_pkg::predictor_fetch_info_t fetchInfoInput, /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   input rv32_pkg::squash_input_t         squashInput, /* verilator lint_on UNUSEDSIGNAL */
   input rv32_pkg::rob_predictor_input_t [COMMIT_WIDTH-1:0] robInput,
-  input rv32_pkg::recovery_step_t recoveryInput,
+/* verilator lint_off UNUSEDSIGNAL */   input rv32_pkg::recovery_step_t recoveryInput, /* verilator lint_on UNUSEDSIGNAL */
 
   output logic [15:0]            rasTopOutput,
   output logic [31:0]            queryRetTargetOutput

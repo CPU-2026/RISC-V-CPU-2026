@@ -1,13 +1,13 @@
 # 默认架构与关键约定
 
-更新至2026-11-07。描述跨16B四取指及当前工作树结构；参数化改动不自动继承生产PPA。配置方法见[参数化配置](parameterized-configuration.md)，验证边界见 [course.md](course.md)，字段以 [`rv32_pkg.sv`](../verilog/rtl/common/rv32_pkg.sv) 和模块源码为准。
+更新至2026-11-07。描述跨16B四取指及当前工作树结构；当前生产已采用ROB16／PRF48；此配置面积／Fmax／评分未测，不继承旧生产PPA。配置方法见[参数化配置](parameterized-configuration.md)，验证边界见 [course.md](course.md)，字段以 [`rv32_pkg.sv`](../verilog/rtl/common/rv32_pkg.sv) 和模块源码为准。
 
 ## 默认配置
 
 | 项目 | 默认值 |
 |---|---|
 | 取指／译码／顺序分配／提交 | 4 / 4 / 4 / 4 |
-| FQ／IQ／ROB／PRF／checkpoint | 8 / 8 / 32 / 64 / 64 |
+| FQ／IQ／ROB／PRF／checkpoint | 8 / 8 / 16 / 48 / 64 |
 | Integer／Multiply／Divide／Branch／Load／StoreAddr／StoreValue RS | 4 / 1 / 1 / 4 / 2 / 2 / 2 |
 | 执行与写回 | 双ALU、单AGU；ALU各一CDB，Load/MUL/DIV共享第三路 |
 | LQ／SQ／Load运输owner | 各8项；运输ID为3 bit，MSHR ID另为2 bit |
@@ -24,12 +24,12 @@
 ## 分配、执行与恢复
 
 - RAT/PRF/ROB/RS/LSQ共用连续前缀fire，年轻lane不能越过阻塞项。组内RAW指向最近实际写者，WAW年轻映射胜出，LINK可预置PC+4/ready；新项不当拍执行。
-- PRF读旧自由队首，本拍回收下拍可用，P0不分配；值载荷采用63个1×32 bit SRAM。ROB载荷不复位，以逐行initialized屏蔽未初始化值，valid/ready/完整tag控制仍复位。
+- PRF读旧自由队首，本拍回收下拍可用，P0不分配；值载荷采用47个1×32 bit SRAM（PRF48减去P0）。ROB载荷不复位，以逐行initialized屏蔽未初始化值，valid/ready/完整tag控制仍复位。
 - 非MUL/DIV RS支持实际离站信用复用；Integer/Branch/Load及StoreAddr可使用已授权WB当拍派发，StoreValue保留原ALU数据旁路。Load/StoreAddr共用AGU，只有真正获接受才返还信用；StoreValue最多两路交付数据。
 - ALU单槽结果级可消费同拍重填；MUL为Booth→CSA→最终加法三级弹性流水，DIV为单上下文radix-4 SRT。共享CDB选最老合格结果，未授权结果保持；条件分支走BRU，JAL/JALR走ALU。
 - 退休只认旧ready连续前缀，不旁路本拍WB；退出Store截断年轻lane。完整观察使用`retirementOutput[COMMIT_WIDTH]`，旧标量`commit*`仅lane0。
 - Flush候选排队选最老，新请求不直通；取消严格年轻项，旧结果核验完整tag。循环年龄只用于合法在飞半环窗口。
-- 恢复先同步读已提交RAT/RAS基线，再重放原ROB窗口：默认ROB32每拍8槽、最多4拍。RAT/RAS重放存活前缀，free list还遍历取消后缀回收物理号。重放暂停分配／执行／退休／CDB，LSU/Cache/AXI继续排空。
+- 恢复先同步读已提交RAT/RAS基线，再重放原ROB窗口：默认ROB16每拍4槽、最多4拍。RAT/RAS重放存活前缀，free list还遍历取消后缀回收物理号。重放暂停分配／执行／退休／CDB，LSU/Cache/AXI继续排空。
 
 ## 访存与缓存
 

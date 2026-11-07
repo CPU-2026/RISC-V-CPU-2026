@@ -7,7 +7,7 @@ module rv32_bpu_direction #(
   input logic freezeInput,
 
   input  logic [31:0]            queryPcInput,
-  input  rv32_pkg::branch_training_input_t branchInput,
+/* verilator lint_off UNUSEDSIGNAL */   input  rv32_pkg::branch_training_input_t branchInput, /* verilator lint_on UNUSEDSIGNAL */
   input  rv32_pkg::direction_context_t branchContextInput,
   input  rv32_pkg::direction_history_input_t historyInput,
   output rv32_pkg::direction_prediction_output_t predictionOutput,
@@ -35,7 +35,7 @@ module rv32_bpu_direction #(
   logic [COND_INDEX_W-1:0] branchCondIdxInner;
 
   logic [7:0] ghrNext;
-  integer combIndexInner;
+/* verilator lint_off UNUSEDSIGNAL */   integer combIndexInner; /* verilator lint_on UNUSEDSIGNAL */
   integer seqIndexInner;
 
   always_comb begin

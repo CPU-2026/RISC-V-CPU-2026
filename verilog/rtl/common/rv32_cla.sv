@@ -54,7 +54,7 @@ module rv32_cla8 (
 );
   logic pgLoInner, pgHiInner, ggLoInner, ggHiInner;
   logic [3:0] sumLoInner, sumHiInner;
-  logic coutLoInner, coutHiInner;
+/* verilator lint_off UNUSEDSIGNAL */   logic coutLoInner, coutHiInner; /* verilator lint_on UNUSEDSIGNAL */
   logic carry4Inner;
 
   assign carry4Inner = ggLoInner | (pgLoInner & cinInput);
@@ -84,7 +84,7 @@ module rv32_cla16 (
   output logic        ggOutput
 );
   logic [3:0] pgBlockInner, ggBlockInner;
-  logic [3:0] coutBlockInner;
+/* verilator lint_off UNUSEDSIGNAL */   logic [3:0] coutBlockInner; /* verilator lint_on UNUSEDSIGNAL */
   logic [4:0] carryInner;
 
   assign carryInner = {
@@ -130,7 +130,7 @@ module rv32_cla32 (
 );
   logic pgLoInner, pgHiInner, ggLoInner, ggHiInner;
   logic [15:0] sumLoInner, sumHiInner;
-  logic coutLoInner, coutHiInner;
+/* verilator lint_off UNUSEDSIGNAL */   logic coutLoInner, coutHiInner; /* verilator lint_on UNUSEDSIGNAL */
   logic carry16Inner;
 
   assign carry16Inner = ggLoInner | (pgLoInner & cinInput);
@@ -159,7 +159,7 @@ module rv32_cla64 (
 );
   logic pgLoInner, pgHiInner, ggLoInner, ggHiInner;
   logic [31:0] sumLoInner, sumHiInner;
-  logic coutLoInner, coutHiInner;
+/* verilator lint_off UNUSEDSIGNAL */   logic coutLoInner, coutHiInner; /* verilator lint_on UNUSEDSIGNAL */
   logic carry32Inner;
 
   assign carry32Inner = ggLoInner | (pgLoInner & cinInput);
@@ -193,7 +193,7 @@ module rv32_add #(
                                       (WIDTH <= 32) ? 32 : 64;
 
   logic [CLA_WIDTH-1:0] aExtInner, bExtInner, sumExtInner;
-  logic coutExtInner;
+/* verilator lint_off UNUSEDSIGNAL */   logic coutExtInner; /* verilator lint_on UNUSEDSIGNAL */
   logic unusedPgInner, unusedGgInner;
 
   assign sumOutput = sumExtInner[WIDTH-1:0];

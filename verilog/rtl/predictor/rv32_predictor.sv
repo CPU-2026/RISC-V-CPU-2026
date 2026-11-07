@@ -50,7 +50,7 @@ module rv32_predictor #(
   logic [15:0] rasTopInner;
   logic [31:0] rasRetTargetInner;
   logic [7:0] ckptSquashGhrInner;
-  checkpoint_output_t checkpointOutputInner;
+/* verilator lint_off UNUSEDSIGNAL */   checkpoint_output_t checkpointOutputInner; /* verilator lint_on UNUSEDSIGNAL */
 
   logic branchTrainInner, jumpTrainInner;
 

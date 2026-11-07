@@ -46,17 +46,17 @@ module rv32_axi_data (
       entriesInner[slot].collected == WORD_W'(1) : lineCompleteInner[slot];
   end
   logic [3:0] readOrderInner [ORDER_ROWS], writeOrderInner [ORDER_ROWS];
-  wire [3:0] readIssueSlotInner = readOrderInner[readIssueSeqInner[3:0]];
-  wire [3:0] readCollectSlotInner = readOrderInner[readCollectSeqInner[3:0]];
-  wire [3:0] awIssueSlotInner = writeOrderInner[awIssueSeqInner[3:0]];
-  wire [3:0] wIssueSlotInner = writeOrderInner[wIssueSeqInner[3:0]];
-  wire [3:0] writeCollectSlotInner = writeOrderInner[writeCollectSeqInner[3:0]];
+/* verilator lint_off UNUSEDSIGNAL */   wire [SLOT_W-1:0] readIssueSlotInner = SLOT_W'(readOrderInner[readIssueSeqInner[3:0]]); /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   wire [SLOT_W-1:0] readCollectSlotInner = SLOT_W'(readOrderInner[readCollectSeqInner[3:0]]); /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   wire [SLOT_W-1:0] awIssueSlotInner = SLOT_W'(writeOrderInner[awIssueSeqInner[3:0]]); /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   wire [SLOT_W-1:0] wIssueSlotInner = SLOT_W'(writeOrderInner[wIssueSeqInner[3:0]]); /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   wire [SLOT_W-1:0] writeCollectSlotInner = SLOT_W'(writeOrderInner[writeCollectSeqInner[3:0]]); /* verilator lint_on UNUSEDSIGNAL */
   localparam int SLOT_W = $clog2(DEPTH);
   logic [SLOT_W-1:0] readHeadOwnerInner, writeHeadOwnerInner;
   // Mirror the ring head at its update edge, avoiding order->descriptor
   // indirection in every completion/payload consumer, including empty state.
-  wire [3:0] readHeadSlotInner = 4'(readHeadOwnerInner);
-  wire [3:0] writeHeadSlotInner = 4'(writeHeadOwnerInner);
+/* verilator lint_off UNUSEDSIGNAL */   wire [SLOT_W-1:0] readHeadSlotInner = SLOT_W'(4'(readHeadOwnerInner)); /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   wire [SLOT_W-1:0] writeHeadSlotInner = SLOT_W'(4'(writeHeadOwnerInner)); /* verilator lint_on UNUSEDSIGNAL */
   // DEPTH shared lines, organized by 32-bit word. Payload is deliberately not
   // reset: descriptors gate visibility and every read word is received before
   // a line is exposed. Experimental microbanks and bypass are counted together.
@@ -168,8 +168,8 @@ module rv32_axi_data (
     readSlotInner = pushWriteInner ? secondFreeInner : firstFreeInner;
     allocatedInner = '0;
     releasedInner = '0;
-    if (pushWriteInner) allocatedInner[writeSlotInner] = 1'b1;
-    if (pushReadInner) allocatedInner[readSlotInner] = 1'b1;
+    if (pushWriteInner) allocatedInner[SLOT_W'(writeSlotInner)] = 1'b1;
+    if (pushReadInner) allocatedInner[SLOT_W'(readSlotInner)] = 1'b1;
     if (popReadInner) releasedInner[readHeadSlotInner] = 1'b1;
     if (popWriteInner) releasedInner[writeHeadSlotInner] = 1'b1;
   end
@@ -261,14 +261,14 @@ module rv32_axi_data (
       end
       if (pushReadInner) begin
         readOrderInner[readTailSeqInner[3:0]] <= readSlotInner;
-        entriesInner[readSlotInner] <=
+        entriesInner[SLOT_W'(readSlotInner)] <=
           '{address:requestInput.readAddress, transaction:requestInput.readTransaction,
             startWord:requestInput.readStartWord,default:'0};
         readTailSeqInner <= readTailSeqInner + 1'b1;
       end
       if (pushWriteInner) begin
         writeOrderInner[writeTailSeqInner[3:0]] <= writeSlotInner;
-        entriesInner[writeSlotInner] <= '{address:exitValidInput ? AXI_EXIT_ADDR : requestInput.writeAddress,
+        entriesInner[SLOT_W'(writeSlotInner)] <= '{address:exitValidInput ? AXI_EXIT_ADDR : requestInput.writeAddress,
            transaction:requestInput.writeTransaction, mmio:exitValidInput,
            default:'0};
         writeTailSeqInner <= writeTailSeqInner + 1'b1;
@@ -319,12 +319,12 @@ module rv32_axi_data (
     assert (!pushReadInner || (pushWriteInner ? secondFreeFoundInner : firstFreeFoundInner));
     for (int age = 0; age < DEPTH; age++) begin
       if (age < int'(readCountInner)) begin
-        assert (!owners[readOrderInner[4'(readHeadInner + 4'(age))]]);
-        owners[readOrderInner[4'(readHeadInner + 4'(age))]] = 1'b1;
+        assert (!owners[SLOT_W'(readOrderInner[4'(readHeadInner + 4'(age))])]);
+        owners[SLOT_W'(readOrderInner[4'(readHeadInner + 4'(age))])] = 1'b1;
       end
       if (age < int'(writeCountInner)) begin
-        assert (!owners[writeOrderInner[4'(writeHeadInner + 4'(age))]]);
-        owners[writeOrderInner[4'(writeHeadInner + 4'(age))]] = 1'b1;
+        assert (!owners[SLOT_W'(writeOrderInner[4'(writeHeadInner + 4'(age))])]);
+        owners[SLOT_W'(writeOrderInner[4'(writeHeadInner + 4'(age))])] = 1'b1;
       end
     end
     assert (owners == dataBusyInner);
@@ -341,7 +341,10 @@ endmodule
 // at every edge. Written-bank rdata is undefined and is NEVER consumed: two
 // shared last-edge write buffers forward the full-line and R-beat writes.
 // Physical macro fixed overhead and power are not modeled by FakeRAM v1.
+// The public helper name is retained for existing consumers.
+/* verilator lint_off DECLFILENAME */
 module axi_payload_micro_sram #(
+/* verilator lint_on DECLFILENAME */
   parameter int DEPTH=8, WORDS=8,
   localparam int SLOT_W=$clog2(DEPTH), WORD_INDEX_W=$clog2(WORDS)
 ) (

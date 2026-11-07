@@ -16,8 +16,8 @@ module rv32_prf_lanes #(
   output logic [LANES-1:0] allocationFireOutput,
   output rv32_pkg::phy_tag_t [LANES-1:0] allocationPhyOutput,
   input rv32_pkg::prf_free_input_t [COMMIT_WIDTH-1:0] freeInput,
-  input rv32_pkg::prf_restore_input_t restoreInput,
-  input rv32_pkg::recovery_step_t recoveryInput,
+/* verilator lint_off UNUSEDSIGNAL */   input rv32_pkg::prf_restore_input_t restoreInput, /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   input rv32_pkg::recovery_step_t recoveryInput, /* verilator lint_on UNUSEDSIGNAL */
   input logic [$clog2(ROB_DEPTH+1)-1:0] restoreCountInput,
   input rv32_pkg::rob_replay_narrow_t [rv32_pkg::RECOVERY_WIDTH-1:0] replayInput,
   input rv32_pkg::prf_read_input_t [READ_PORTS-1:0] readInput,
