@@ -7,10 +7,10 @@ module rv32_rob #(
   input  logic                   rstNInput,
   input logic freezeInput,
 
-  input  rv32_pkg::rob_allocation_input_t allocInput,
+/* verilator lint_off UNUSEDSIGNAL */   input  rv32_pkg::rob_allocation_input_t allocInput, /* verilator lint_on UNUSEDSIGNAL */
   output logic                   allocReadyOutput,
   output rv32_pkg::rob_tag_t     allocTagOutput,
-  input  rv32_pkg::rob_allocation_input_t allocSecondInput,
+/* verilator lint_off UNUSEDSIGNAL */   input  rv32_pkg::rob_allocation_input_t allocSecondInput, /* verilator lint_on UNUSEDSIGNAL */
   output logic allocSecondReadyOutput,
   output rv32_pkg::rob_tag_t allocSecondTagOutput,
   input  rv32_pkg::rob_completion_t [5:0] completionInput,
@@ -25,7 +25,7 @@ module rv32_rob #(
   output rv32_pkg::rob_status_output_t statusOutput,
   output logic [$clog2(DEPTH+1)-1:0] countOutput,
 
-  input  rv32_pkg::rob_tag_t     replayOffsetInput,
+/* verilator lint_off UNUSEDSIGNAL */   input  rv32_pkg::rob_tag_t     replayOffsetInput, /* verilator lint_on UNUSEDSIGNAL */
   output rv32_pkg::rob_replay_narrow_t [rv32_pkg::RECOVERY_WIDTH-1:0] replayNarrowOutput,
   output rv32_pkg::rob_replay_ras_t    [rv32_pkg::RECOVERY_WIDTH-1:0] replayRasOutput
 );
@@ -58,7 +58,7 @@ module rv32_rob #(
 
   rob_tag_t headInner, tailInner;
   logic [$clog2(DEPTH+1)-1:0] countInner;
-  logic [SLOT_W-1:0] headSlotInner;
+/* verilator lint_off UNUSEDSIGNAL */   logic [SLOT_W-1:0] headSlotInner; /* verilator lint_on UNUSEDSIGNAL */
   logic [SLOT_W-1:0] tailSlotInner;
   logic [ROB_TAG_W-1:0] flushCountInner;
   logic [COUNT_W-1:0] flushCountAfterCommitInner;
@@ -66,7 +66,7 @@ module rv32_rob #(
 
   logic [ROB_TAG_W-1:0] flushTagNext;
   logic [ROB_TAG_W-1:0] headNext, tailNext;
-  logic [COUNT_W-1:0] countUpInner, countDownInner;
+/* verilator lint_off UNUSEDSIGNAL */   logic [COUNT_W-1:0] countUpInner, countDownInner; /* verilator lint_on UNUSEDSIGNAL */
   logic unusedCoutFlushTagInner, unusedBorrowFlushInner;
   logic unusedCoutHeadInner, unusedCoutTailInner;
   logic unusedCoutCountUpInner, unusedBorrowCountDownInner;
@@ -293,7 +293,7 @@ module rv32_rob #(
       end
     end else if (!freezeInput && flushInput.valid) begin
       tailInner <= flushTagNext;
-      countInner <= commitFireOutput ? flushCountAfterCommitInner :
+      countInner <= (|commitFireOutput) ? flushCountAfterCommitInner :
                                  flushCountInner[COUNT_W-1:0];
       for (iInner = 0; iInner < DEPTH; iInner = iInner + 1) begin
         if (validInner[iInner] && rob_is_younger(tagInner[iInner], flushInput.robTag))

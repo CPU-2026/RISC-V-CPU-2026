@@ -76,7 +76,11 @@ module rv32_rob_lanes #(
       logic [ROW_W-1:0] selectedCommitRow;
       logic [ROWS-1:0] selectRow;
       commit_read_t selected;
-      assign selectedCommitRow=baseRow+ROW_W'(BANK_W'(bank)<firstBank);
+      if (bank==COMMIT_WIDTH-1) begin : g_last_bank
+        assign selectedCommitRow=baseRow;
+      end else begin : g_rotated_bank
+        assign selectedCommitRow=baseRow+ROW_W'(BANK_W'(bank)<firstBank);
+      end
       for (genvar row=0;row<ROWS;row++) begin : g_decode
         assign selectRow[row]=(selectedCommitRow & ROW_W'(ROWS-1))==ROW_W'(row);
       end
@@ -269,7 +273,11 @@ module rv32_rob_lanes #(
       logic [ROW_W-1:0] selectedRow;
       logic [ROWS-1:0] selectRow;
       replay_read_t selected;
-      assign selectedRow=baseRow+ROW_W'(BANK_W'(bank)<firstBank);
+      if (bank==RECOVERY_WIDTH-1) begin : g_last_bank
+        assign selectedRow=baseRow;
+      end else begin : g_rotated_bank
+        assign selectedRow=baseRow+ROW_W'(BANK_W'(bank)<firstBank);
+      end
       for (genvar row=0;row<ROWS;row++) begin : g_decode
         // For ROWS=1 the addition may be one; the physical slot still wraps.
         assign selectRow[row]=(selectedRow & ROW_W'(ROWS-1))==ROW_W'(row);
@@ -376,9 +384,9 @@ module rv32_rob_lanes #(
   for (genvar row=0;row<DEPTH;row++) begin : g_row
     logic writeHit;
     logic completed, retired, storeReady;
-    if (DEPTH==ROB_ENTRIES) begin
+    if (DEPTH==ROB_ENTRIES) begin : g_package_depth
       assign storeReady=storeReadyInput.readyMask[row] && storeReadyInput.epochMask[row]==tagInner[row][ROB_TAG_W-1];
-    end else begin
+    end else begin : g_local_depth
       assign storeReady=storeReadyInput.readyMask[tagInner[row][ROB_TAG_W-2:0]] &&
         storeReadyInput.epochMask[tagInner[row][ROB_TAG_W-2:0]]==tagInner[row][ROB_TAG_W-1];
     end

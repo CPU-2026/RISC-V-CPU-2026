@@ -30,8 +30,19 @@ module sram_fakeram #(
             initial $fatal(1, "RAM library error (%m): WIDTH must be divisible by WRITE_GRANULARITY");
         end else begin : storage
             reg [WIDTH-1:0] words [0:DEPTH-1];
-            reg [WIDTH-1:0] next_word;
-            integer lane;
+            function automatic reg [WIDTH-1:0] merge_word(
+                input reg [WIDTH-1:0] previous_word,
+                input reg [WIDTH-1:0] write_data,
+                input reg [WIDTH/WRITE_GRANULARITY-1:0] write_mask
+            );
+                reg [WIDTH-1:0] merged;
+                merged = previous_word;
+                for (integer lane = 0; lane < WIDTH / WRITE_GRANULARITY; lane = lane + 1)
+                    if (write_mask[lane])
+                        merged[lane*WRITE_GRANULARITY +: WRITE_GRANULARITY]
+                            = write_data[lane*WRITE_GRANULARITY +: WRITE_GRANULARITY];
+                return merged;
+            endfunction
             always @(posedge clk) begin
                 rdata <= 'x;
                 if (en) begin
@@ -40,12 +51,7 @@ module sram_fakeram #(
                     if (we) begin
                         // Merge locally, then schedule one array assignment.
                         // This also supports large lane counts in Verilator 5.020.
-                        next_word = words[addr];
-                        for (lane = 0; lane < WIDTH / WRITE_GRANULARITY; lane = lane + 1)
-                            if (wmask[lane])
-                                next_word[lane*WRITE_GRANULARITY +: WRITE_GRANULARITY]
-                                    = wdata[lane*WRITE_GRANULARITY +: WRITE_GRANULARITY];
-                        words[addr] <= next_word;
+                        words[addr] <= merge_word(words[addr], wdata, wmask);
                     end else begin
                         rdata <= words[addr];
                     end

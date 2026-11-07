@@ -45,14 +45,14 @@ module rv32_icache #(
   logic validInner [SETS][WAYS];
   logic [TAG_W-1:0] tagInner [SETS][WAYS];
   logic [PLRU_W-1:0] plruInner [SETS];
-  logic [WAY_W-1:0] hitWayInner, predecodeWayInner, fillWayInner, readWayInner;
-  logic predecodeHitInner;
+/* verilator lint_off UNUSEDSIGNAL */   logic [WAY_W-1:0] hitWayInner, predecodeWayInner, fillWayInner, readWayInner; /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   logic predecodeHitInner; /* verilator lint_on UNUSEDSIGNAL */
   logic [31:0] requestAddressInner [REQUEST_DEPTH];
   logic [31:0] requestPredictedPcInner [REQUEST_DEPTH];
   bpu_ckpt_id_t requestCheckpointInner [REQUEST_DEPTH];
   logic requestReadyInner [REQUEST_DEPTH];
   logic [FETCH_DATA_BITS-1:0] requestInstructionInner [REQUEST_DEPTH];
-  logic requestSecondInner [REQUEST_DEPTH];
+/* verilator lint_off UNUSEDSIGNAL */   logic requestSecondInner [REQUEST_DEPTH]; /* verilator lint_on UNUSEDSIGNAL */
   logic [SLOT_W-1:0] headInner, tailSlotInner;
   logic [COUNT_W-1:0] countInner;
   logic readValidInner;
@@ -68,12 +68,12 @@ module rv32_icache #(
   logic [CACHE_LINE_BITS-1:0] wayRdataInner [WAYS];
   logic [FETCH_DATA_BITS-1:0] readWordInner, fillWordInner, forwardWordInner;
 
-  function automatic logic is_control(input logic [31:0] instruction);
+/* verilator lint_off UNUSEDSIGNAL */   function automatic logic is_control(input logic [31:0] instruction); /* verilator lint_on UNUSEDSIGNAL */
     return instruction[6:0]==OPCODE_BRANCH || instruction[6:0]==OPCODE_JAL ||
       (instruction[6:0]==OPCODE_JALR && instruction[14:12]==3'b000);
   endfunction
   function automatic logic [63:0] packet_words(input logic [CACHE_LINE_BITS-1:0] lineData,
-                                               input logic [31:0] address);
+/* verilator lint_off UNUSEDSIGNAL */                                                input logic [31:0] address); /* verilator lint_on UNUSEDSIGNAL */
     return 64'(lineData>>(32'(address[OFFSET_W-1:2])<<5));
   endfunction
   function automatic logic [PLRU_W-1:0] touch_way(
@@ -146,7 +146,7 @@ module rv32_icache #(
       controlMaskInner[predecodeAddressInput[INDEX_W+OFFSET_W-1:OFFSET_W]][predecodeWayInner][predecodeAddressInput[OFFSET_W-1:2]];
     if (FETCH_WIDTH==4) begin : g_four_hints
       // Relative lanes may cross 16 bytes; clip only at the ICache line end.
-      logic [3:0] controls;
+/* verilator lint_off UNUSEDSIGNAL */       logic [3:0] controls; /* verilator lint_on UNUSEDSIGNAL */
       always_comb begin
         controls='0;
         for (int lane=0;lane<4;lane++)
@@ -157,7 +157,7 @@ module rv32_icache #(
       assign predecodeOutput.secondControl=controls[1];
       assign predecodeOutput.thirdControl=controls[2];
       assign predecodeOutput.fourthControl=controls[3];
-    end else begin
+    end else begin : g_two_hints
       assign predecodeOutput.secondControl=predecodeHitInner&&predecodeAddressInput[OFFSET_W-1:2]!=WORD_W'(CACHE_LINE_BYTES/4-1)&&
         controlMaskInner[predecodeAddressInput[INDEX_W+OFFSET_W-1:OFFSET_W]][predecodeWayInner][predecodeAddressInput[OFFSET_W-1:2]+WORD_W'(1)];
       assign predecodeOutput.thirdControl=1'b0;

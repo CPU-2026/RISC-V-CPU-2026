@@ -1,8 +1,12 @@
 # 性能指标与综合评估
 
-## 已采用版本的认证结果
+## 当前ROB16／PRF48配置
 
-2026-11-07跨16B四取指的[正式指针](../../sync/evidence/current-production.json)与[独立PPA收口](../../sync/evidence/fetch4-cross16-ppa-20261107-r01/finalization.json)记录如下。**这些指标只认证当次源码，不自动覆盖后续参数化工作树。**
+正式默认已改为4/4/4/4、ROB16／PRF48，六项几何IPC **1.122239838632**，相对旧32/64下降1.315692%。用户指定采用，本次未综合／ABC／STA，**面积、Fmax、评分均未测**；仅IPC>1.0985通过，面积与频率门槛未知。以下旧PPA不能与当前IPC拼接。[正式指针](../../sync/evidence/current-production.json)。
+
+## 前一ROB32／PRF64版本的历史PPA
+
+以下为2026-11-07旧ROB32／PRF64跨16B四取指的[独立PPA收口](../../sync/evidence/fetch4-cross16-ppa-20261107-r01/finalization.json)记录如下。**这些指标只认证当次源码，不自动覆盖后续参数化工作树。**
 
 | 指标 | 认证值 | 相对上一双取指生产 |
 |---|---:|---:|

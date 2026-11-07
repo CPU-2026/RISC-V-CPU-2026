@@ -21,7 +21,7 @@ module rv32_rename_four #(
   output rv32_pkg::store_allocation_input_t [3:0] storeOutput,
   input rv32_pkg::rat_commit_input_t [COMMIT_WIDTH-1:0] mapCommitInput,
   input rv32_pkg::prf_free_input_t [COMMIT_WIDTH-1:0] freeInput,
-  input rv32_pkg::prf_read_input_t [COMMIT_WIDTH+3:0] scalarReadInput,
+/* verilator lint_off UNUSEDSIGNAL */   input rv32_pkg::prf_read_input_t [COMMIT_WIDTH+3:0] scalarReadInput, /* verilator lint_on UNUSEDSIGNAL */
   output rv32_pkg::prf_read_output_t [COMMIT_WIDTH+3:0] scalarReadOutput,
   output rv32_pkg::rat_read_output_t firstMapOutput,
   output rv32_pkg::rat_rename_output_t firstPreviousOutput,
@@ -59,12 +59,13 @@ module rv32_rename_four #(
   prf_read_output_t [8+COMMIT_WIDTH-1:0] values;
   prf_read_output_t [3:0][1:0] sourceValues;
   phy_tag_t [3:0] previewPhysical,allocatedPhysical;
-  logic [3:0] previewReady,physicalFire,robFire;
-  rob_tag_t [3:0] allocatedTags;
+/* verilator lint_off UNUSEDSIGNAL */   logic [3:0] previewReady,physicalFire,robFire; /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   rob_tag_t [3:0] allocatedTags; /* verilator lint_on UNUSEDSIGNAL */
   logic [$clog2(PRF_ENTRIES+1)-1:0] freeCount;
   logic [$clog2(ROB_ENTRIES+1)-1:0] robCredits;
   logic [3:0][$clog2(LQ_ENTRIES)-1:0] loadIndices;
   logic [3:0][$clog2(SQ_ENTRIES)-1:0] storeIndices;
+  logic [2:0] unusedPhysicalCount, unusedLoadCount, unusedStoreCount;
   for(genvar lane=0;lane<4;lane++)begin : g_queries
     assign mapQuery[lane]='{source1Arch:decodedInput[lane].rs1,source2Arch:decodedInput[lane].rs2};
     assign destinationQuery[lane]=decodedInput[lane].rd;
@@ -108,7 +109,8 @@ module rv32_rename_four #(
     .freePhysicalInput(previewPhysical),.physicalCreditsInput(freeCount),.nextRobTagInput(nextTagOutput),
     .robCreditsInput(robCredits),.rsCreditsInput,.loadCreditsInput,.storeCreditsInput,
     .loadSlotInput(loadPreviewInput),.storeSlotInput(storePreviewInput),
-    .fireOutput,.issueCountOutput(countOutput),.physicalCountOutput(),.loadCountOutput(),.storeCountOutput(),
+    .fireOutput,.issueCountOutput(countOutput),.physicalCountOutput(unusedPhysicalCount),
+    .loadCountOutput(unusedLoadCount),.storeCountOutput(unusedStoreCount),
     .renameOutput(renames),.physicalOutput(physical),.robOutput(allocations),.rsOutput(base),
     .loadOutput,.storeOutput,.loadIndexOutput(loadIndices),.storeIndexOutput(storeIndices)
   );

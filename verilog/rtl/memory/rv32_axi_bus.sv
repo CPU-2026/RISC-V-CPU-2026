@@ -2,7 +2,7 @@
 // AW/W/B belong exclusively to AXIData. There are no AXI transaction IDs.
 module rv32_axi_bus (
   input logic clkInput, rstNInput,
-  input rv32_pkg::axi_master_t fetchInput, dataInput,
+/* verilator lint_off UNUSEDSIGNAL */   input rv32_pkg::axi_master_t fetchInput, dataInput, /* verilator lint_on UNUSEDSIGNAL */
   input rv32_pkg::axi_slave_t slaveInput,
   output rv32_pkg::axi_master_t masterOutput,
   output rv32_pkg::axi_slave_t fetchOutput, dataOutput

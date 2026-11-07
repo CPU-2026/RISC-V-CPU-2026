@@ -16,7 +16,7 @@ module rv32_frontend #(
     recoveryActiveInput,
     output rv32_pkg::fetch_query_output_t predictorQueryOutput,
     output logic [31:0] fetchProgramCounterOutput,
-    input rv32_pkg::prediction_output_t predictionInput,
+/* verilator lint_off UNUSEDSIGNAL */     input rv32_pkg::prediction_output_t predictionInput, /* verilator lint_on UNUSEDSIGNAL */
     input rv32_pkg::icache_fetch_hint_t fetchHintInput,
     input logic [31:0] imemSecondInstructionInput,
     output logic secondRequestOutput,
@@ -29,17 +29,17 @@ module rv32_frontend #(
     input rv32_pkg::redirect_input_t redirectInput,
     output rv32_pkg::fetch_queue_output_t instructionOutput,
     output rv32_pkg::decoded_uop_t decodedOutput,
-    input logic iqReadyInput,
+/* verilator lint_off UNUSEDSIGNAL */     input logic iqReadyInput, /* verilator lint_on UNUSEDSIGNAL */
     output rv32_pkg::fetch_queue_output_t instructionSecondOutput,
     output rv32_pkg::decoded_uop_t decodedSecondOutput,
-    input logic iqSecondReadyInput,
+/* verilator lint_off UNUSEDSIGNAL */     input logic iqSecondReadyInput, /* verilator lint_on UNUSEDSIGNAL */
     output rv32_pkg::predictor_fetch_info_t fetchInfoOutput,
     output logic [$clog2(FQ_DEPTH+1)-1:0] fqCountOutput,
     output logic [$clog2(IQ_DEPTH+1)-1:0] iqCountOutput,
     // New four-lane interface; legacy scalar/Second ports retain their behavior.
     output rv32_pkg::decoded_uop_t [3:0] decodedLanesOutput,
     output logic [3:0] iqLaneValidOutput,
-    input logic [2:0] iqReadyCountInput,
+/* verilator lint_off UNUSEDSIGNAL */     input logic [2:0] iqReadyCountInput, /* verilator lint_on UNUSEDSIGNAL */
     output logic wholeGroupOutput,
     input logic [127:0] imemPacketInstructionsInput,
     output logic [2:0] fetchCountOutput
@@ -77,16 +77,16 @@ module rv32_frontend #(
   logic fetchAllowedInner;
   logic recoveryResponseSafeInner;
   logic fqReadyInner, fqValidInner, iqReadyInner;
-  logic fqPushInner, fqPopInner;
-  decode_context_t fqInputInner, fqHeadInner, iqHeadInner;
-  fetch_packet_t fqPacketInputInner;
-  logic secondAllowedInner, querySecondInner;
+/* verilator lint_off UNUSEDSIGNAL */   logic fqPushInner, fqPopInner; /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   decode_context_t fqInputInner, fqHeadInner, iqHeadInner; /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   fetch_packet_t fqPacketInputInner; /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   logic secondAllowedInner, querySecondInner; /* verilator lint_on UNUSEDSIGNAL */
   logic [31:0] packetNextPcInner;
   logic lastFqPushInner;
   logic [31:0] lastFqInstrInner, lastFqPcInner;
   integer iInner;
 
-  function automatic logic is_control(input logic [31:0] instruction);
+/* verilator lint_off UNUSEDSIGNAL */   function automatic logic is_control(input logic [31:0] instruction); /* verilator lint_on UNUSEDSIGNAL */
     return instruction[6:0]==OPCODE_BRANCH || instruction[6:0]==OPCODE_JAL ||
       (instruction[6:0]==OPCODE_JALR && instruction[14:12]==3'b000);
   endfunction
@@ -289,6 +289,8 @@ module rv32_frontend #(
             else $fatal(1, "control entered recovery IQ");
         end
 `endif
+      logic [$clog2(RENAME_WIDTH+1)-1:0] unusedAvailableCountInner;
+      logic [$clog2(DECODE_WIDTH+1)-1:0] unusedDecodeFireCountInner;
       rv32_decode_issue_queue #(
           .DECODE_WIDTH(DECODE_WIDTH),
           .ISSUE_WIDTH(RENAME_WIDTH),
@@ -309,16 +311,16 @@ module rv32_frontend #(
           .validOutput(queueValid),
           .wholeGroupOutput,
           .readyCountInput(readyCount),
-          .availableCountOutput(),
-          .decodeFireCountOutput(),
+          .availableCountOutput(unusedAvailableCountInner),
+          .decodeFireCountOutput(unusedDecodeFireCountInner),
           .fqCountOutput,
           .iqCountOutput
       );
       for (genvar lane = 0; lane < 4; lane++) begin : g_array_head
-        if (lane < RENAME_WIDTH) begin
+        if (lane < RENAME_WIDTH) begin : g_enabled
           assign decodedLanesOutput[lane] = queueDecoded[lane];
           assign iqLaneValidOutput[lane]  = queueValid[lane];
-        end else begin
+        end else begin : g_disabled
           assign decodedLanesOutput[lane] = '0;
           assign iqLaneValidOutput[lane]  = 1'b0;
         end
@@ -340,7 +342,7 @@ module rv32_frontend #(
                 predictedNextProgramCounter: decodedSecondOutput.predictedNextProgramCounter,
                 predictorCheckpointId: decodedSecondOutput.predictorCheckpointId
             };
-      end else begin
+      end else begin : g_no_second_head
         assign decodedSecondOutput = '0;
         assign instructionSecondOutput = '0;
       end
@@ -358,7 +360,7 @@ module rv32_frontend #(
       logic [RENAME_WIDTH-1:0][$bits(decoded_uop_t)-1:0] iqWordsInner;
       logic [1:0] inputWordsInner, availableWordsInner, decodeCountInner;
       logic [$clog2(RENAME_WIDTH+1)-1:0] iqAvailableInner, issueCountInner;
-      logic [FQ_COUNT_W-1:0] fqCapacityInner, fqOccupancyInner;
+/* verilator lint_off UNUSEDSIGNAL */       logic [FQ_COUNT_W-1:0] fqCapacityInner, fqOccupancyInner; /* verilator lint_on UNUSEDSIGNAL */
       logic [IQ_COUNT_W-1:0] iqCapacityInner, iqOccupancyInner;
       logic iqAcceptInner;
       assign inputWordsInner = FETCH_WIDTH == 2 &&
@@ -412,7 +414,9 @@ module rv32_frontend #(
               .decodeContextInput(fqWordsInner[lane]),
               .uopOutput(decodedWordsInner[lane])
           );
-        end else assign decodedWordsInner[lane] = '0;
+        end else begin : g_disabled
+          assign decodedWordsInner[lane] = '0;
+        end
       end
       rv32_prefix_fifo #(
           .DEPTH(IQ_DEPTH),

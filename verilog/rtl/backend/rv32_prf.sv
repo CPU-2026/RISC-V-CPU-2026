@@ -22,8 +22,8 @@ module rv32_prf #(
   // Recovery shares the four-beat cursor with RAT/RAS. Only younger newPhy
   // registers are returned, in age order. The cursor retains PRE-squash count:
   // the ROB tail is already rewound, but its payload stays frozen until done.
-  input  rv32_pkg::prf_restore_input_t restoreInput,
-  input  rv32_pkg::recovery_step_t recoveryInput,
+/* verilator lint_off UNUSEDSIGNAL */   input  rv32_pkg::prf_restore_input_t restoreInput, /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   input  rv32_pkg::recovery_step_t recoveryInput, /* verilator lint_on UNUSEDSIGNAL */
   input  logic [$clog2(ROB_DEPTH+1)-1:0] restoreCountInput,
   input  rv32_pkg::rob_replay_narrow_t [rv32_pkg::RECOVERY_WIDTH-1:0] replayInput,
 

@@ -1,8 +1,14 @@
 # 验证范围与入口
 
+## 当前ROB16／PRF48生产资格
+
+新默认4/4/4/4、ROB16／PRF48、checkpoint64／恢复4槽。硬件默认lint／常量检查及与显式配置的预处理token精确桥接通过；复用已认证原六native／sv2v答案、各374104条九字段退休及同配置周期。两软件全新Release／断言四构建与两外部退休副本资格通过（各374104条PC／周期）；仅两个容量头变化，用户PRF编译修复保留。周期8341／13119／3101／5531／162354／162410。
+
+新配置未综合，无面积／Fmax／评分；不是全输入或全状态形式证明。证书：[采用](../../sync/evidence/rob16-prf48-production-adoption-20261107-r02/adoption.json)、[收口](../../sync/evidence/rob16-prf48-production-adoption-20261107-r02/finalization.json)。以下旧资格保持历史归属。
+
 本页区分已认证结果与可运行入口；**本次文档整理未重跑测试**。构建／提交细节见 [template.md](template.md)，架构见 [architecture.md](architecture.md)。
 
-## 已认证范围（2026-11-07采用版本）
+## 前一ROB32／PRF64采用版本的历史资格
 
 | 层次 | 已完成的资格 |
 |---|---|

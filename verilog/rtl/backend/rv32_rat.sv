@@ -10,12 +10,12 @@ module rv32_rat #(
   output rv32_pkg::rat_read_output_t readOutput,
   input  rv32_pkg::rat_rename_input_t renameInput,
   output rv32_pkg::rat_rename_output_t renameOutput,
-  input  rv32_pkg::rat_read_input_t readSecondInput,
+/* verilator lint_off UNUSEDSIGNAL */   input  rv32_pkg::rat_read_input_t readSecondInput, /* verilator lint_on UNUSEDSIGNAL */
   output rv32_pkg::rat_read_output_t readSecondOutput,
   input  rv32_pkg::rat_rename_input_t renameSecondInput,
   output rv32_pkg::rat_rename_output_t renameSecondOutput,
-  input  rv32_pkg::rat_restore_input_t restoreInput,
-  input  rv32_pkg::recovery_step_t recoveryInput,
+/* verilator lint_off UNUSEDSIGNAL */   input  rv32_pkg::rat_restore_input_t restoreInput, /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   input  rv32_pkg::recovery_step_t recoveryInput, /* verilator lint_on UNUSEDSIGNAL */
   input  rv32_pkg::rob_replay_narrow_t [rv32_pkg::RECOVERY_WIDTH-1:0] replayInput,
   input  rv32_pkg::rat_commit_input_t [COMMIT_WIDTH-1:0] commitInput
 );
@@ -31,7 +31,7 @@ module rv32_rat #(
   phy_tag_t restoreMapInner [ARCH_REGS];
   logic [ARCH_REGS-1:0] archValidInner;
   logic [ARCH_REGS-1:0] archWriteMaskInner;
-  logic [(ARCH_REGS*PHY_TAG_W)-1:0] archReadDataInner, archWriteDataInner;
+/* verilator lint_off UNUSEDSIGNAL */   logic [(ARCH_REGS*PHY_TAG_W)-1:0] archReadDataInner, archWriteDataInner; /* verilator lint_on UNUSEDSIGNAL */
   logic replayActiveInner, replayActiveNext;
 
   // Fold commits in age order; a younger write to the same architectural

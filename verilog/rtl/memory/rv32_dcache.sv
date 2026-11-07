@@ -182,7 +182,7 @@ module rv32_dcache #(
   integer firstInner, hitWayInner, freeMissInner, allocationInner;
   integer lookupInner, lookupCandidateInner, responseInner, storeInner, allocateMissInner;
   integer normalResponseInner;
-  integer mergeSlotInner, mergeMissInner, fillMissInner, writeAckInner;
+/* verilator lint_off UNUSEDSIGNAL */   integer mergeSlotInner, mergeMissInner, fillMissInner, writeAckInner; /* verilator lint_on UNUSEDSIGNAL */
   integer readMissInner, writeMissInner;
   logic fillBeatInner, fillFireInner, firstFillInner, earlyInner, acceptInner;
   logic [31:0] readHitRawInner;
@@ -237,7 +237,7 @@ module rv32_dcache #(
   always_ff @(posedge clkInput or negedge rstNInput) begin
     if (!rstNInput) begin
       hitLocationValidInner <= '0;
-      hitLocationVictimInner <= 1'b0;
+      hitLocationVictimInner <= '0;
     end else begin
       // Conservative invalidation of both ways precedes victim replacement.
       for (int h=0; h<STORE_LOCATION_ENTRIES; h++)
@@ -262,7 +262,7 @@ module rv32_dcache #(
   // Per-row narrow buffering uses the existing raw/ready state. The late word
   // never enters a new combinational CPU-response mux or frees an MSHR owner.
   function automatic logic [31:0] extract_returned_word(
-    input logic [31:0] data, input dcache_cpu_request_input_t request
+/* verilator lint_off UNUSEDSIGNAL */     input logic [31:0] data, input dcache_cpu_request_input_t request /* verilator lint_on UNUSEDSIGNAL */
   );
     logic [31:0] shifted;
     shifted = data >> (32'(request.address[1:0]) << 3);
@@ -279,24 +279,24 @@ module rv32_dcache #(
       default: return 4;
     endcase
   endfunction
-  function automatic logic [INDEX_W-1:0] set_of(input logic [31:0] address);
+/* verilator lint_off UNUSEDSIGNAL */   function automatic logic [INDEX_W-1:0] set_of(input logic [31:0] address); /* verilator lint_on UNUSEDSIGNAL */
     return address[OFFSET_W+:INDEX_W];
   endfunction
-  function automatic logic [31:0] line_of(input logic [31:0] address);
+/* verilator lint_off UNUSEDSIGNAL */   function automatic logic [31:0] line_of(input logic [31:0] address); /* verilator lint_on UNUSEDSIGNAL */
     return {address[31:OFFSET_W], {OFFSET_W{1'b0}}};
   endfunction
-  function automatic logic [31:0] victim_address(input int m);
+/* verilator lint_off UNUSEDSIGNAL */   function automatic logic [31:0] victim_address(input int m); /* verilator lint_on UNUSEDSIGNAL */
     return {missesInner[m].victimTag, missesInner[m].line[OFFSET_W+:INDEX_W], {OFFSET_W{1'b0}}};
   endfunction
   function automatic logic [31:0] extract_raw(
     input logic [DCACHE_LINE_BITS-1:0] lineData,
-    input dcache_cpu_request_input_t request
+/* verilator lint_off UNUSEDSIGNAL */     input dcache_cpu_request_input_t request /* verilator lint_on UNUSEDSIGNAL */
   );
     // Byte-granular extract as word-select + 4-way byte rotate. Bit-identical to
     // lineData >> (offset*8): the 64-bit zero pad reproduces the shift's
     // fill-with-zero past the line end, and the size case truncates the window.
     logic [DCACHE_LINE_BITS+63:0] padded;
-    logic [63:0] pair;
+/* verilator lint_off UNUSEDSIGNAL */     logic [63:0] pair; /* verilator lint_on UNUSEDSIGNAL */
     logic [31:0] win;
     padded = {64'b0, lineData};
     pair = padded[{request.address[OFFSET_W-1:2], 2'b00} * 8 +: 64];
@@ -312,7 +312,7 @@ module rv32_dcache #(
       default: return win;
     endcase
   endfunction
-  function automatic logic [DCACHE_LINE_BITS-1:0] sram_line(input int way);
+/* verilator lint_off UNUSEDSIGNAL */   function automatic logic [DCACHE_LINE_BITS-1:0] sram_line(input int way); /* verilator lint_on UNUSEDSIGNAL */
     for (int b = 0; b < WORDS_PER_LINE; b++)
       sram_line[b*32+:32] = dataRdataBankInner[way][b];
   endfunction
@@ -351,7 +351,7 @@ module rv32_dcache #(
     for (int m = 0; m < MSHR_DEPTH; m++)
       if (missesInner[m].valid && missesInner[m].line == lineAddress) find_miss = m;
   endfunction
-  function automatic logic set_locked(input logic [31:0] address);
+/* verilator lint_off UNUSEDSIGNAL */   function automatic logic set_locked(input logic [31:0] address); /* verilator lint_on UNUSEDSIGNAL */
     set_locked = 0;
     for (int m = 0; m < MSHR_DEPTH; m++)
       if (missesInner[m].valid && missesInner[m].line[OFFSET_W+:INDEX_W] == address[OFFSET_W+:INDEX_W]) set_locked = 1;
@@ -692,7 +692,7 @@ module rv32_dcache #(
   end
 
   always_comb begin : sram_ports
-    int way, owner, globalByte;
+/* verilator lint_off UNUSEDSIGNAL */     int way, owner, globalByte; /* verilator lint_on UNUSEDSIGNAL */
     metaWdataInner = '0;
     way = 0;
     owner = 0;

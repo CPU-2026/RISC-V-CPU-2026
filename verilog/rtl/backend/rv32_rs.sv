@@ -13,14 +13,14 @@ module rv32_rs #(
   parameter bit INDEPENDENT_ISSUE_READY = 1'b0
 ) (
   input  logic                   clkInput,
-  input  logic                   rstNInput,
+/* verilator lint_off SYNCASYNCNET */   input  logic                   rstNInput, /* verilator lint_on SYNCASYNCNET */
   input logic freezeInput,
   input  rv32_pkg::rob_flush_input_t flushInfoInput,
 
   input  rv32_pkg::rs_allocation_input_t allocInput,
   output logic                   allocReadyOutput,
   input  logic [AUX_W-1:0]       allocAuxInput,
-  input  rv32_pkg::rs_allocation_input_t allocSecondInput,
+/* verilator lint_off UNUSEDSIGNAL */   input  rv32_pkg::rs_allocation_input_t allocSecondInput, /* verilator lint_on UNUSEDSIGNAL */
   output logic allocSecondReadyOutput,
   input  logic [AUX_W-1:0] allocSecondAuxInput,
 
@@ -67,13 +67,13 @@ module rv32_rs #(
   logic useImmInner [DEPTH];
   logic [AUX_W-1:0] auxInner [DEPTH];
 
-  logic issueFoundInner;
+/* verilator lint_off UNUSEDSIGNAL */   logic issueFoundInner; /* verilator lint_on UNUSEDSIGNAL */
   logic [INDEX_W-1:0] issueIndexInner;
   logic allocFoundInner;
   logic [INDEX_W-1:0] allocIndexInner;
   logic [INDEX_W-1:0] allocSecondIndexInner;
-  logic allocSecondFoundInner, allocFireInner, allocSecondFireInner;
-  cdb_result_t allocSecondSrc1WbInner, allocSecondSrc2WbInner;
+/* verilator lint_off UNUSEDSIGNAL */   logic allocSecondFoundInner, allocFireInner, allocSecondFireInner; /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   cdb_result_t allocSecondSrc1WbInner, allocSecondSrc2WbInner; /* verilator lint_on UNUSEDSIGNAL */
   logic allocSecondSrc1ReadyInner, allocSecondSrc2ReadyInner;
   logic [31:0] allocSecondSrc1ValueInner, allocSecondSrc2ValueInner;
   logic [INDEX_W-1:0] allocLanesIndexInner [4];
@@ -86,11 +86,11 @@ module rv32_rs #(
   logic allocSrc2ReadyResolvedInner;
   logic [31:0] allocSrc2ValueResolvedInner;
   integer seqIndexInner;
-  integer laneInner;
+/* verilator lint_off UNUSEDSIGNAL */   integer laneInner; /* verilator lint_on UNUSEDSIGNAL */
   integer seqLaneInner;
 
-  logic [DEPTH-1:0] laneTakenInner;
-  logic laneFoundInner [ISSUE_WIDTH];
+/* verilator lint_off UNUSEDSIGNAL */   logic [DEPTH-1:0] laneTakenInner; /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   logic laneFoundInner [ISSUE_WIDTH]; /* verilator lint_on UNUSEDSIGNAL */
   logic [INDEX_W-1:0] laneIndexInner [ISSUE_WIDTH];
   logic [ISSUE_WIDTH-1:0] issueAcceptInner;
   for (genvar lane=0;lane<ISSUE_WIDTH;lane++) begin : g_dispatch_accept
@@ -98,11 +98,11 @@ module rv32_rs #(
       (INDEPENDENT_ISSUE_READY ? issueLaneReadyInput[lane] : issueReadyInput);
   end
 
-  cdb_result_t allocSrc1WbInner, allocSrc2WbInner;
+/* verilator lint_off UNUSEDSIGNAL */   cdb_result_t allocSrc1WbInner, allocSrc2WbInner; /* verilator lint_on UNUSEDSIGNAL */
   cdb_result_t src1WbInner [DEPTH], src2WbInner [DEPTH];
   cdb_result_t src1IssueWbInner [DEPTH], src2IssueWbInner [DEPTH];
   logic src1IssueReadyInner [DEPTH], src2IssueReadyInner [DEPTH];
-  logic [31:0] src1IssueValueInner [DEPTH], src2IssueValueInner [DEPTH];
+/* verilator lint_off UNUSEDSIGNAL */   logic [31:0] src1IssueValueInner [DEPTH], src2IssueValueInner [DEPTH]; /* verilator lint_on UNUSEDSIGNAL */
   function automatic cdb_result_t matching_writeback(input phy_tag_t tag);
     matching_writeback = '0;
     // Preserve the original lowest-port priority.
@@ -161,12 +161,16 @@ module rv32_rs #(
     for (genvar row=0;row<DEPTH;row++) begin : g_rank
       assign readyMaskInner[row]=busyInner[row] && src1IssueReadyInner[row] && src2IssueReadyInner[row];
       for (genvar peer=0;peer<DEPTH;peer++) begin : g_precedence
-        if (peer==row) assign beforeInner[row][peer]=1'b0;
-        else if (peer<row)
+        if (peer==row) begin : g_self
+          assign beforeInner[row][peer]=1'b0;
+        end else if (peer<row) begin : g_lower
           assign beforeInner[row][peer]=!rs_is_older(robTagInner[row],robTagInner[peer]);
+        end
         // Spell out the reciprocal comparison: equivalent complementary
         // expressions can be shared without a coarse array self-dependency.
-        else assign beforeInner[row][peer]=rs_is_older(robTagInner[peer],robTagInner[row]);
+        else begin : g_higher
+          assign beforeInner[row][peer]=rs_is_older(robTagInner[peer],robTagInner[row]);
+        end
       end
       assign olderReadyInner[row]=readyMaskInner & beforeInner[row];
       // Explicit balanced four-input population count; self precedence is 0.
@@ -234,10 +238,13 @@ module rv32_rs #(
     for (genvar row = 0; row < DEPTH; row++) begin : g_row
       assign readyMaskInner[row] = busyInner[row] && src1IssueReadyInner[row] && src2IssueReadyInner[row];
       for (genvar peer = 0; peer < DEPTH; peer++) begin : g_peer
-        if (peer == row) assign outranksInner[row][peer] = 1'b0;
-        else if (peer < row)
+        if (peer == row) begin : g_self
+          assign outranksInner[row][peer] = 1'b0;
+        end else if (peer < row) begin : g_lower
           assign outranksInner[row][peer] = !rs_is_older(robTagInner[row], robTagInner[peer]);
-        else assign outranksInner[row][peer] = rs_is_older(robTagInner[peer], robTagInner[row]);
+        end else begin : g_higher
+          assign outranksInner[row][peer] = rs_is_older(robTagInner[peer], robTagInner[row]);
+        end
       end
       // ROB tags inhabit one legal half-ring. Static age preference is early;
       // late granted-WB readiness only passes this short eligibility reduction.
@@ -510,7 +517,7 @@ module rv32_rs #(
       end
     end
     for (genvar lane=0;lane<4;lane++) begin : g_operand
-      cdb_result_t wb1,wb2;
+/* verilator lint_off UNUSEDSIGNAL */       cdb_result_t wb1,wb2; /* verilator lint_on UNUSEDSIGNAL */
       assign wb1=matching_writeback(allocLanesInput[lane].source1Tag);
       assign wb2=matching_writeback(allocLanesInput[lane].source2Tag);
       assign allocLanesS1ReadyInner[lane]=allocLanesInput[lane].source1Ready || wb1.valid;
@@ -525,7 +532,9 @@ module rv32_rs #(
     assign allocLanesS2ReadyInner='0;
     assign allocLanesS1ValueInner='0;
     assign allocLanesS2ValueInner='0;
-    for (genvar lane=0;lane<4;lane++) assign allocLanesIndexInner[lane]='0;
+    for (genvar lane=0;lane<4;lane++) begin : g_lane
+      assign allocLanesIndexInner[lane]='0;
+    end
   end endgenerate
 
   // Decode accepted allocation lanes once per row; share youngest-writer

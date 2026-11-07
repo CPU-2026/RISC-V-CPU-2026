@@ -42,7 +42,7 @@ package rv32_pkg;
 `ifdef CPU_ROB_ENTRIES
   parameter int unsigned ROB_ENTRIES  = `CPU_ROB_ENTRIES;
 `else
-  parameter int unsigned ROB_ENTRIES  = ISSUE_WIDTH == 4 ? 32 : 16;
+  parameter int unsigned ROB_ENTRIES  = 16;
 `endif
   // Capacity is part of a width configuration, not a fixed scalar constant.
   // Explicit overrides also apply when a top is parameterized rather than
@@ -74,7 +74,7 @@ package rv32_pkg;
 `ifdef CPU_PRF_ENTRIES
   parameter int unsigned PRF_ENTRIES  = `CPU_PRF_ENTRIES;
 `else
-  parameter int unsigned PRF_ENTRIES  = ISSUE_WIDTH == 4 ? 64 : 48;
+  parameter int unsigned PRF_ENTRIES  = 48;
 `endif
   parameter int unsigned ROB_TAG_W    = $clog2(ROB_ENTRIES) + 1;
   parameter int unsigned PHY_TAG_W    = $clog2(PRF_ENTRIES);

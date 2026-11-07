@@ -4,12 +4,12 @@
 
 ## 当前采用与工作树边界
 
-2026-11-07 正式采用**跨16B四取指**：4/4/4/4、双ALU三CDB、单AGU，I$ 1 KiB、D$ 8 KiB。当前结构见 [architecture.md](architecture.md)，认证性能见 [assessment.md](assessment.md)，验证范围见 [course.md](course.md)。
+2026-11-07 用户进一步指定正式采用**跨16B四取指ROB16／PRF48**：4/4/4/4、双ALU三CDB、单AGU，I$1 KiB／D$8 KiB、checkpoint64保持，恢复每拍4槽。六项课程周期8341／13119／3101／5531／162354／162410，几何IPC1.122239838632（较旧32/64 **−1.315692%**），仅vvadd改善20.606256%。用户明确选择，不以IPC最优为由拒绝。
 
-- [正式生产指针](../../sync/evidence/current-production.json)决定采用身份，不以旧文档中的“当前生产”为准。
-- [采用证书](../../sync/evidence/fetch4-cross16-production-adoption-20261107-r01/adoption.json)、[最终收口](../../sync/evidence/fetch4-cross16-production-adoption-20261107-r01/finalization.json)、[发布后复验](../../sync/evidence/fetch4-cross16-production-adoption-20261107-r01/post-completion-verification.json)记录本次发布。
-- 后续[独立容量与 I$ 相联度](parameterized-configuration.md)属于工作树配置改动；未因此更新生产指针或两软件，也没有新 PPA 认证。
-- 全部综合／ABC／STA 继续暂停；文档整理不启动实验、采用、清理、提交或推送。
+- [正式生产指针](../../sync/evidence/current-production.json)与[采用证书](../../sync/evidence/rob16-prf48-production-adoption-20261107-r02/adoption.json)决定身份。
+- 本次不综合／ABC／STA，面积／Fmax／评分均未测，不套用旧32/64 PPA。
+- 硬件默认预处理精确桥接与常量／lint通过，复用原六双模型资格；两软件仅默认头变化，保留用户PRF编译修复，全新四构建和外部退休PC／周期匹配。
+- 原参数敏感度数据／历史证书不改；备份原默认、文档和指针，三树HEAD索引保持，未提交／推送。全部综合暂停，不自动继续实验或清理。
 
 ## 演进主线
 
@@ -38,7 +38,8 @@
 | 标准同link JALR只push | 34614.841687 | 313.437404 | 1.059446088949 |
 | SQ完成事件旁路 | 34465.105087 | 306.770521 | 1.063329023912 |
 | LSU通知资格提前计算 | 34699.405687 | 316.146959 | 1.063329023912 |
-| **跨16B四取指** | **34947.061567** | **319.301528** | **1.137201912621** |
+| 跨16B四取指（旧ROB32／PRF64） | 34947.061567 | 319.301528 | 1.137201912621 |
+| **跨16B四取指ROB16／PRF48** | **未测** | **未测** | **1.122239838632** |
 
 关键取舍：预取版 towers 多10拍；安全让行版 rsort 多2262拍；SQ事件版 median 少345拍但四项回退；通知提前计算保持全部周期、Fmax 提高3.056499%。采用并不表示逐项无退化。
 

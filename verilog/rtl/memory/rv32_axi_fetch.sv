@@ -5,12 +5,12 @@
 module rv32_axi_fetch (
   input logic clkInput, rstNInput,
   input logic squashInput,
-  input rv32_pkg::cache_line_request_output_t requestInput,
+/* verilator lint_off UNUSEDSIGNAL */   input rv32_pkg::cache_line_request_output_t requestInput, /* verilator lint_on UNUSEDSIGNAL */
   output logic requestReadyOutput,
   output rv32_pkg::icache_line_response_input_t responseOutput,
   input logic responseReadyInput,
   output rv32_pkg::axi_master_t masterOutput,
-  input rv32_pkg::axi_slave_t slaveInput
+/* verilator lint_off UNUSEDSIGNAL */   input rv32_pkg::axi_slave_t slaveInput /* verilator lint_on UNUSEDSIGNAL */
 );
   import rv32_pkg::*;
   localparam int DEPTH = AXI_FETCH_LINE_ENTRIES;

@@ -6,7 +6,7 @@ module rv32_agu_unit (
   input  logic rstNInput,
   input logic freezeInput,
   input  rv32_pkg::rob_flush_input_t flushInfoInput,
-  input  rv32_pkg::rs_issue_output_t executeInput,
+/* verilator lint_off UNUSEDSIGNAL */   input  rv32_pkg::rs_issue_output_t executeInput, /* verilator lint_on UNUSEDSIGNAL */
   input  logic [3:0] auxiliaryInput,
   output logic inReadyOutput,
   output rv32_pkg::lsu_address_input_t addressOutput,

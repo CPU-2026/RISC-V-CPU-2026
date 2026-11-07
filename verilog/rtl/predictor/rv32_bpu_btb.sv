@@ -53,7 +53,7 @@ module rv32_bpu_btb #(
 
   logic [BTB_ENTRY_W-1:0] btbEntryInner [BTB_STORAGE_ENTRIES];
 
-  logic [31:0] queryP2Inner;
+/* verilator lint_off UNUSEDSIGNAL */   logic [31:0] queryP2Inner; /* verilator lint_on UNUSEDSIGNAL */
   logic [BTB_INDEX_W-1:0] queryBtbIdxInner;
   logic [BTB_ENTRY_W-1:0] queryEntryInner;
   logic [BTB_STATE_W-1:0] queryStateInner;

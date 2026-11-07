@@ -27,7 +27,7 @@ module rv32_lsu #(
   input  rv32_pkg::store_allocation_input_t storeAllocationInput,
   output logic                   storeAllocReadyOutput,
   output logic [$clog2(SQ_DEPTH)-1:0] storeAllocIndexOutput,
-  input rv32_pkg::store_allocation_input_t storeAllocationSecondInput,
+/* verilator lint_off UNUSEDSIGNAL */   input rv32_pkg::store_allocation_input_t storeAllocationSecondInput, /* verilator lint_on UNUSEDSIGNAL */
   output logic storeAllocSecondReadyOutput,
   output logic [$clog2(SQ_DEPTH)-1:0] storeAllocSecondIndexOutput,
 
@@ -125,7 +125,7 @@ module rv32_lsu #(
   data_transaction_t responseOwnerInner, allocationOwnerInner;
   always_comb begin
     logic found;
-    int slot;
+/* verilator lint_off UNUSEDSIGNAL */     int slot; /* verilator lint_on UNUSEDSIGNAL */
     found = 0;
     allocationOwnerInner = fifoTailInner;
     for (int i = 0; i < DATA_REQUEST_ENTRIES; i++) begin
@@ -189,7 +189,7 @@ module rv32_lsu #(
   logic storeAddressEventInner, loadAddressEventInner;
   logic lqEarlyForwardInner [LQ_DEPTH];
   logic [31:0] lqEarlyValueInner [LQ_DEPTH];
-  store_forward_result_t selectedForwardInner;
+/* verilator lint_off UNUSEDSIGNAL */   store_forward_result_t selectedForwardInner; /* verilator lint_on UNUSEDSIGNAL */
   store_forward_result_t addressedForwardInner;
   logic addressedForwardValidInner;
   integer forwardIndexInner;
@@ -403,8 +403,8 @@ module rv32_lsu #(
     logic [2:0] loadOffset, storeOffset, loadSpan, storeSpan, loadEnd, storeEnd;
     loadOffset = {1'b0, loadAddressInput[1:0]};
     storeOffset = {1'b0, storeAddressInput[1:0]};
-    loadSpan = {1'b0, mem_bytes(loadSizeInput)};
-    storeSpan = {1'b0, mem_bytes(storeSizeInput)};
+    loadSpan = mem_bytes(loadSizeInput);
+    storeSpan = mem_bytes(storeSizeInput);
     loadEnd = loadOffset + loadSpan;
     storeEnd = storeOffset + storeSpan;
     if (loadAddressInput[31:2] == storeAddressInput[31:2])
@@ -454,7 +454,7 @@ module rv32_lsu #(
     logic found, addressReady, dataReady, unknownFound;
     logic [SQ_INDEX_W-1:0] youngestIndex;
     logic [SQ_INDEX_W-1:0] youngestUnknownIndex;
-    logic [31:0] youngestAddress, youngestData;
+/* verilator lint_off UNUSEDSIGNAL */     logic [31:0] youngestAddress, youngestData; /* verilator lint_on UNUSEDSIGNAL */
     mem_size_e youngestSize;
     logic youngestReady;
     logic [31:0] address, data;
@@ -613,7 +613,7 @@ module rv32_lsu #(
   // selection above still reads only the old result registers, never intents.
   always_comb begin
     for (forwardIndexInner = 0; forwardIndexInner < LQ_DEPTH; forwardIndexInner = forwardIndexInner + 1) begin
-      store_forward_result_t forwardResult;
+/* verilator lint_off UNUSEDSIGNAL */       store_forward_result_t forwardResult; /* verilator lint_on UNUSEDSIGNAL */
       logic [3:0] needed;
       forwardResult = '0; needed = lqSizeInner[forwardIndexInner] == MEM_BYTE ? 4'b0001 :
         lqSizeInner[forwardIndexInner] == MEM_HALF ? 4'b0011 : 4'b1111;
@@ -676,7 +676,7 @@ module rv32_lsu #(
 
   end
 
-  cdb_result_t storeAllocWbInner;
+/* verilator lint_off UNUSEDSIGNAL */   cdb_result_t storeAllocWbInner; /* verilator lint_on UNUSEDSIGNAL */
   cdb_result_t sqWbInner [SQ_DEPTH];
   function automatic cdb_result_t matching_writeback(input phy_tag_t tag);
     matching_writeback = '0;
@@ -742,7 +742,7 @@ module rv32_lsu #(
       storeAllocLanesCountInner=(SQ_INDEX_W+1)'(stores);
     end
     for (genvar lane=0;lane<4;lane++) begin : g_data
-      cdb_result_t wb;
+/* verilator lint_off UNUSEDSIGNAL */       cdb_result_t wb; /* verilator lint_on UNUSEDSIGNAL */
       assign wb=matching_writeback(storeAllocationLanesInput[lane].dataTag);
       assign storeLanesDataReadyInner[lane]=storeAllocationLanesInput[lane].dataReady ||
         (storeAllocationLanesInput[lane].dataTag!=0 && wb.valid);
@@ -759,7 +759,7 @@ module rv32_lsu #(
   end endgenerate
 
   generate if (RENAME_WIDTH == 2) begin : g_second_allocation
-    cdb_result_t dataWb;
+/* verilator lint_off UNUSEDSIGNAL */     cdb_result_t dataWb; /* verilator lint_on UNUSEDSIGNAL */
     assign dataWb = matching_writeback(storeAllocationSecondInput.dataTag);
     always_comb begin
       logic found;

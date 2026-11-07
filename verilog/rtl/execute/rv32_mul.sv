@@ -3,7 +3,7 @@ module rv32_mul (
   input  logic                   rstNInput,
   input logic freezeInput,
   input  rv32_pkg::rob_flush_input_t flushInfoInput,
-  input  rv32_pkg::execute_request_input_t executeInput,
+/* verilator lint_off UNUSEDSIGNAL */   input  rv32_pkg::execute_request_input_t executeInput, /* verilator lint_on UNUSEDSIGNAL */
   output logic                   inReadyOutput,
 
   input  logic                   outReadyInput,
@@ -37,7 +37,7 @@ module rv32_mul (
   logic [PRODUCT_W-1:0] csaL2Inner [3];
   logic [PRODUCT_W-1:0] csaSumDInner, csaCarryDInner;
   logic [PRODUCT_W-1:0] finalProductInner;
-  logic finalCarryUnusedInner;
+/* verilator lint_off UNUSEDSIGNAL */   logic finalCarryUnusedInner; /* verilator lint_on UNUSEDSIGNAL */
 
   integer boothIndexInner;
   integer compressIndexInner;

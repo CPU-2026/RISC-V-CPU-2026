@@ -1,7 +1,10 @@
 // Isolated candidate for rtl/backend/rv32_rename_plan.sv. No new pipeline stage.
 // Rank and dependency identities do not depend on admission: an accepted lane
 // necessarily has every older lane accepted. Only final payloads use fire.
+// The public helper name is retained for existing consumers.
+/* verilator lint_off DECLFILENAME */
 module rv32_wide_rename_plan #(
+/* verilator lint_on DECLFILENAME */
   parameter int unsigned LANES=4,
   localparam int unsigned COUNT_W=$clog2(LANES+1)
 ) (
@@ -71,13 +74,13 @@ module rv32_wide_rename_plan #(
     assign loadRankInner[lane]=population(loadInner & BEFORE);
     assign storeRankInner[lane]=population(storeInner & BEFORE);
     for(genvar pool=0;pool<7;pool++)begin : g_pool_credit
-      assign poolFits[pool]=population(poolMemberInner[pool] & THROUGH)<=rsCreditsInput[pool];
+      assign poolFits[pool]=$clog2(ROB_ENTRIES+1)'(population(poolMemberInner[pool] & THROUGH))<=rsCreditsInput[pool];
     end
     assign prefixFireInner[lane]=enableInput && ((validInput & THROUGH)==THROUGH) &&
       !(|(haltInner & BEFORE)) && (lane+1<=int'(robCreditsInput)) &&
-      population(writesInner & THROUGH)<=physicalCreditsInput && (&poolFits) &&
-      population(loadInner & THROUGH)<=loadCreditsInput &&
-      population(storeInner & THROUGH)<=storeCreditsInput;
+      $clog2(PRF_ENTRIES+1)'(population(writesInner & THROUGH))<=physicalCreditsInput && (&poolFits) &&
+      $clog2(LQ_ENTRIES+1)'(population(loadInner & THROUGH))<=loadCreditsInput &&
+      $clog2(SQ_ENTRIES+1)'(population(storeInner & THROUGH))<=storeCreditsInput;
     // Gate BEFORE every allocation payload is formed. Old-IQ operation
     // retains ordinary prefix allocation; only empty-IQ proposals are atomic.
     assign fireOutput[lane]=prefixFireInner[lane] &&

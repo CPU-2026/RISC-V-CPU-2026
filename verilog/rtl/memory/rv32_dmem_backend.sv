@@ -19,6 +19,7 @@ module rv32_dmem_backend (
   output logic exitValidOutput,
   output logic [31:0] exitValueOutput
 );
+  logic unusedIdleInner;
   rv32_dcache #(.EARLY_WORD_RETURN(1'b1),.LOAD_PREFETCH(1'b1)) cache (
     .clkInput(clkInput), .rstNInput(rstNInput),
     .cpuRequestInput(cpuRequestInput), .cpuReqReadyOutput(cpuReqReadyOutput),
@@ -26,7 +27,7 @@ module rv32_dmem_backend (
     .memReadReadyInput(memReadReadyInput), .memWriteReadyInput(memWriteReadyInput),
     .memResponseInput(memResponseInput), .memWordResponseInput(memWordResponseInput), .memWriteResponseInput(memWriteResponseInput),
     .memRspReadyOutput(memRspReadyOutput), .memWriteRspReadyOutput(memWriteRspReadyOutput),
-    .initializedOutput(initializedOutput), .idleOutput(),
+    .initializedOutput(initializedOutput), .idleOutput(unusedIdleInner),
     .exitReadyInput(exitReadyInput), .exitValidOutput(exitValidOutput), .exitValueOutput(exitValueOutput)
   );
 endmodule
