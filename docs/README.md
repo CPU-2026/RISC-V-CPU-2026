@@ -8,6 +8,7 @@
 | 宽度、ROB/PRF 容量、I$ 相联度 | [parameterized-configuration.md](parameterized-configuration.md) |
 | 已验证范围、测试入口与周期边界 | [course.md](course.md) |
 | PPA 指标、综合方法与比较口径 | [assessment.md](assessment.md) |
+| 当前原生 opt 综合的 400 MHz 时序瓶颈与控制依赖追踪 | [频率分析.md](频率分析.md) |
 | 演进主线、采用与未采用结论 | [process.md](process.md) |
 | 完整历史记录（按需追溯） | [process-history.md](process-history.md) |
 | 原始阶段计划（历史） | [plan.md](plan.md) |

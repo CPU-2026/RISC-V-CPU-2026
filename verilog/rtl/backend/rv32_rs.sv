@@ -158,6 +158,24 @@ module rv32_rs #(
     logic [DEPTH-1:0] beforeInner[DEPTH], olderReadyInner[DEPTH];
     logic [2:0] rankLoInner[DEPTH], rankHiInner[DEPTH], rankInner[DEPTH];
     logic [DEPTH-1:0] winnerMaskInner[ISSUE_WIDTH];
+    logic [DEPTH-1:0] selectedRowMaskInner[ISSUE_WIDTH];
+    logic [DEPTH-1:0] flushAllowedRowsInner;
+    for (genvar row=0;row<DEPTH;row++) begin : g_early_flush
+      assign flushAllowedRowsInner[row]=!flushInfoInput.valid ||
+        rs_is_older(robTagInner[row],flushInfoInput.robTag);
+    end
+    for (genvar lane=0;lane<ISSUE_WIDTH;lane++) begin : g_selected_row
+      // Exact decode of the original OR-encoded index, even for zero or
+      // multiple winner bits. On legal one-hot grants this is the winner row.
+      // Keep index-zero invalid payloads and do not assume a legal age window.
+      assign selectedRowMaskInner[lane][0]=!(|winnerMaskInner[lane][3:1]);
+      assign selectedRowMaskInner[lane][1]=winnerMaskInner[lane][1] &&
+        !winnerMaskInner[lane][2] && !winnerMaskInner[lane][3];
+      assign selectedRowMaskInner[lane][2]=winnerMaskInner[lane][2] &&
+        !winnerMaskInner[lane][1] && !winnerMaskInner[lane][3];
+      assign selectedRowMaskInner[lane][3]=winnerMaskInner[lane][3] ||
+        (winnerMaskInner[lane][1] && winnerMaskInner[lane][2]);
+    end
     for (genvar row=0;row<DEPTH;row++) begin : g_rank
       assign readyMaskInner[row]=busyInner[row] && src1IssueReadyInner[row] && src2IssueReadyInner[row];
       for (genvar peer=0;peer<DEPTH;peer++) begin : g_precedence
@@ -193,8 +211,8 @@ module rv32_rs #(
       // Flush qualification remains AFTER ranking, not part of eligibility.
       issueFoundInner=laneFoundInner[0];
       issueIndexInner=laneIndexInner[0];
-      issueOutput.valid=issueFoundInner && (!flushInfoInput.valid ||
-        rs_is_older(robTagInner[issueIndexInner],flushInfoInput.robTag));
+      issueOutput.valid=issueFoundInner &&
+        (|(selectedRowMaskInner[0] & flushAllowedRowsInner));
       issueOutput.operation=operation_e'(opInner[issueIndexInner]);
       issueOutput.robTag=robTagInner[issueIndexInner];
       issueOutput.destinationPhy=destPhyInner[issueIndexInner];
@@ -206,8 +224,8 @@ module rv32_rs #(
       issueOutput.useImmediate=useImmInner[issueIndexInner];
       issueAuxOutput=auxInner[issueIndexInner];
       for (int lane=0;lane<ISSUE_WIDTH;lane++) begin
-        issueLaneValidOutput[lane]=laneFoundInner[lane] && (!flushInfoInput.valid ||
-          rs_is_older(robTagInner[laneIndexInner[lane]],flushInfoInput.robTag));
+        issueLaneValidOutput[lane]=laneFoundInner[lane] &&
+          (|(selectedRowMaskInner[lane] & flushAllowedRowsInner));
         issueLaneOutput[lane].valid=issueLaneValidOutput[lane];
         issueLaneOutput[lane].operation=operation_e'(opInner[laneIndexInner[lane]]);
         issueLaneOutput[lane].robTag=robTagInner[laneIndexInner[lane]];
@@ -484,13 +502,23 @@ module rv32_rs #(
   // only for this pool, without enlarging its execution bandwidth.
   generate if (RENAME_WIDTH == 4) begin : g_four_allocation
     logic [DEPTH-1:0] available;
+    wire [DEPTH-1:0] creditRowMaskInner[ISSUE_WIDTH];
+    for (genvar lane=0;lane<ISSUE_WIDTH;lane++) begin : g_credit_row
+      if (DEPTH==4 && ISSUE_WIDTH==2 && WB_ISSUE_BYPASS && INDEPENDENT_ISSUE_READY) begin : g_direct
+        assign creditRowMaskInner[lane]=g_parallel_n_of_m.selectedRowMaskInner[lane];
+      end else begin : g_legacy
+        for (genvar row=0;row<DEPTH;row++) begin : g_decode
+          assign creditRowMaskInner[lane][row]=INDEX_W'(row)==laneIndexInner[lane];
+        end
+      end
+    end
     always_comb begin : old_credits
       available='0;
       allocCreditsOutput='0;
       for (int row=0;row<DEPTH;row++) begin
         available[row]=!busyInner[row];
         for (int lane=0;lane<ISSUE_WIDTH;lane++)
-          if (REUSE_ON_ISSUE && issueAcceptInner[lane] && INDEX_W'(row)==laneIndexInner[lane])
+          if (REUSE_ON_ISSUE && issueAcceptInner[lane] && creditRowMaskInner[lane][row])
             available[row]=1'b1;
         if (available[row] && !freezeInput && !flushInfoInput.valid)
           allocCreditsOutput+=1'b1;

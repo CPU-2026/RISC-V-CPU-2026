@@ -434,8 +434,13 @@ module rv32_dcache #(
   assign acceptLookupInner=acceptInner && !queuedStoreInner && readEdgeAvailableInner &&
     lookupInner<0 && !fillBeatInner && storeInner<0 &&
     !cpuRequestInput.write && cpuRequestInput.address!=AXI_EXIT_ADDR && !set_locked(cpuRequestInput.address);
-  assign lookupAddressInner=acceptLookupInner ? set_of(cpuRequestInput.address) :
-    set_of(requestInner[REQUEST_W'(lookupCandidateInner)].request.address);
+  // Select the read address before late acceptance/hazard qualification.
+  // An enabled queued read always has a candidate; an enabled accepted read
+  // has none (read edge available, no fill or Store). Disabled SRAM addresses
+  // are unobserved. Keep all enables, arbitration and state updates unchanged.
+  assign lookupAddressInner=lookupCandidateInner >= 0 ?
+    set_of(requestInner[REQUEST_W'(lookupCandidateInner)].request.address) :
+    set_of(cpuRequestInput.address);
   assign idleOutput = rstNInput && countInner == 0 && !readValidInner && !prefetchPendingInner;
 
   // Allocation is not on the response/LSU-selection path. Keeping it separate
