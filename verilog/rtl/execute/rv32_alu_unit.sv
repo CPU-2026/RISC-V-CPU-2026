@@ -36,8 +36,8 @@ module rv32_alu_unit #(
 
   localparam int unsigned INDEX_W = (DEPTH <= 1) ? 1 : $clog2(DEPTH);
 
-  logic [31:0] aluResultInner;
-  alu_operation_output_t aluOutputInner;
+  alu_operation_input_t operandsInner [DEPTH];
+  alu_operation_output_t aluOutputInner [DEPTH];
 
   logic [31:0] valueInner [DEPTH];
   rob_tag_t    tagInner [DEPTH];
@@ -57,16 +57,15 @@ module rv32_alu_unit #(
   integer combIndexInner;
   integer seqIndexInner;
 
-  rv32_alu u_alu (
-    .aluInput('{operation: executeInput.operation,
-               leftOperand: executeInput.source1,
-               rightOperand: executeInput.source2,
-               immediate: executeInput.immediate,
-               programCounter: executeInput.programCounter,
-               useImmediate: executeInput.useImmediate}),
-    .aluOutput(aluOutputInner)
-  );
-  assign aluResultInner = aluOutputInner.value;
+  // Same result slots and clock-visible latency. Register the complete
+  // operation instead of its value; arithmetic consumes only OLD slot state.
+  for (genvar slot=0;slot<DEPTH;slot++) begin : g_registered_operands
+    rv32_alu u_alu (
+      .aluInput(operandsInner[slot]),
+      .aluOutput(aluOutputInner[slot])
+    );
+    assign valueInner[slot]=aluOutputInner[slot].value;
+  end
 
   always_comb begin
     // Oldest valid entry wins the result bus (reference headValue/headRobTag).
@@ -138,7 +137,7 @@ module rv32_alu_unit #(
     if (!rstNInput) begin
       for (seqIndexInner = 0; seqIndexInner < DEPTH; seqIndexInner = seqIndexInner + 1) begin
         validInner[seqIndexInner] <= 1'b0;
-        valueInner[seqIndexInner] <= '0;
+        operandsInner[seqIndexInner] <= '0;
         tagInner[seqIndexInner] <= '0;
         phyInner[seqIndexInner] <= '0;
         controlInner[seqIndexInner] <= 1'b0;
@@ -149,7 +148,13 @@ module rv32_alu_unit #(
       // written is the new one (drain-and-refill of a single result register).
       for (seqIndexInner = 0; seqIndexInner < DEPTH; seqIndexInner = seqIndexInner + 1) begin
         if (pushHereInner && (seqIndexInner[INDEX_W-1:0] == allocIndexInner)) begin
-          valueInner[seqIndexInner] <= aluResultInner;
+          operandsInner[seqIndexInner] <=
+            '{operation: executeInput.operation,
+              leftOperand: executeInput.source1,
+              rightOperand: executeInput.source2,
+              immediate: executeInput.immediate,
+              programCounter: executeInput.programCounter,
+              useImmediate: executeInput.useImmediate};
           tagInner[seqIndexInner] <= executeInput.robTag;
           phyInner[seqIndexInner] <= executeInput.destinationPhy;
           controlInner[seqIndexInner] <= executeInput.isControl;

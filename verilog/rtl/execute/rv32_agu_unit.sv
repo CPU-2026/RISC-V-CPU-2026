@@ -15,16 +15,36 @@ module rv32_agu_unit (
 );
   import rv32_pkg::*;
   address_generation_output_t sumInner;
+  logic [15:0] lowSumInner, highZeroSumInner, highOneSumInner;
+  logic lowCarryInner;
+  /* verilator lint_off UNUSEDSIGNAL */
+  logic highZeroCarryInner, highOneCarryInner;
+  /* verilator lint_on UNUSEDSIGNAL */
   logic validInner;
   logic [31:0] addressInner;
   logic [3:0] auxiliaryInner;
   rob_tag_t robTagInner;
 
-  rv32_agu u_add_address (
-    .addressInput('{baseAddress: executeInput.source1Value,
-                   offset: executeInput.immediate}),
-    .addressOutput(sumInner)
+  // Carry-independent half sums; finish selection before the old edge.
+  // No arithmetic or new selection logic is placed after addressInner.
+  rv32_add #(.WIDTH(16)) u_add_low (
+    .aInput(executeInput.source1Value[15:0]),
+    .bInput(executeInput.immediate[15:0]), .cinInput(1'b0),
+    .sumOutput(lowSumInner), .coutOutput(lowCarryInner)
   );
+  rv32_add #(.WIDTH(16)) u_add_high_zero (
+    .aInput(executeInput.source1Value[31:16]),
+    .bInput(executeInput.immediate[31:16]), .cinInput(1'b0),
+    .sumOutput(highZeroSumInner), .coutOutput(highZeroCarryInner)
+  );
+  rv32_add #(.WIDTH(16)) u_add_high_one (
+    .aInput(executeInput.source1Value[31:16]),
+    .bInput(executeInput.immediate[31:16]), .cinInput(1'b1),
+    .sumOutput(highOneSumInner), .coutOutput(highOneCarryInner)
+  );
+  assign sumInner.address = {
+    lowCarryInner ? highOneSumInner : highZeroSumInner, lowSumInner
+  };
 
   assign inReadyOutput = 1'b1;
   assign robTagOutput = robTagInner;

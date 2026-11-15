@@ -1,6 +1,6 @@
 # AXI4-Lite 协议与内存约定
 
-课程顶层：[`student_top.sv`](../verilog/rtl/student_top.sv)；外部从机：[`scripts/sim.cpp`](../scripts/sim.cpp)。退出冻结流程见 [course.md](course.md)，架构探索与关键测量见 [process.md](process.md)。
+课程顶层：[`student_top.sv`](../verilog/rtl/student_top.sv)；外部从机：[`scripts/sim.cpp`](../scripts/sim.cpp)。退出冻结流程见 [验证与评估](assessment.md#计时与事件边界)，架构探索与关键测量见 [架构探索总结](架构探索总结.md)。
 
 ## 当前主机结构
 
@@ -14,7 +14,7 @@ AXIData 从旧空闲位图分配，同时一读一写不得别名；旧满不借
 
 每槽提前比较完整行/MMIO完成位，读写队头用3位镜像寄存器缓存物理槽，切断顺序环→描述符的间接索引。空队列入队、最后一项出队同时入队时旁路新分配槽；最后一项仅出队时镜像下一旧环行，保持无效载荷语义。镜像须恒等于旧环队头，不增加完成流水级。
 
-两适配器 payload 按32 bit字组织，不复位/分配清零，以完整接收资格屏蔽旧值；仍为寄存器。分阶段验证见 [course.md](course.md)，历史16信用测试不能当成当前容量配置。
+两适配器 payload 按32 bit字组织，不复位/分配清零，以完整接收资格屏蔽旧值；仍为寄存器。分阶段验证见 [验证范围](assessment.md#验证范围与测试入口)，历史16信用测试不能当成当前容量配置。
 
 ## 顶层端口
 

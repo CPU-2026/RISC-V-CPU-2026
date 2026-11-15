@@ -8,6 +8,7 @@ module rv32_lsu #(
   // Bare-core legacy word-memory tests may omit IDs. Cached integration MUST
   // enable tagged completion: hit-under-miss no longer preserves send order.
   parameter bit TAGGED_DMEM = 1'b0,
+  parameter bit RESPONSE_PREVIEW = 1'b0,
   parameter int unsigned WRITEBACK_PORTS = 4,
   parameter int unsigned COMMIT_WIDTH = 1,
   parameter int unsigned RENAME_WIDTH = 1
@@ -57,6 +58,8 @@ module rv32_lsu #(
   input  rv32_pkg::data_memory_response_input_t dmemResponseInput,
   output rv32_pkg::data_transaction_t dmemReqTransactionOutput,
   input rv32_pkg::data_transaction_t dmemRspTransactionInput,
+  input rv32_pkg::data_transaction_t [1:0] responsePreviewTransactionInput,
+  input logic [1:0] responsePreviewSelectInput,
 
   output logic [$clog2(LQ_DEPTH+1)-1:0] lqCountOutput,
   output logic [$clog2(SQ_DEPTH+1)-1:0] sqCountOutput,
@@ -208,13 +211,6 @@ module rv32_lsu #(
   assign responseResultIndexInner = fifoIndexInner[responseOwnerInner];
   // C: authenticated late response competes with buffered results by ROB age.
   // Full Store forwarding retains priority; ordinary result capture remains.
-  assign responseResultIdentityLiveInner = dmemResponseInput.valid && fifoValidInner[responseOwnerInner] &&
-    !fifoDropInner[responseOwnerInner] && lqValidInner[responseResultIndexInner] &&
-    lqTagInner[responseResultIndexInner] == fifoTagInner[responseOwnerInner] &&
-    lqSentInner[responseResultIndexInner] && !lqResultReadyInner[responseResultIndexInner] &&
-    !lqBroadcastedInner[responseResultIndexInner] &&
-    (!flushInfoInput.valid || rob_is_older(fifoTagInner[responseOwnerInner], flushInfoInput.robTag));
-  assign responseResultLiveInner = responseResultIdentityLiveInner && !responseForwardPriorityInner;
   logic storeAllocDataReadyResolvedInner;
   logic [31:0] storeAllocDataValueResolvedInner;
   logic [COMMIT_WIDTH-1:0] storeCommitMatchInner, storeRetireFireInner;
@@ -257,6 +253,60 @@ module rv32_lsu #(
     if (!tree[1].valid) tree[1].index = '0;
     return tree[1];
   endfunction
+  // Request insertion trees share OLD leaf-pair age bits. Each internal
+  // node keeps its original fixed left/right decision, not a global rank.
+  // No transitivity or live ROB-window assumption is used.
+  wire [LQ_DEPTH-1:0][LQ_DEPTH-1:0] loadTreePairOlderInner;
+  for(genvar right=0;right<LQ_DEPTH;right++)begin : g_load_tree_pair_right
+    for(genvar left=0;left<LQ_DEPTH;left++)begin : g_left
+      if(right>left)begin : g_pair
+        assign loadTreePairOlderInner[right][left]=
+          rob_is_older(loadSelectTagsInner[right],loadSelectTagsInner[left]);
+      end else begin : g_unused_pair
+        assign loadTreePairOlderInner[right][left]=1'b0;
+      end
+    end
+  end
+  function automatic load_select_t select_load_pair_flags(
+    input logic [LQ_DEPTH-1:0] validInput,
+    input rob_tag_t [LQ_DEPTH-1:0] tagsInput,
+    input logic [LQ_DEPTH-1:0][LQ_DEPTH-1:0] olderInput
+  );
+    logic [LQ_DEPTH-1:0] pathTree [2*LOAD_SELECT_LEAVES];
+    logic validTree [2*LOAD_SELECT_LEAVES];
+    logic rightOlder;
+    load_select_t answer;
+    pathTree[0]='0;validTree[0]=1'b0;
+    for(int leaf=0;leaf<LOAD_SELECT_LEAVES;leaf++)begin
+      pathTree[LOAD_SELECT_LEAVES+leaf]='0;
+      validTree[LOAD_SELECT_LEAVES+leaf]=1'b0;
+      if(leaf<LQ_DEPTH)begin
+        // Even invalid real leaves carry their original tag identity. If all
+        // rows are invalid, the original tree exposes leaf0 tag, not zero.
+        pathTree[LOAD_SELECT_LEAVES+leaf]=LQ_DEPTH'(1)<<leaf;
+        validTree[LOAD_SELECT_LEAVES+leaf]=validInput[leaf];
+      end
+    end
+    for(int node=LOAD_SELECT_LEAVES-1;node>0;node--)begin
+      rightOlder=1'b0;
+      for(int right=1;right<LQ_DEPTH;right++)
+        for(int left=0;left<right;left++)
+          rightOlder|=pathTree[2*node+1][right] && pathTree[2*node][left] && olderInput[right][left];
+      pathTree[node]=pathTree[2*node];
+      validTree[node]=validTree[2*node];
+      if(validTree[2*node+1] && (!validTree[2*node] || rightOlder))begin
+        pathTree[node]=pathTree[2*node+1];
+        validTree[node]=validTree[2*node+1];
+      end
+    end
+    answer='0;answer.valid=validTree[1];
+    for(int row=0;row<LQ_DEPTH;row++)begin
+      answer.tag|=tagsInput[row] & {ROB_TAG_W{pathTree[1][row]}};
+      answer.index|=LQ_INDEX_W'(row) & {LQ_INDEX_W{pathTree[1][row]}};
+    end
+    if(!answer.valid)answer.index='0;
+    return answer;
+  endfunction
   for (genvar row = 0; row < LQ_DEPTH; row++) begin : g_load_select_candidate
     // B: only the already-reserved old LQ identity may use its incoming AGU
     // address before capture, and full SQ forwarding avoids a redundant read.
@@ -271,7 +321,32 @@ module rv32_lsu #(
     assign resultSelectCandidatesInner[row] = lqValidInner[row] && lqResultReadyInner[row] &&
       !lqBroadcastedInner[row];
   end
-  always_comb loadSelectWinnerInner = select_oldest_load(loadSelectCandidatesInner, loadSelectTagsInner);
+  // Only OLD LQ fields enter these complete original-tree alternatives.
+  // The AGU event/index and forwarding decision do not enter their age trees.
+  wire [LQ_DEPTH-1:0] loadInsertBaseMaskInner, loadInsertEligibleInner;
+  wire load_select_t loadInsertBaseWinnerInner;
+  wire load_select_t loadInsertWinnerInner [LQ_DEPTH];
+  for(genvar row=0;row<LQ_DEPTH;row++)begin : g_load_address_insertion
+    wire [LQ_DEPTH-1:0] insertedMask;
+    assign loadInsertBaseMaskInner[row]=lqValidInner[row] && lqAddressReadyInner[row] &&
+      !lqSentInner[row] && !lqResultReadyInner[row];
+    assign loadInsertEligibleInner[row]=lqValidInner[row] && !lqSentInner[row] && !lqResultReadyInner[row];
+    assign insertedMask=loadInsertBaseMaskInner |
+      ((LQ_DEPTH'(1)<<row) & {LQ_DEPTH{loadInsertEligibleInner[row]}});
+    assign loadInsertWinnerInner[row]=select_load_pair_flags(insertedMask,loadSelectTagsInner,loadTreePairOlderInner);
+  end
+  assign loadInsertBaseWinnerInner=select_load_pair_flags(loadInsertBaseMaskInner,loadSelectTagsInner,loadTreePairOlderInner);
+  // Preserve the old ready-row candidate even when the new address forwards.
+  // No event, flush/identity rejection, or suppressed insertion uses baseTree.
+  assign loadSelectWinnerInner=loadAddressEventInner &&
+    (lqBroadcastedInner[addressIndexInput] || !addressedForwardValidInner) ?
+    loadInsertWinnerInner[addressIndexInput] : loadInsertBaseWinnerInner;
+`ifndef SYNTHESIS
+  always_comb begin
+    assert(loadSelectWinnerInner==select_oldest_load(loadSelectCandidatesInner,loadSelectTagsInner))
+      else $fatal(1,"LQ insertion exact original tree oracle");
+  end
+`endif
   assign loadSelectFoundInner = loadSelectWinnerInner.valid;
   assign loadSelectIndexInner = loadSelectWinnerInner.index;
   assign loadSelectTagInner = loadSelectWinnerInner.tag;
@@ -281,13 +356,8 @@ module rv32_lsu #(
   // A separate combinational tournament: result production must not compete
   // with request selection for hardware or gain an extra register stage.
   always_comb bufferedResultWinnerInner = select_oldest_load(resultSelectCandidatesInner, loadSelectTagsInner);
-  assign chooseResponseResultInner = responseResultLiveInner &&
-    (!bufferedResultWinnerInner.valid ||
-     rob_is_older(lqTagInner[responseResultIndexInner], bufferedResultWinnerInner.tag) ||
-     (lqTagInner[responseResultIndexInner] == bufferedResultWinnerInner.tag &&
-      responseResultIndexInner < bufferedResultWinnerInner.index));
   assign resultSelectWinnerInner = chooseResponseResultInner ?
-    '{valid:1'b1, tag:lqTagInner[responseResultIndexInner], index:responseResultIndexInner} :
+    '{valid:1'b1, tag:previewResultTagInner, index:previewResultIndexInner} :
     bufferedResultWinnerInner;
   assign resultSelectFoundInner = resultSelectWinnerInner.valid;
   assign resultSelectIndexInner = resultSelectWinnerInner.index;
@@ -361,15 +431,6 @@ module rv32_lsu #(
     assign sqOrderInner[orderRow] = SQ_INDEX_W'(orderRow) - sqHeadIndexInner;
   end
 
-  // Independent of Load selection: prepare adjacent word addresses from each
-  // OLD SQ row. The late selected Load address then needs equality only, not a
-  // variable 30-bit subtraction. These are wires, not extra address state.
-  logic [29:0] sqNextWordInner [SQ_DEPTH], sqPrevWordInner [SQ_DEPTH];
-  for (genvar addressRow = 0; addressRow < SQ_DEPTH; addressRow++) begin : g_sq_word_neighbors
-    assign sqNextWordInner[addressRow] = sqAddressInner[addressRow][31:2] + 30'd1;
-    assign sqPrevWordInner[addressRow] = sqAddressInner[addressRow][31:2] - 30'd1;
-  end
-
   function automatic logic [31:0] extend_load(
     input logic [31:0] valueInput,
     input mem_size_e sizeInput,
@@ -386,34 +447,58 @@ module rv32_lsu #(
     end
   endfunction
 
-  // Byte-interval overlap of two accesses. Each one spans at most one word
-  // boundary (size <= 4, offset <= 3), so only same-word and adjacent-word
-  // positions can intersect and 3-bit byte arithmetic suffices. Adjacent Store
-  // words are precomputed before the selected Load address arrives. The two
-  // wrap guards preserve the original unsigned mod-2^32 comparison semantics.
-  localparam logic [29:0] LAST_WORD = '1;
+  // Compare adjacent words without first forming a 30-bit SQ +/-1.
+  // Exactly one 5-bit chunk is the non-wrapping pivot. Lower chunks must
+  // wrap, and upper chunks must be equal. Every predicate reads the original
+  // addresses; there is no carry dependency between chunks or new state.
+  function automatic logic [1:0] word_neighbors(
+    input logic [29:0] loadWordInput,
+    input logic [29:0] storeWordInput
+  );
+    logic [5:0] sameChunk, upChunk, downChunk, upWrap, downWrap;
+    logic [5:0] nextTerms, prevTerms;
+    for (int chunk = 0; chunk < 6; chunk++) begin
+      sameChunk[chunk] = loadWordInput[5*chunk+:5] == storeWordInput[5*chunk+:5];
+      upChunk[chunk] = storeWordInput[5*chunk+:5] != 5'd31 &&
+        loadWordInput[5*chunk+:5] == storeWordInput[5*chunk+:5] + 5'd1;
+      downChunk[chunk] = storeWordInput[5*chunk+:5] != 5'd0 &&
+        loadWordInput[5*chunk+:5] == storeWordInput[5*chunk+:5] - 5'd1;
+      upWrap[chunk] = storeWordInput[5*chunk+:5] == 5'd31 &&
+        loadWordInput[5*chunk+:5] == 5'd0;
+      downWrap[chunk] = storeWordInput[5*chunk+:5] == 5'd0 &&
+        loadWordInput[5*chunk+:5] == 5'd31;
+    end
+    for (int chunk = 0; chunk < 6; chunk++) begin
+      nextTerms[chunk] = upChunk[chunk] &&
+        (&(sameChunk | 6'((2 << chunk)-1))) &&
+        (&(upWrap | ~6'((1 << chunk)-1)));
+      prevTerms[chunk] = downChunk[chunk] &&
+        (&(sameChunk | 6'((2 << chunk)-1))) &&
+        (&(downWrap | ~6'((1 << chunk)-1)));
+    end
+    return {|prevTerms, |nextTerms};
+  endfunction
+
+  // Original byte intervals and unsigned no-wrap boundary contract remain.
   function automatic logic byte_overlap(
     input logic [31:0] loadAddressInput,
     input mem_size_e loadSizeInput,
     input logic [31:0] storeAddressInput,
-    input mem_size_e storeSizeInput,
-    input logic [29:0] storeNextWordInput,
-    input logic [29:0] storePrevWordInput
+    input mem_size_e storeSizeInput
   );
     logic [2:0] loadOffset, storeOffset, loadSpan, storeSpan, loadEnd, storeEnd;
+    logic [1:0] neighbors;
     loadOffset = {1'b0, loadAddressInput[1:0]};
     storeOffset = {1'b0, storeAddressInput[1:0]};
     loadSpan = mem_bytes(loadSizeInput);
     storeSpan = mem_bytes(storeSizeInput);
     loadEnd = loadOffset + loadSpan;
     storeEnd = storeOffset + storeSpan;
-    if (loadAddressInput[31:2] == storeAddressInput[31:2])
-      return loadOffset < storeEnd && storeOffset < loadEnd;
-    if (loadAddressInput[31:2] == storeNextWordInput && storeAddressInput[31:2] != LAST_WORD)
-      return loadOffset + 3'(4) < storeEnd;
-    if (loadAddressInput[31:2] == storePrevWordInput && loadAddressInput[31:2] != LAST_WORD)
-      return storeOffset + 3'(4) < loadEnd;
-    return 1'b0;
+    neighbors = word_neighbors(loadAddressInput[31:2], storeAddressInput[31:2]);
+    return (loadAddressInput[31:2] == storeAddressInput[31:2] &&
+            loadOffset < storeEnd && storeOffset < loadEnd) ||
+      (neighbors[0] && loadOffset + 3'(4) < storeEnd) ||
+      (neighbors[1] && storeOffset + 3'(4) < loadEnd);
   endfunction
 
   function automatic logic yield_ram_access(
@@ -472,14 +557,13 @@ module rv32_lsu #(
           dataReady = sqDataReadyInner[s]; data = sqDataInner[s];
           if (!sqCommittedInner[s] &&
                (!sqAddressReadyInner[s] || byte_overlap(loadAddressInput, loadSizeInput,
-                  sqAddressInner[s], sqSizeInner[s], sqNextWordInner[s], sqPrevWordInner[s])))
+                  sqAddressInner[s], sqSizeInner[s])))
             result.cacheBlocked = 1'b1;
           if (!addressReady) begin
             if (!unknownFound || sqOrderInner[s] > sqOrderInner[youngestUnknownIndex])
               youngestUnknownIndex = SQ_INDEX_W'(s);
             unknownFound = 1'b1;
-          end else if (byte_overlap(loadAddressInput, loadSizeInput, address, sqSizeInner[s],
-              sqNextWordInner[s], sqPrevWordInner[s]) &&
+          end else if (byte_overlap(loadAddressInput, loadSizeInput, address, sqSizeInner[s]) &&
               (!found || sqOrderInner[s] > sqOrderInner[youngestIndex])) begin
             found = 1'b1; youngestIndex = SQ_INDEX_W'(s);
             youngestAddress = address; youngestData = data;
@@ -552,7 +636,7 @@ module rv32_lsu #(
         eligible = sqValidInner[s] &&
           (sqCommittedInner[s] || rob_is_older(sqTagInner[s], loadTagInput));
         overlaps = byte_overlap(loadAddressInput, loadSizeInput,
-          sqAddressInner[s], sqSizeInner[s], sqNextWordInner[s], sqPrevWordInner[s]);
+          sqAddressInner[s], sqSizeInner[s]);
         relevant[s] = eligible && (!sqAddressReadyInner[s] || overlaps);
         byteOffset = loadAddressInput[1:0] - sqAddressInner[s][1:0];
         coverEnd = {1'b0, byteOffset} + mem_bytes(loadSizeInput);
@@ -581,6 +665,92 @@ module rv32_lsu #(
           lqTagInner[notifyLoad], lqAddressInner[notifyLoad], lqSizeInner[notifyLoad]);
     end
   end
+  logic [LQ_INDEX_W-1:0] previewResultIndexInner;
+  rob_tag_t previewResultTagInner;
+  phy_tag_t previewResultDestinationInner;
+  mem_size_e previewResultSizeInner;
+  logic previewResultUnsignedInner;
+  load_result_output_t previewCdbPacketInner;
+  generate if(RESPONSE_PREVIEW && TAGGED_DMEM)begin : g_response_preview
+    wire [2:0] identityRows,forwardRows,winnerRows,selectedRows;
+    data_transaction_t [2:0] owners;
+    wire [LQ_INDEX_W-1:0] indices[3];
+    assign owners[0]=responseOwnerInner;
+    assign owners[1]=responsePreviewTransactionInput[0];
+    assign owners[2]=responsePreviewTransactionInput[1];
+    assign selectedRows={responsePreviewSelectInput,!(|responsePreviewSelectInput)};
+    for(genvar option=0;option<3;option++)begin : g_option
+      wire [STORE_DATA_LANES-1:0] notifications;
+      assign indices[option]=fifoIndexInner[owners[option]];
+      assign identityRows[option]=fifoValidInner[owners[option]] && !fifoDropInner[owners[option]] &&
+        lqValidInner[indices[option]] && lqTagInner[indices[option]]==fifoTagInner[owners[option]] &&
+        lqSentInner[indices[option]] && !lqResultReadyInner[indices[option]] && !lqBroadcastedInner[indices[option]] &&
+        (!flushInfoInput.valid || rob_is_older(fifoTagInner[owners[option]],flushInfoInput.robTag));
+      for(genvar lane=0;lane<STORE_DATA_LANES;lane++)begin : g_notify
+        assign notifications[lane]=storeDataEventInner[lane] &&
+          oldNotifyMatchInner[indices[option]][storeDataIndexInput[lane]];
+      end
+      assign forwardRows[option]=loadAddressEventInner &&
+        addressIndexInput==$bits(addressIndexInput)'(indices[option]) ? addressedForwardValidInner : (|notifications);
+      assign winnerRows[option]=identityRows[option] && !forwardRows[option] &&
+        (!bufferedResultWinnerInner.valid || rob_is_older(lqTagInner[indices[option]],bufferedResultWinnerInner.tag) ||
+         (lqTagInner[indices[option]]==bufferedResultWinnerInner.tag && indices[option]<bufferedResultWinnerInner.index));
+    end
+    assign responseResultIdentityLiveInner=dmemResponseInput.valid && (|(identityRows & selectedRows));
+    assign responseForwardPriorityInner=|(forwardRows & selectedRows);
+    assign responseResultLiveInner=responseResultIdentityLiveInner && !responseForwardPriorityInner;
+    assign chooseResponseResultInner=dmemResponseInput.valid && (|(winnerRows & selectedRows));
+    always_comb begin : preview_metadata
+      previewResultIndexInner='0;previewResultTagInner='0;previewResultDestinationInner='0;
+      previewResultSizeInner=mem_size_e'(0);previewResultUnsignedInner=1'b0;
+      for(int option=0;option<3;option++)begin
+        previewResultIndexInner|=indices[option] & {LQ_INDEX_W{selectedRows[option]}};
+        previewResultTagInner|=lqTagInner[indices[option]] & {ROB_TAG_W{selectedRows[option]}};
+        previewResultDestinationInner|=lqDestInner[indices[option]] & {PHY_TAG_W{selectedRows[option]}};
+        previewResultSizeInner=mem_size_e'(previewResultSizeInner |
+          (lqSizeInner[indices[option]] & {$bits(mem_size_e){selectedRows[option]}}));
+        previewResultUnsignedInner|=lqUnsignedInner[indices[option]] && selectedRows[option];
+      end
+    end
+    // Each option forms its complete original response-vs-buffered CDB
+    // packet BEFORE the late response-route selection. No speculative event.
+    always_comb begin : preview_cdb_packet_cofactors
+      load_result_output_t packet;
+      logic useResponse;
+      previewCdbPacketInner='0;packet='0;useResponse=1'b0;
+      for(int option=0;option<3;option++)begin
+        useResponse=dmemResponseInput.valid && winnerRows[option];
+        packet.robTag=useResponse ? lqTagInner[indices[option]] : bufferedResultWinnerInner.tag;
+        packet.destinationPhy=useResponse ? lqDestInner[indices[option]] : lqDestInner[bufferedResultWinnerInner.index];
+        packet.value=useResponse ?
+          extend_load(dmemResponseInput.readData,lqSizeInner[indices[option]],lqUnsignedInner[indices[option]]) :
+          extend_load(lqResultInner[bufferedResultWinnerInner.index],lqSizeInner[bufferedResultWinnerInner.index],
+            lqUnsignedInner[bufferedResultWinnerInner.index]);
+        packet.valid=(useResponse || bufferedResultWinnerInner.valid) &&
+          (!flushInfoInput.valid || rob_is_older(packet.robTag,flushInfoInput.robTag));
+        previewCdbPacketInner|=packet & {$bits(load_result_output_t){selectedRows[option]}};
+      end
+    end
+`ifndef SYNTHESIS
+    always_comb begin
+      assert(!chooseResponseResultInner || responseResultLiveInner)
+        else $fatal(1,"Response preview live qualification consistency");
+      assert($onehot0(responsePreviewSelectInput))else $fatal(1,"Response preview grants not onehot0");
+      if(dmemResponseInput.valid)begin
+        assert((!responsePreviewSelectInput[0] || responsePreviewTransactionInput[0]==responseOwnerInner) &&
+               (!responsePreviewSelectInput[1] || responsePreviewTransactionInput[1]==responseOwnerInner))
+          else $fatal(1,"Response preview transaction contract");
+      end
+    end
+`endif
+  end else begin : g_original_response
+  assign responseResultIdentityLiveInner = dmemResponseInput.valid && fifoValidInner[responseOwnerInner] &&
+    !fifoDropInner[responseOwnerInner] && lqValidInner[responseResultIndexInner] &&
+    lqTagInner[responseResultIndexInner] == fifoTagInner[responseOwnerInner] &&
+    lqSentInner[responseResultIndexInner] && !lqResultReadyInner[responseResultIndexInner] &&
+    !lqBroadcastedInner[responseResultIndexInner] &&
+    (!flushInfoInput.valid || rob_is_older(fifoTagInner[responseOwnerInner], flushInfoInput.robTag));
+  assign responseResultLiveInner = responseResultIdentityLiveInner && !responseForwardPriorityInner;
   always_comb begin : response_forward_priority
     logic [STORE_DATA_LANES-1:0] notifications;
     notifications='0;
@@ -591,12 +761,28 @@ module rv32_lsu #(
     responseForwardPriorityInner=|notifications;
     if (loadAddressEventInner && addressIndexInput == $bits(addressIndexInput)'(responseResultIndexInner))
       responseForwardPriorityInner = addressedForwardValidInner;
-  end
+  end  assign chooseResponseResultInner = responseResultLiveInner &&
+    (!bufferedResultWinnerInner.valid ||
+     rob_is_older(lqTagInner[responseResultIndexInner], bufferedResultWinnerInner.tag) ||
+     (lqTagInner[responseResultIndexInner] == bufferedResultWinnerInner.tag &&
+      responseResultIndexInner < bufferedResultWinnerInner.index));
+
+    assign previewResultIndexInner=responseResultIndexInner;
+    assign previewResultTagInner=lqTagInner[responseResultIndexInner];
+    assign previewResultDestinationInner=lqDestInner[responseResultIndexInner];
+    assign previewResultSizeInner=lqSizeInner[responseResultIndexInner];
+    assign previewResultUnsignedInner=lqUnsignedInner[responseResultIndexInner];
+    assign previewCdbPacketInner='0;
+  end endgenerate
+
 
   // The address-event metadata is OLD AGU state, independent of the returning
   // Cache transaction. Under the equality above these are the same LQ row.
   // B request selection and C return qualification share this early 1-bit cone.
-  assign addressedForwardValidInner = query_store_forward_valid(lqTagInner[addressIndexInput],
+  // Every consumer is gated by loadAddressEventInner, which authenticates
+  // the full old LQ tag against this registered AGU tag. Keep invalid query
+  // differences internal; no validity, writer, packet or grant changes.
+  assign addressedForwardValidInner = query_store_forward_valid(addressInput.robTag,
     addressInput.address, lqSizeInner[addressIndexInput]);
 
   // One query for the LQ row named by addressIndexInput. The per-row loop below
@@ -790,17 +976,36 @@ module rv32_lsu #(
     assign storeAllocSecondDataValueInner = '0;
   end endgenerate
 
+  generate if(RESPONSE_PREVIEW && TAGGED_DMEM)begin : g_preview_cdb_output
+    assign loadResultOutput=previewCdbPacketInner;
+`ifndef SYNTHESIS
+    // Keep full invalid-payload semantics as well as valid CDB events.
+    always_comb begin : packet_reference_assertion
+      load_result_output_t originalPacket;
+      originalPacket.valid=resultSelectFoundInner &&
+        (!flushInfoInput.valid || rob_is_older(resultSelectTagInner,flushInfoInput.robTag));
+      originalPacket.robTag=resultSelectTagInner;
+      originalPacket.destinationPhy=chooseResponseResultInner ? previewResultDestinationInner : lqDestInner[bufferedResultWinnerInner.index];
+      originalPacket.value=chooseResponseResultInner ?
+        extend_load(dmemResponseInput.readData,previewResultSizeInner,previewResultUnsignedInner) :
+        extend_load(lqResultInner[bufferedResultWinnerInner.index],lqSizeInner[bufferedResultWinnerInner.index],
+          lqUnsignedInner[bufferedResultWinnerInner.index]);
+      assert(loadResultOutput==originalPacket)else $fatal(1,"Response payload cofactor oracle");
+    end
+`endif
+  end else begin : g_original_cdb_output
   always_comb begin : result_output
     loadResultOutput.valid = resultSelectFoundInner &&
       (!flushInfoInput.valid || rob_is_older(resultSelectTagInner, flushInfoInput.robTag));
     loadResultOutput.robTag = resultSelectTagInner;
-    loadResultOutput.destinationPhy = chooseResponseResultInner ? lqDestInner[responseResultIndexInner] :
+    loadResultOutput.destinationPhy = chooseResponseResultInner ? previewResultDestinationInner :
       lqDestInner[bufferedResultWinnerInner.index];
     loadResultOutput.value = chooseResponseResultInner ?
-      extend_load(dmemResponseInput.readData, lqSizeInner[responseResultIndexInner], lqUnsignedInner[responseResultIndexInner]) :
+      extend_load(dmemResponseInput.readData, previewResultSizeInner, previewResultUnsignedInner) :
       extend_load(lqResultInner[bufferedResultWinnerInner.index], lqSizeInner[bufferedResultWinnerInner.index],
         lqUnsignedInner[bufferedResultWinnerInner.index]);
   end
+  end endgenerate
 
   always_comb begin
     loadAllocFoundInner = 1'b0;
@@ -847,7 +1052,7 @@ module rv32_lsu #(
          (!sqAddressReadyInner[s] || !sqDataReadyInner[s] ||
           !yield_ram_access(sqAddressInner[s],sqSizeInner[s]) ||
           byte_overlap(loadSelectAddressInner,lqSizeInner[loadSelectIndexInner],
-            sqAddressInner[s],sqSizeInner[s],sqNextWordInner[s],sqPrevWordInner[s])))
+            sqAddressInner[s],sqSizeInner[s])))
         postedStoreBlocksLoadInner=1'b1;
     loadBypassStoreInner=loadYieldEnableInput && !coreStoppedInput && !flushInfoInput.valid &&
       storeAvailableInner && !storeYieldDebtInner && loadNeedsMemoryInner &&

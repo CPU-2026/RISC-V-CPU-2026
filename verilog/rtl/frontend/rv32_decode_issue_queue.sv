@@ -66,10 +66,59 @@ module rv32_decode_issue_queue #(
     decodeCount=availableDecode;
     if (iqOccupancy!=0 && int'(decodeCount)>int'(iqCapacity)) decodeCount=DCW'(iqCapacity);
   end
+  // BEGIN backward packet credit
+  logic fqBackwardReadyInner;
+  generate if(FETCH_WIDTH==4 && DECODE_WIDTH==4 && ISSUE_WIDTH==4) begin : g_backward_packet_credit
+    localparam FCW=$clog2(FQ_DEPTH)+1;
+    localparam QCW=$clog2(IQ_DEPTH)+1;
+    wire [FCW-1:0] oldFqFree=FCW'(FQ_DEPTH)-fqOccupancy;
+    wire [QCW-1:0] oldIqFree=QCW'(IQ_DEPTH)-iqOccupancy;
+    wire legalOldCounts=fqOccupancy<=FCW'(FQ_DEPTH) && iqOccupancy<=QCW'(IQ_DEPTH);
+    wire [4:0] packetFits;
+    assign packetFits[0]=1'b1;
+    for(genvar count=1;count<=4;count++)begin : g_packet_need
+      // The current packet and OLD free spaces determine all arithmetic.
+      wire [DCW-1:0] needDecode=oldFqFree>=FCW'(count) ? DCW'(0) : DCW'(FCW'(count)-oldFqFree);
+      wire [ICW-1:0] needIssue=oldIqFree>=QCW'(needDecode) ? ICW'(0) : ICW'(QCW'(needDecode)-oldIqFree);
+      assign packetFits[count]=needDecode<=storedDecodeInner &&
+        (iqOccupancy==0 || (needIssue<=iqAvailableInner && readyCountInput>=needIssue));
+    end
+    // Preserve ALL representable illegal occupancies. Each fallback column
+    // assumes a CONSTANT late acceptance; only its final Boolean is selected.
+    wire [7:0] arbitraryReady;
+    for(genvar accepted=0;accepted<8;accepted++)begin : g_arbitrary_counts
+      wire [ICW-1:0] fixedPop;
+      if(accepted==0)begin : g_no_fixed_pop
+        assign fixedPop='0;
+      end else begin : g_some_fixed_pop
+      wire [ICW-1:0] availablePop=wholeGroupOutput ? ICW'(0) : iqAvailableInner;
+        assign fixedPop=availablePop<ICW'(accepted) ? availablePop : ICW'(accepted);
+      end
+      wire [QCW-1:0] fixedIqCapacity=QCW'(IQ_DEPTH)-iqOccupancy+QCW'(fixedPop);
+      wire [DCW-1:0] fixedDecode=iqOccupancy!=0 && int'(availableDecode)>int'(fixedIqCapacity) ?
+        DCW'(fixedIqCapacity) : availableDecode;
+      wire [DCW-1:0] requestedPop=emptyIngressInner ? DCW'(0) : fixedDecode;
+      wire [DCW-1:0] fixedFqPop=requestedPop<storedDecodeInner ? requestedPop : storedDecodeInner;
+      wire [FCW-1:0] fixedFqCapacity=FCW'(FQ_DEPTH)-fqOccupancy+FCW'(fixedFqPop);
+      assign arbitraryReady[accepted]=!flushInput && inCountInput<=3'(4) &&
+        FCW'(inCountInput)<=fixedFqCapacity;
+    end
+    wire legalReady=inCountInput<=3'(4) && packetFits[inCountInput];
+    assign fqBackwardReadyInner=legalOldCounts ? (!flushInput && legalReady) : arbitraryReady[readyCountInput];
+`ifndef SYNTHESIS
+    always @(posedge clkInput) if(rstNInput)
+      assert(fqBackwardReadyInner==(!flushInput && inCountInput<=3'(4) && FCW'(inCountInput)<=fqCapacity))
+        else $fatal(1,"backward queue exact FQ credit");
+`endif
+  end else begin : g_original_packet_credit
+    assign fqBackwardReadyInner=1'b0;
+  end endgenerate
+  // END backward packet credit
   rv32_prefix_fifo #(.DEPTH(FQ_DEPTH), .WIDTH($bits(decode_context_t)),
-      .PUSH_WIDTH(FETCH_WIDTH), .POP_WIDTH(DECODE_WIDTH)) u_fq (
+      .PUSH_WIDTH(FETCH_WIDTH), .POP_WIDTH(DECODE_WIDTH),
+      .EXTERNAL_CREDIT(FETCH_WIDTH==4 && DECODE_WIDTH==4 && ISSUE_WIDTH==4)) u_fq (
     .clkInput, .rstNInput, .freezeInput, .flushInput,
-    .inValidInput(inValidInput && !emptyIngressInner), .inCountInput, .inDataInput,
+    .inCreditInput(fqBackwardReadyInner), .inValidInput(inValidInput && !emptyIngressInner), .inCountInput, .inDataInput,
     .inReadyOutput(fqReady), .inCapacityOutput(fqCapacity),
     .outCountOutput(storedDecodeInner), .outDataOutput(storedWordsInner),
     .outReadyCountInput(emptyIngressInner ? DCW'(0) : decodeCount), .countOutput(fqOccupancy)
@@ -82,7 +131,7 @@ module rv32_decode_issue_queue #(
   rv32_prefix_fifo #(.DEPTH(IQ_DEPTH), .WIDTH($bits(decoded_uop_t)),
       .PUSH_WIDTH(DECODE_WIDTH), .POP_WIDTH(ISSUE_WIDTH)) u_iq (
     .clkInput, .rstNInput, .freezeInput, .flushInput,
-    .inValidInput(decodeCount!=0 && !wholeGroupFireInner), .inCountInput(decodeCount), .inDataInput(decodedWords),
+    .inCreditInput(1'b0), .inValidInput(decodeCount!=0 && !wholeGroupFireInner), .inCountInput(decodeCount), .inDataInput(decodedWords),
     .inReadyOutput(iqReady), .inCapacityOutput(iqCapacity),
     .outCountOutput(iqAvailableInner), .outDataOutput(iqWords),
     .outReadyCountInput(wholeGroupOutput ? ICW'(0) : readyCountInput), .countOutput(iqOccupancy)

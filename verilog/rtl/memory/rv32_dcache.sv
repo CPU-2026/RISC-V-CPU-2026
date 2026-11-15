@@ -15,6 +15,8 @@ module rv32_dcache #(
   input rv32_pkg::dcache_cpu_request_input_t cpuRequestInput,
   output logic cpuReqReadyOutput,
   output rv32_pkg::dcache_cpu_response_output_t cpuResponseOutput,
+  output rv32_pkg::data_transaction_t [1:0] responsePreviewTransactionOutput,
+  output logic [1:0] responsePreviewSelectOutput,
   output rv32_pkg::dcache_line_request_output_t memRequestOutput,
   input logic memReadReadyInput, memWriteReadyInput,
   input rv32_pkg::dcache_line_response_input_t memResponseInput,
@@ -696,6 +698,44 @@ module rv32_dcache #(
     if (exitValidOutput) releasedInner[firstInner] = 1;
   end
 
+  // Transactions are available before the SRAM tag-hit result. Only the
+  // actual normal response grant selects them; early/word returns use fallback.
+  assign responsePreviewTransactionOutput={bufferedTransactionInner,hitTransactionInner};
+  assign responsePreviewSelectOutput={
+    rstNInput && !earlyInner && !wordReturnInner && !normalHitWinsInner && (|normalBufferedWinnerInner),
+    rstNInput && !earlyInner && !wordReturnInner && normalHitWinsInner};
+`ifndef SYNTHESIS
+  always_comb begin
+    assert($onehot0(responsePreviewSelectOutput))else $fatal(1,"DCache response previews not onehot0");
+    if(cpuResponseOutput.valid)begin
+      assert((!responsePreviewSelectOutput[0] || responsePreviewTransactionOutput[0]==cpuResponseOutput.transaction) &&
+             (!responsePreviewSelectOutput[1] || responsePreviewTransactionOutput[1]==cpuResponseOutput.transaction))
+        else $fatal(1,"DCache response preview actual grant contract");
+    end
+  end
+`endif
+
+  // Address-only decomposition. Preserve the original physical-bank write
+  // selection; form independent disjoint Fill and Store address terms instead
+  // of a common priority-mux write-address result. No state or grant change.
+  logic [INDEX_W-1:0] fillWriteAddressInner,storeWriteAddressInner;
+  always_comb begin : prepare_bank_parallel_addresses
+    fillWriteAddressInner={INDEX_W{1'b0}};
+    storeWriteAddressInner={INDEX_W{1'b0}};
+    if(rstNInput && fillBeatInner)
+      fillWriteAddressInner=set_of(missesInner[fillMissInner].line);
+    if(rstNInput && !fillBeatInner && storeInner>=0)
+      storeWriteAddressInner=set_of(requestInner[storeInner].request.address);
+  end
+  for(genvar addressWay=0;addressWay<WAYS;addressWay++)begin : g_mask_address_way
+    for(genvar addressBank=0;addressBank<WORDS_PER_LINE;addressBank++)begin : g_mask_address_bank
+      assign dataAddressBankInner[addressWay][addressBank]=
+        (lookupAddressInner & {INDEX_W{!dataWriteBankInner[addressWay][addressBank]}}) |
+        (fillWriteAddressInner & {INDEX_W{dataWriteBankInner[addressWay][addressBank]}}) |
+        (storeWriteAddressInner & {INDEX_W{dataWriteBankInner[addressWay][addressBank]}});
+    end
+  end
+
   always_comb begin : sram_ports
 /* verilator lint_off UNUSEDSIGNAL */     int way, owner, globalByte; /* verilator lint_on UNUSEDSIGNAL */
     metaWdataInner = '0;
@@ -709,10 +749,6 @@ module rv32_dcache #(
       for (int b = 0; b < WORDS_PER_LINE; b++) begin
         dataEnableBankInner[w][b] = 0;
         dataWriteBankInner[w][b] = 0;
-        // Inactive ports need not follow the globally granted operation.
-        // Local overrides keep the late fill/store grant off other banks'
-        // address muxes instead of broadcasting one net to every SRAM lane.
-        dataAddressBankInner[w][b] = lookupAddressInner;
         dataMaskBankInner[w][b] = 0;
         dataWdataBankInner[w][b] = 0;
       end
@@ -725,7 +761,6 @@ module rv32_dcache #(
             b < int'(missesInner[fillMissInner].fillWord) + FILL_WORDS_PER_BEAT) begin
           dataEnableBankInner[way][b] = 1;
           dataWriteBankInner[way][b] = 1;
-          dataAddressBankInner[way][b] = set_of(missesInner[fillMissInner].line);
           dataMaskBankInner[way][b] = '1;
           dataWdataBankInner[way][b] = memResponseInput.data[b*32+:32];
           for (int i = 0; i < 4; i++) begin
@@ -750,7 +785,6 @@ module rv32_dcache #(
         if (i < bytes_for_size(requestInner[storeInner].request.size) && requestInner[storeInner].request.writeStrobe[i]) begin
           dataEnableBankInner[way][globalByte >> 2] = 1;
           dataWriteBankInner[way][globalByte >> 2] = 1;
-          dataAddressBankInner[way][globalByte >> 2] = set_of(requestInner[storeInner].request.address);
           dataMaskBankInner[way][globalByte >> 2][globalByte & 3] = 1;
           dataWdataBankInner[way][globalByte >> 2][(globalByte & 3)*8+:8] = requestInner[storeInner].request.writeData[i*8+:8];
         end

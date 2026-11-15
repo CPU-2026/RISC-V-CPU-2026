@@ -6,6 +6,7 @@
 module rv32_wide_rename_plan #(
 /* verilator lint_on DECLFILENAME */
   parameter int unsigned LANES=4,
+  parameter bit BRANCH_CREDIT_FITS=1'b0,
   localparam int unsigned COUNT_W=$clog2(LANES+1)
 ) (
   input logic enableInput, wholeGroupInput,
@@ -19,6 +20,7 @@ module rv32_wide_rename_plan #(
   input rv32_pkg::rob_tag_t nextRobTagInput,
   input logic [$clog2(rv32_pkg::ROB_ENTRIES+1)-1:0] robCreditsInput,
   input logic [6:0][$clog2(rv32_pkg::ROB_ENTRIES+1)-1:0] rsCreditsInput,
+  input logic [4:0] branchCreditFitsInput,
   input logic [$clog2(rv32_pkg::LQ_ENTRIES+1)-1:0] loadCreditsInput,
   input logic [$clog2(rv32_pkg::SQ_ENTRIES+1)-1:0] storeCreditsInput,
   input logic [LANES-1:0][$clog2(rv32_pkg::LQ_ENTRIES)-1:0] loadSlotInput,
@@ -27,6 +29,7 @@ module rv32_wide_rename_plan #(
   output logic [COUNT_W-1:0] issueCountOutput,physicalCountOutput,loadCountOutput,storeCountOutput,
   output rv32_pkg::rat_rename_input_t [LANES-1:0] renameOutput,
   output rv32_pkg::prf_allocation_input_t [LANES-1:0] physicalOutput,
+  output rv32_pkg::phy_tag_t [LANES-1:0] destinationPreviewOutput,
   output rv32_pkg::rob_allocation_input_t [LANES-1:0] robOutput,
   output rv32_pkg::rs_allocation_input_t [LANES-1:0] rsOutput,
   output rv32_pkg::load_allocation_input_t [LANES-1:0] loadOutput,
@@ -74,7 +77,11 @@ module rv32_wide_rename_plan #(
     assign loadRankInner[lane]=population(loadInner & BEFORE);
     assign storeRankInner[lane]=population(storeInner & BEFORE);
     for(genvar pool=0;pool<7;pool++)begin : g_pool_credit
-      assign poolFits[pool]=$clog2(ROB_ENTRIES+1)'(population(poolMemberInner[pool] & THROUGH))<=rsCreditsInput[pool];
+      if (BRANCH_CREDIT_FITS && pool==3) begin : g_branch_fit
+        assign poolFits[pool]=branchCreditFitsInput[population(poolMemberInner[pool] & THROUGH)];
+      end else begin : g_numeric_fit
+        assign poolFits[pool]=$clog2(ROB_ENTRIES+1)'(population(poolMemberInner[pool] & THROUGH))<=rsCreditsInput[pool];
+      end
     end
     assign prefixFireInner[lane]=enableInput && ((validInput & THROUGH)==THROUGH) &&
       !(|(haltInner & BEFORE)) && (lane+1<=int'(robCreditsInput)) &&
@@ -86,6 +93,7 @@ module rv32_wide_rename_plan #(
     assign fireOutput[lane]=prefixFireInner[lane] &&
       (!wholeGroupInput || prefixFireInner == validInput);
     assign destinationInner[lane]=writesInner[lane] ? freePhysicalInput[physicalRankInner[lane]] : phy_tag_t'(0);
+    assign destinationPreviewOutput[lane]=destinationInner[lane];
   end
   assign issueCountOutput=population(fireOutput);
   assign physicalCountOutput=population(fireOutput & writesInner);
@@ -170,6 +178,14 @@ module rv32_wide_rename_plan #(
     end
   end
 `ifndef SYNTHESIS
+  always_comb begin : check_branch_credit_fit
+    if (BRANCH_CREDIT_FITS && enableInput) begin
+      for (int lane=0;lane<LANES;lane++)
+        assert(branchCreditFitsInput[population(poolMemberInner[3] & LANES'((1<<(lane+1))-1))] ==
+          ($clog2(ROB_ENTRIES+1)'(population(poolMemberInner[3] & LANES'((1<<(lane+1))-1)))<=rsCreditsInput[3]))
+          else $fatal(1,"Branch planner credit fit qualification");
+    end
+  end
   initial assert(LANES==1 || LANES==2 || LANES==4)else $fatal(1,"wide rename lane count");
 `endif
 endmodule

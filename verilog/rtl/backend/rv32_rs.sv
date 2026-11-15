@@ -10,6 +10,7 @@ module rv32_rs #(
   parameter bit REUSE_ON_ISSUE = 1'b0,
   parameter bit WB_ISSUE_BYPASS = 1'b0,
   parameter int unsigned WB_ISSUE_PORTS = WRITEBACK_PORTS,
+  parameter bit CREDIT_FIT_SIDEBAND = 1'b0,
   parameter bit INDEPENDENT_ISSUE_READY = 1'b0
 ) (
   input  logic                   clkInput,
@@ -40,6 +41,7 @@ module rv32_rs #(
   input logic [3:0][AUX_W-1:0] allocLanesAuxInput,
   output logic [3:0] allocLanesFireOutput,
   output logic [$clog2(DEPTH+1)-1:0] allocCreditsOutput,
+  output wire [4:0] allocCreditFitsOutput,
   input logic [ISSUE_WIDTH-1:0] issueLaneReadyInput,
   // Independent early bus; ordinary wakeup still sees every full CDB port.
   input rv32_pkg::cdb_result_t [WRITEBACK_PORTS-1:0] issueWritebackInput
@@ -348,6 +350,67 @@ module rv32_rs #(
       assert (!(|readyMaskInner) || (|winnerMaskInner)) else $fatal(1,"parallel RS lost eligible winner");
     end
 `endif
+  end else if (DEPTH==2 && ISSUE_WIDTH==2) begin : g_two_slot_select
+    logic [1:0] readyRowsInner, flushAllowedRowsInner, authenticatedValidInner;
+    logic row1OlderInner, firstIndexInner, secondIndexInner;
+    for (genvar row=0;row<2;row++) begin : g_row
+      assign readyRowsInner[row]=busyInner[row] &&
+        src1IssueReadyInner[row] && src2IssueReadyInner[row];
+      assign flushAllowedRowsInner[row]=!flushInfoInput.valid ||
+        rs_is_older(robTagInner[row],flushInfoInput.robTag);
+    end
+    // Age is an old-row predicate, independent of late granted WB readiness.
+    // Equality and the exact half-ring both preserve row-zero scan priority.
+    assign row1OlderInner=rs_is_older(robTagInner[1],robTagInner[0]);
+    assign firstIndexInner=readyRowsInner[1] &&
+      (!readyRowsInner[0] || row1OlderInner);
+    // No second-pass winner/taken dependency; an invalid lane still reads row 0.
+    assign secondIndexInner=(&readyRowsInner) && !row1OlderInner;
+    assign authenticatedValidInner[0]=
+      (readyRowsInner[0] && (!readyRowsInner[1] || !row1OlderInner) && flushAllowedRowsInner[0]) ||
+      (readyRowsInner[1] && (!readyRowsInner[0] || row1OlderInner) && flushAllowedRowsInner[1]);
+    assign authenticatedValidInner[1]=(&readyRowsInner) &&
+      ((row1OlderInner && flushAllowedRowsInner[0]) ||
+       (!row1OlderInner && flushAllowedRowsInner[1]));
+    always_comb begin
+      laneFoundInner[0]=|readyRowsInner;
+      laneFoundInner[1]=&readyRowsInner;
+      laneIndexInner[0]=firstIndexInner;
+      laneIndexInner[1]=secondIndexInner;
+      laneTakenInner=readyRowsInner;
+    issueFoundInner = laneFoundInner[0];
+    issueIndexInner = laneIndexInner[0];
+    issueOutput.valid = authenticatedValidInner[0];
+    issueOutput.operation = operation_e'(opInner[issueIndexInner]);
+    issueOutput.robTag = robTagInner[issueIndexInner];
+    issueOutput.destinationPhy = destPhyInner[issueIndexInner];
+    issueOutput.source1Value = src1IssueValueInner[issueIndexInner];
+    issueOutput.source2Value = src2IssueValueInner[issueIndexInner];
+    issueOutput.immediate = immInner[issueIndexInner];
+    issueOutput.programCounter = pcInner[issueIndexInner];
+    issueOutput.predictedProgramCounter = predictedPcInner[issueIndexInner];
+    issueOutput.useImmediate = useImmInner[issueIndexInner];
+    issueAuxOutput = auxInner[issueIndexInner];
+
+    // Same candidates, same flush age gate: lane 0 is bit-identical to
+    // issueOutput, and lane l is the (l+1)-th oldest eligible entry.
+    for (laneInner = 0; laneInner < ISSUE_WIDTH; laneInner = laneInner + 1) begin
+      issueLaneValidOutput[laneInner] = authenticatedValidInner[laneInner];
+      issueLaneOutput[laneInner].valid = issueLaneValidOutput[laneInner];
+      issueLaneOutput[laneInner].operation = operation_e'(opInner[laneIndexInner[laneInner]]);
+      issueLaneOutput[laneInner].robTag = robTagInner[laneIndexInner[laneInner]];
+      issueLaneOutput[laneInner].destinationPhy = destPhyInner[laneIndexInner[laneInner]];
+      issueLaneOutput[laneInner].source1Value = src1IssueValueInner[laneIndexInner[laneInner]];
+      issueLaneOutput[laneInner].source2Value = src2IssueValueInner[laneIndexInner[laneInner]];
+      issueLaneOutput[laneInner].immediate = immInner[laneIndexInner[laneInner]];
+      issueLaneOutput[laneInner].programCounter = pcInner[laneIndexInner[laneInner]];
+      issueLaneOutput[laneInner].predictedProgramCounter = predictedPcInner[laneIndexInner[laneInner]];
+      issueLaneOutput[laneInner].useImmediate = useImmInner[laneIndexInner[laneInner]];
+      issueLaneAuxOutput[laneInner] = auxInner[laneIndexInner[laneInner]];
+    end
+
+  end
+
   end else begin : g_linear_select
   always_comb begin
     // Rank the eligible entries by ROB age.  Lane 0 repeats the original
@@ -512,6 +575,35 @@ module rv32_rs #(
         end
       end
     end
+    // Early old-state thresholds. Late acceptance selects a Boolean fit;
+    // the existing numeric credit and actual sparse row allocator stay intact.
+    if (CREDIT_FIT_SIDEBAND && ISSUE_WIDTH==1) begin : g_credit_fit
+      logic [$clog2(DEPTH+1)-1:0] oldFreeCount;
+      wire [DEPTH-1:0] selectedBusyMask;
+      wire selectedOccupied;
+      always_comb begin : count_old_free
+        oldFreeCount='0;
+        for (int row=0;row<DEPTH;row++)
+          if (!busyInner[row]) oldFreeCount+=1'b1;
+      end
+      for (genvar row=0;row<DEPTH;row++) begin : g_selected_busy
+        assign selectedBusyMask[row]=busyInner[row] && creditRowMaskInner[0][row];
+      end
+      assign selectedOccupied=|selectedBusyMask;
+      for (genvar demand=0;demand<5;demand++) begin : g_fit
+        if (demand==0) begin : g_zero
+          assign allocCreditFitsOutput[demand]=1'b1;
+        end else begin : g_nonzero
+          wire enoughOld,enoughWithRelease;
+          assign enoughOld=demand<=int'(oldFreeCount);
+          assign enoughWithRelease=demand<=int'(oldFreeCount)+1;
+          assign allocCreditFitsOutput[demand]=!freezeInput && !flushInfoInput.valid &&
+            (enoughOld || (REUSE_ON_ISSUE && issueAcceptInner[0] && selectedOccupied && enoughWithRelease));
+        end
+      end
+    end else begin : g_no_credit_fit
+      assign allocCreditFitsOutput='0;
+    end
     always_comb begin : old_credits
       available='0;
       allocCreditsOutput='0;
@@ -554,6 +646,7 @@ module rv32_rs #(
       assign allocLanesS2ValueInner[lane]=!allocLanesInput[lane].source2Ready && wb2.valid ? wb2.value : allocLanesInput[lane].source2Value;
     end
   end else begin : g_no_four_allocation
+    assign allocCreditFitsOutput='0;
     assign allocLanesFireOutput='0;
     assign allocCreditsOutput='0;
     assign allocLanesS1ReadyInner='0;

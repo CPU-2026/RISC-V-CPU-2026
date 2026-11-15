@@ -1,1163 +1,668 @@
-# 过程记录归档（按时间顺序）
+# 项目历史与决策记录
 
-本页将原有阶段综述和逐次日志按**从早到晚**排列，覆盖2026年8月底至11月8日；保留各阶段原文、数据、失败记录、决定及证据链接。11月7～8日新增记录依据现有报告／证书补齐，不新增实验或回写历史结论。演进摘要见[process.md](process.md)，当前文档入口见[文档导航](README.md)。
+本页只记录阶段、重要采用/否决及资产边界。技术原理与实验对照分别见[架构探索总结](架构探索总结.md)、[参数敏感度分析](参数敏感度分析.md)、[频率分析](频率分析.md)。增减幅只相对各次实验基线，不可相加。
 
-## 阅读说明
+## 三仓库提交归档（2026-11-15）
 
-- 跨日或跨月综述按区间起点归档，原日期范围保留；“上旬／中旬”等仅作阶段定位，不代表某个精确日期。
-- 同日逐次日志按原倒序记录反向排列；能从原文确认的“筛选→PPA→采用”先后关系保持。没有小时／分钟记录，不虚构精确时刻。跨日综述是阶段回顾，不代表其中事件全发生在区间首日。
-- 阶段综述与逐次日志可能描述同一事件，均保留，不删重。“当前”“执行中”“未采用”等属于各自记录时点；原文的“见上”“以下历史”“文件前部”等方位词也保留，不再指代本页调整后的排版位置。
-- “归档时状态快照”记录的是当时ROB32／PRF64跨16B四取指版本，不是当前生产状态；新增“本次更新状态快照”单独记录11月8日核对时点。最新身份以[正式生产指针](../../sync/evidence/current-production.json)为准，不能把旧PPA套用于后续配置。
-- 本次仅补充过程文档与摘要；证书、原始工件、RTL、软件、生产指针及Git历史均不修改，不运行仿真／综合或清理。
+按用户授权分别提交硬件、模板及主模拟器现有改动，沿用`update: 英文摘要`格式；模板提交`124c42f`，主模拟器提交`5a4d18b`并记录该模板子模块指针，硬件随本条归档。仅做Git差异/空白检查，不重新构建、仿真或综合，不新增采用、不改生产指针、不推送；README仅纳入已有改动，未额外编辑。
 
-## 时间导航
+## 实验目录删除前交接（2026-11-15）
 
-- [8～9月：软件与周期模型](#history-2026-08)
-- [10月：三端合同、物理实现与扩宽](#history-2026-10)
-- [11月1～2日：PRF与生产收敛](#history-2026-11-01)
-- [11月3日：逐拍瓶颈与旁路](#history-2026-11-03)
-- [11月4日：信用、缓存与面积结构](#history-2026-11-04)
-- [11月5日：预取及隔离候选](#history-2026-11-05)
-- [11月6日：访存仲裁、RAS与完成链](#history-2026-11-06)
-- [11月7日：跨16B四取指、参数化与频率优化](#history-2026-11-07)
-- [11月8日：当前生产16 KiB D$筛选、PPA与采用授权](#history-2026-11-08)
-- [本次更新状态快照](#process-status-2026-11-08)
-- [归档时状态快照](#archive-status-snapshot)
+用户准备自行删除 `/mnt/f/计算机体系结构/CPU-2026/.cpu2026-synthesis/`，要求先记录历史。**本次仅更新现有文档，未执行删除、迁移、采用、提交或推送，暂停新实验与后续审查。** 本轮full/PPA两服务均已正常退出（MainPID0、inactive/dead），检查时未发现仍引用该工作目录的工作进程。
 
-## 记录来源
+正式生产仍为下节 **385.143394MHz / 32506.259339μm² / IPC1.109725209820**，保已采用ALU与AGU16/16组合carry-select，未采用任何后续候选。生产源码、两软件及 `sync/evidence/current-production.json` 在待删目录外，本次未动；指针SHA256为 `af4c93facee68651e1f0935d6d2b56435628a6c260b5c36e7802f6e9e588970a`。生产原六周期8241/13428/3112/5732/163214/164296，完整退休记录374104条。
 
-- 8～9 月：同级 `RV32IM_Simulator/` 的 Git 历史，不是本硬件仓库的提交历史。
-- 9 月 23 日起：本仓库提交及阶段文档；迁移后 commit 时间集中在 10 月 14 日，按 author date 和阶段记录排序。
-- 10～11 月细分实验：本目录及同级 `sync/README.md`、`CPU-SYNC-SPEC.md`、版本化采用/审计证书。后续工作含未提交改动，不虚构提交号；同级目录与实验工件不随克隆提供。
+**后续复查：工作目录仅余 `tmp/`，原选择性旁路源码/验证收据和生产PPA原始资产已缺失，工作区未找到该候选备份。** `sync/evidence` 虽在目录外，正式采用证书引用的目录内证据与备份也已不可用，不能宣称证据链仍可复核；文档指标仅保留历史事实，不替代原始资产。最新前端恢复重叠版不采用；其同次FF身份、最终具名路径闭合及自身>500MHz清单此前未执行，仍不记作完成。缺失旧资产如实标缺失，不自动恢复或伪造旧证书，不叠加未采用候选；另授权后可从现存生产建立新基线，不能把新产物冒充旧成功阶段。
 
-## 架构探索过程（2026 年八月底至 11 月 8 日）
+用户要求诊断综合IPC1.057142选择性旁路版，并在原资产缺失后明确选择“按记录重建新修订”。新根`.cpu2026-synthesis/rs-selective-wakeup-rebuild-20261115-r01/`从现存生产独立重建BRU/Load/StoreAddr三池OLD-ready Q旁路、late-WB选择寄存，声明7位状态，原行writer/容量/信用保持，不叠加前端版。262144组oracle/精确逆变换、真实三池各16392周期、三有效valid1反例及独立审计通过；新生产与候选converted原六374104条完整九架构字段一致，候选周期8398/14668/3267/5865/178512/168106，**新实测IPC1.057141841639**。普通IPC门禁仍false，仅此次用户诊断授权允许PPA，不冒充旧SHA/资格，不自动采用。
 
-主线：**软件原型 → 周期合同 → SRAM/面积收敛 → 单宽调度与关键路径 → 双宽 → 四宽双 ALU → 同源PPA与生产采用 → 逐拍瓶颈优化**。本文统一保留关键实验结论与取舍；[architecture.md](architecture.md)、[assessment.md](assessment.md)、[course.md](course.md)保留各自标注日期的架构、方法及验收范围，最新生产与候选状态见本文后续章节及正式生产指针。
+新测量根`.cpu2026-synthesis/rs-selective-wakeup-rebuild-ppa-20261115-r01/`串行基线/候选各一次同生产opt/2.5ns/INVx1/5fF/sv2v综合及完整端点、232宏、独立叶面积、全组审查完成。新基线精确复现385.143394MHz/32506.259339μm²；候选**384.240150MHz/32561.648759μm²/IPC1.057141841639**，频率−0.234522%、面积+0.170396%、频率×IPC粗估−4.961822%，没有提频收益，**不采用**。400MHz违例29→440（FF21→2、DCache地址0→400/控制0→38、其他SRAM控制8→0），TNS−0.978709→−20.539098ns、3937稳定端点退化、missing0；完整对照见`candidate/all-group-review.json`。同次FF身份及最终独立复核通过，实际FF22323→22330、选择状态7位确认，身份歧义保留全部别名、不作跨版匿名FF等价或功能敏化证明；证据`FF-comparison.json`、`independent-final-verification.json`及`post-verifier-exit.json`。旧工具清单缺失不回填，本次二进制清单/精确十条Liberty输出起点时序警告另存。生产指针及两软件不改，无重跑综合、采用或清理；本次诊断闭合。
 
-## 编年记录
+用户随后要求分析真实路径；新分析根`.cpu2026-synthesis/rs-selective-wakeup-real-path-analysis-20261115-r01/`复用已闭合候选STA，并仅补一次基线定点只读STA，独立pin/net/六位时序算术复核通过。相同逻辑起点LSU`lqTagInner[4][2]`至相同DCache bank5地址bit3，slack+20.887→−102.527ps（退123.414ps），55→57门、buffer5→11；该长链原已存在，不只是旧BRU瓶颈移除后暴露。新增7个选择FF不在此组合锥内；同起点`readWayMaskInner[1]`亦退10.405ps，FF组总体改善不代表这族改善。末级20fF/4个SRAM lane负载，末门延迟120.986→176.386ps；中间RTL别名被purge，不伪造逐门函数归因或功能敏化证明。证据`analysis.json`及`independent-verification.json`；下一步仅建议研究LSU晚资格/Store让行与DCache地址选择的串行耦合，不据此自动改HDL或恢复否决方案。
 
-<a id="history-2026-08"></a>
+另外发现目录外`RISC-V-CPU-2026/synth/production-evidence/frequency400-lq-address-insertion-screen-20261112-r02/`仍存旧黄金完整raw，已按原审计和归档manifest SHA核验，当前原六输入相同；仅作为架构字段参考只读复用，不恢复到旧路径、不把2026-11-12周期/身份冒充385MHz或本重建候选。旧385MHz基线PPA缺失事实不变，本次已独立新测；原选择性旁路及旧385MHz证据不回填。
 
-### 8～9 月：建立硬件式周期模型
+## 当前生产：AGU原结果寄存前16/16纯组合进位选择（2026-11-15）
 
-| 阶段 | 决策与依据 |
+用户获知385MHz版违例22→29及局部退化后明确“采用”，仅发布精确实测`verilog/rtl/execute/rv32_agu_unit.sv`：**385.143394MHz / 32506.259339μm² / IPC1.109725209820**。相对381.289272MHz前生产频率+1.010813%、面积+0.477395%、IPC不变；完整always_ff/writer、freeze/flush和可见周期不变，声明状态增0、实际FF仍22323，保既有已采用ALU，不叠加其他未采用AGU/BRU/LSU/DCache。
+
+400MHz统一约束下WNS−122.076→−95.931ps、TNS−1.708720→−0.978709ns；违例22→29（AGU地址12、BRU误预测1/nextPC6、DCache way-mask2、RAS控制8），DC地址/控制及PRF仍0违例。**3251稳定端点退化、missing0、原全组拒绝及未400MHz事实保留**，本次明确采用不放宽后续门禁。真实AGU196613周期/三有效反例、原六374104条完整raw同周期、唯一PPA/232宏/后测/同次身份及独立审计精确复用，无新模型或综合。两软件126输入/旧同步证书目标保持，旧软件周期资格仅经完整相同HDL raw复用，不声称新软件运行或全状态证明。
+
+旧AGU/正式指针/两文档精确备份及发布审计根`.cpu2026-synthesis/frequency400-agu-carry-select-comb-production-adoption-20261115-r01/`；正式证书`sync/evidence/frequency400-agu-carry-select-comb-production-adoption-20261115-r01/adoption.json`。旧证书/原始拒绝/模型/日志不改写，README、停止通知归约/request-age状态及软件保持，无提交、推送或清理。下一步以本385MHz身份研究剩余瓶颈；旧381MHz独立LSU实验保留但不自动叠加。
+
+## 385MHz共享前40级优化接续（2026-11-15）
+
+用户指定研究DCache readIndex[1]起的AGU/BRU共享40级（门延迟和1455.46ps）。已按385MHz正式指针和采用备份映射复核原共享弧/独立审计，不重跑只读分析；第21级侧输入含FIFO→LQ索引，支持晚owner选择后仍串资格查询的研究方向，不作逐门RTL归属或功能敏化证明。
+
+新独立LSU候选仅把identity/forward/winner资格按旧transport owner提前形成，晚owner选择1-bit结果；完整CDB packet、通知匹配、实际grant/信用、writer/容量/协议/周期不变，不带旧381MHz未合格packet候选。524288组oracle、98304组完整包cut/三反例、真实LSU双模式各3840包＋96等龄行例/205068次完整公开输出对照/三gold valid1反例及独立审计通过；原六374104条完整raw同周期/独立审计通过，IPC **1.109725209820**不变。根`.cpu2026-synthesis/frequency400-owner-qualification-before-route-{cut,actual,full}-20261115-r01/`。
+
+唯一实际PPA r02/232宏/全组/post/handoff及同次身份/路径审计已闭合：**383.880037MHz（−0.328022%）/32337.554159μm²（−0.518993%）/IPC不变，不采用**。违例29→30（FF21→20、DCache控制0→10、RAS控制8→0），WNS−95.931→−104.949ps、TNS−0.978709→−1.132397ns；1812稳定端点退化、missing0、原全组拒绝保留。实际FF22323不变；新三类代表路径共享33级/1303.01ps，起点已转ALU0 tag[1]，最差BRU误预测65级；不同起点/代表位，不作原40级直接消除152ps或功能敏化证明。证据同前缀`{ppa,register-identity,post}-20261115-r02/`，无重复综合。首次r01为make入口缺解释器头失败（EDA0），原失败及串行接续失败保持；r02仅修入口，成功模型/转换/raw零重跑。生产385MHz/软件/正式指针保持，无采用、提交、推送或清理；采用版文档快照见cut根`documentation-backup-mapping.json`。
+
+仅提前身份与buffer年龄、保原三路通知的独立`owner-identity-age-before-route`已全闭合：524288组oracle、98304组cut/三反例、真实LSU双模式各3840包＋96等龄行例/完整公开输出及实际grant信用回归/三gold valid1反例、原六374104完整raw同周期/独立审计通过。唯一PPA/232宏/全组/post/同次身份为 **381.200558MHz（−1.023732%）/32317.827419μm²（−0.579679%）/IPC1.109725209820不变，不采用**；实际FF22323不变。违例29→105（FF21→17、DC地址0→80、RAS控制仍8），WNS−95.931→−122.786ps、TNS−0.978709→−2.853907ns；1895稳定端点退化、missing0、原全组拒绝保持。最差68级/8 buffer起AXI writeHeadOwner[1]→BRU误预测，DC地址60级/9 buffer起LQ tag[5][3]，不作功能敏化或原锥消除证明。实际make2022.250s（33分42秒），较上版2004.442s仅增17.808s；展开944.032s、综合998.070s、STA61.531s。证据`.cpu2026-synthesis/frequency400-owner-identity-age-before-route-{cut,actual,full,ppa,register-identity}-20261115-r01/`，成功模型/转换/综合零重跑，生产/软件保持。
+
+独立`lq-row-forward-flags`已全闭合：oracle/cut/真实LSU双模式3840包＋96等龄行＋1152专项接口例/三有效反例、原六374104完整raw同周期/独立审计及唯一PPA/232宏/全组/post/同次身份通过，**378.383372MHz（−1.755196%）/32364.425099μm²/IPC1.109725209820不变，不采用**。违例29→305（FF117、DC地址188、RAS控制0），WNS−142.309ps、TNS−5.863051ns；2941稳定端点退化、missing0、实际FF仍22323，原全组拒绝保留。证据`.cpu2026-synthesis/frequency400-lq-row-forward-flags-{cut,actual,full,ppa,register-identity}-20261115-r01/`，成功模型及PPA不重跑；该失败触发下述用户流水线授权。
+
+用户新增条件授权：**若本次合格整核PPA仍未提高频率，可改做流水线切分，最终原六几何IPC严格>1.06**。允许为此增加寄存器/周期，不再要求新旧完整raw同周期，但完整架构字段、身份/flush/实际grant/信用、原六答案与独立审计仍须重新合格，面积严格<36000μm²。当前组合候选先完成；切分版仍从385MHz生产独立生成、不叠加未采用版，不自动恢复此前明确否决的具体方案，不自动采用或同步软件。
+
+用户要求本次综合结束后列举所有“>500MHz路径”，已明确选择**等效频率严格>500MHz（所需周期严格<2ns）**，不是500MHz超时路径。须按同一STA约束口径计算，检查路径覆盖/截断，完整清单保存实验产物；每端点最差路径不得冒称所有路径，未约束/覆盖不足如实标明。
+
+用户追问生产版：复用385MHz生产完整STA，核22323 FF＋232宏时钟全部直连同一理想上升沿、IO预算/uncertainty固定，方可按保存精度用`Treq=2.5−slack`筛选；28365个已计时端点中**19213条端点最差路径等效>500MHz**，完整TSV及独立阈值/分组审计根`.cpu2026-synthesis/frequency500-current-production-paths-20261115-r01/`。FF15319、DC控制66/数据554、其他SRAM地址64/控制158/数据2948、输出104；DC地址及PRF端点最差路径均0。仅端点最差路径完整清单，非全部备选逻辑路线；27693个无max-path候选端点不算已覆盖。无新STA/综合，非整核500MHz或后布局结论。
+
+三池`rs-resident-select-pipeline`已完成原六答案/374104条完整九架构字段及独立审计，**几何IPC1.016527480785，低于严格>1.06门槛，不综合、不采用**；六周期8948/14784/3439/6185/188121/169267。262144组oracle/严格lint、真实三池各16391周期独立接口/信用/flush/freeze/重填oracle、三gold valid1反例与局部独立审计通过，原RS行writer/容量不变，新增7位选择状态。根`.cpu2026-synthesis/frequency400-rs-resident-select-pipeline-screen-20261115-r01/`；原警告审查、重启partial构建及旧桥接锚点失败保持，窄修后全部成功模型/转换不重跑；PPA接续正确被IPC门禁拦截，综合0。
+
+BRU单池选择版已完成唯一PPA/232宏/完整全组/post/同次身份及独立审计：**381.822419MHz（−0.862270%）/32398.571459μm²/IPC1.073288762881，不采用**。原六374104完整架构字段通过，FF22323→22326；违例29→75（FF19、DC地址56、RAS0），WNS−118.505ps、TNS−1.459782ns，3215稳定端点退化、missing0，原全组拒绝保持。最差DCache readIndex[0]→AGU地址[31]67级/7 buffer，非功能敏化证明。4条INT信用mask层级/越界警告经精确静态死消费证明闭合（REUSE=0/CREDIT_FIT=0/ISSUE_WIDTH2，两隐式位无cell/输出消费），原失败保留，唯一make/模型零重跑。证据`.cpu2026-synthesis/frequency400-branch-resident-select-pipeline-{screen,ppa,register-identity}-20261115-r01/`及`post-20261115-r02/`。本候选>500MHz端点最差路径18588/28368条，完整TSV/独立审计`.cpu2026-synthesis/frequency500-branch-resident-paths-20261115-r01/`；非所有备选路线。生产385MHz/软件保持。
+
+用户询问尝试利用>500MHz快路径余量换IPC：允许研究局部时序余量→减少执行等待/跨级，不把降低某条快路径频率直接等同IPC收益。先完成现有BRU PPA、不打断或重跑；后续优先独立研究BRU旧行已就绪操作数当拍旁路、当拍CDB唤醒仍经寄存切点，实测IPC/整核频率/全组验证，避免重接晚WB长链。>500MHz清单的SRAM数据多为写端路径，不据此宣称Load返回可少一拍；不扩展到容量/BPU/协议/软件变更，不自动采用或叠加未采用候选。
+
+`rs-selective-wakeup-pipeline`三池OLD-ready旁路/late-WB寄存版已完成原六及独立审计：374104条完整九架构字段相等，**IPC1.057141841639≤1.06，不综合、不采用**；六周期8398/14668/3267/5865/178512/168106。262144组oracle、严格静态lint、真实三池各16397周期及三个gold valid1反例通过；声明增7位选择、原行容量/writer/grant信用保持，直接385MHz生产生成。根`.cpu2026-synthesis/frequency400-rs-selective-wakeup-pipeline-screen-20261115-r01/`，证据`functional-completion.json`、`independent-verification.json`、`verifier-exit.json`；r03只修日志解析，成功模型/转换零重跑，原失败保留。服务退出0仅表示测量/审计完成，IPC资格明确失败；生产/软件不变。下一步研究更窄切分配置，未启动新PPA。
+
+前端恢复重叠r07实测：**383.880037MHz（−0.328022%）/32543.817419μm²（+0.115541%）/IPC1.111319022767（+0.143622%），不采用**；频率×IPC粗估−0.184871%，未400MHz。原六周期8239/13424/3111/5710/162589/164285，完整374104条九架构字段及独立审计通过。唯一make2135.703s，232宏不变，完整分组/post/handoff通过测量审计但保留非退化拒绝：违例29→175（FF21→27、DCache地址0→140、RAS控制仍8），WNS−95.931→−104.478ps、TNS−0.978709→−7.381051ns，1804稳定端点退化、missing0。声明无新状态，但同次FF身份/最终具名路径及本候选>500MHz清单未执行，因用户准备清空工作集暂停，不声称全闭合。
+
+该版仅改core/frontend：四取指在恢复期间允许已知命中且四提示均非控制的包提前进入既有前端队列，返回当前包按实际字数逐字鉴权；后端仍冻结、恢复拍数/BPU/容量/宽度/协议/软件不变，安全断言随条件扩展而未关闭。绑定的是原生产>500MHz清单994条路径（原Treq最差1.961068ns），不代表新链仍>500MHz；perf排除乘除法。1792组oracle、真实frontend2/4各8223/8232周期/三有效反例及独立审计通过，旧夹具槽数/双取指专属断言等失败未回写。证据根`.cpu2026-synthesis/frequency500-frontend-recovery-overlap-{screen-20261115-r01,full-20261115-r07,ppa-20261115-r07}/`；PPA completion SHA256 `1a5df81d5970d76bd14c00952b8032374aa8720059357b3c24eb8fe1928eaeab`。目录删除后这些路径仅作历史定位，不再视为可复用资产。
+
+## 前生产：ALU既有槽操作数寄存边界前移（2026-11-14）
+
+用户在获知提频、违例减少及新增8个RAS控制违例后明确“采纳”，发布精确实测`verilog/rtl/execute/rv32_alu_unit.sv`：**381.289272MHz / 32351.813399μm² / IPC1.109725209820**。相对前生产频率+1.559227%、面积+0.467401%、IPC不变；总违例329→22（AGU地址10、BRU2、DCache way-mask2、RAS控制8），DC地址280→0，TNS−14.678912→−1.708720ns。单槽容量、接口、可见周期及同拍drain/refill保持；声明状态增206位、同次mapped FF22118→22323（净增205），不称零新状态。
+
+原六374104条完整raw同周期、真实ALU/oracle/三有效结果反例、唯一PPA/232宏/全组/post/同次身份及独立审计精确复用，不重跑。**2936稳定端点退化、missing0、原全组拒绝、新增RAS违例及未400MHz事实保留**，本次明确采用不放宽后续门禁。两软件126项输入和旧同步证书目标未改，仅通过相同HDL raw复用既有周期资格，不声称新软件运行或全状态证明。旧ALU/真实指针/两文档精确备份及采用证据根`.cpu2026-synthesis/frequency400-alu-operand-retime-production-adoption-20261114-r01/`；正式证书`sync/evidence/frequency400-alu-operand-retime-production-adoption-20261114-r01/adoption.json`。不带INT issue切点、shared-valid cofactor或16KiB版；旧通知归约/request-age停止状态保持，未提交、推送或清理。
+
+## AGU/BRU保留清理（2026-11-14）
+
+用户确认仅清理工作区`.cpu2026-synthesis/`，随后明确“保留本次agu/bru改进的”。**已完成**：按清单删除344处资产，可用空间增加**54.38GiB**，F盘剩余约**59.73GiB（使用率20%）**；实验目录保留约3.3GiB，含本次AGU/BRU完整工作集、共用脚本、当前381.289272MHz生产的screen/PPA/身份/采用备份及精确SHA依赖。1869个保留文件、AGU与生产证据依赖SHA、生产HDL/指针/两软件126输入和全部`sync/evidence`证书均复核不变；README及`RISC-V-CPU-2026/{build/synth,synth}/`未动。收据见AGU根`authorized-cleanup-completion.json`。本次无模型/转换/EDA、提交/推送或全局配置变更；授权不扩展为持续清理。未保留历史实验原产物已删除，不可再凭旧证书声称原始资产齐全。
+
+接续状态：AGU边界迁移真实模块正向65540周期通过（31113次payload捕获、15766次进位），live-input/wrong-operand两个反例在valid1检出；freeze-writer反例只在valid0检出，门禁拦截，**尚无完整局部资格、原六/IPC或PPA结果，不采用**。BRU已准备独立候选/夹具，含保护invalid复位载荷的初始化位，**尚未运行**；两者均从已采用ALU版独立生成、未合并。保留根`.cpu2026-synthesis/frequency400-{agu-operand-retime-screen,bru-operand-retime-screen,agu-bru-retime-support}-20261114-r01/`；清理计划及精确保留SHA见AGU根`authorized-cleanup-plan.json`。后续先补AGU有效freeze反例及独立审计，再接原六；BRU独立验证，成功阶段不重跑。
+
+## 前生产：AGU-tag＋DCache地址组合（375.435380MHz）
+
+用户明确“那就采用这个版本，停止正在进行的验证”，发布精确LSU AGU-tag提前查询＋DCache Fill/Store地址并行组合：**375.435380MHz / 32201.304059μm² / IPC1.109725209820**。相对377.511521MHz前生产频率−0.549954%、面积−1.084110%、IPC不变；总违例494→329（FF49、DC地址280，其余0）。仅发布实测`rv32_lsu.sv`、`rv32_dcache.sv`，不含lookup直接选择或未合格通知归约；原六374104条raw同周期、唯一PPA/232宏/全组/post/22118 FF身份资格精确复用，不重跑。**4628稳定端点退化、missing0、原全组拒绝及未400MHz保留**，本次明确采用不放宽后续门禁。
+
+通知归约真实LSU验证已按用户要求停止，SIGTERM不算完成或合格，不恢复、不再启动后续验证/综合；旧request-age保持停止。两软件126项输入和旧同步证书目标不改，仅复用既有PC/周期资格，不声称新软件运行或全状态证明。旧377MHz两HDL/真实指针/文档精确备份；正式证书`sync/evidence/frequency400-agu-tag-dcache-address-combination-production-adoption-20261114-r01/adoption.json`，备份、停止收据和发布审计根`.cpu2026-synthesis/frequency400-agu-tag-dcache-address-combination-production-adoption-20261114-r01/`。未提交、推送或清理。
+
+375MHz当前生产违例路径只读复核：329个端点最差路径仅从AXI读owner位（47）或LQ tag位（282）发出；前者以ALU/AGU结果为主，后者含280 SRAM地址及2个way-mask FF。完整具名归类`.cpu2026-synthesis/frequency400-current-production-violating-path-review-20261114-r01/violating-endpoints.json`，无新验证/综合，停止状态不改。
+
+375MHz最差FF完整门级路径及侧锥只读复核闭合：AXI读owner[1]→ALU1结果[27]，72组合单元/9 buffer、176侧输入/27597节点，无截断；末20级约639ps、总到达约2.605ns。逐门清单与独立审计根`.cpu2026-synthesis/frequency400-agu-tag-dcache-address-combination-ff-bottleneck-20261114-r01/`；中段无公开RTL别名，模块解释仅结构支持，不作功能敏化或全RTL映射证明。未启动模型/转换/EDA或恢复已停验证。
+
+上游DCache Fill readiness分解已闭合：唯一有效PPA r02/232宏/完整全组/post/handoff及22118 FF同次身份审计通过，**341.689260MHz（−8.988530%）/32485.482839μm²（+0.882507%）/IPC不变**，不采用。FF/DC地址改善53.294/71.480ps，但I$ `headInner[0]`→数据SRAM地址[2]成最差−426.156ps（29单元含20 buffer、16违例）；其他SRAM控制新增8违例，总329→229不抵消降频。2275稳定端点退化、missing0、原全组拒绝保持。根`.cpu2026-synthesis/frequency400-dcache-fill-readiness-split-{ppa,register-identity}-20261114-r02/`，旧r01 exec前失败/EDA0及原资产保持。
+
+完整Fill逐行cofactor唯一PPA/232宏/完整全组/post/handoff及22118 FF同次身份审计闭合：**356.561480MHz（−5.027203%）/32378.451059μm²（+0.550124%）/IPC不变**，不采用。FF/DC地址WNS退141.211/21.642ps，违例329→615（FF161/DC地址454）；3881稳定端点退化、missing0。FF74门起于AXI读owner[0]→ALU1结果[31]，DC69门起于AGU辅助索引[2]；I$无新增违例。证据`.cpu2026-synthesis/frequency400-dcache-fill-row-cofactor-{ppa,register-identity}-20261114-r01/`，成功功能与唯一PPA不重跑，原准备/诊断失败保持。
+
+Fill owner请求提前查询的局部/真实DCache双模式/三有效CPU数据反例、新源原六374104条raw同周期和独立审计已闭合，IPC1.109725209820不变。原shell退出通知缺失后只读核真实进程/产物：准备日志显示预检完成、无残留EDA进程，尚未启动PPA，不把通知错误算综合失败；接续转用户16KiB IPC请求，不自动启动该候选综合。资格根`.cpu2026-synthesis/frequency400-dcache-fill-owner-query-{research,cut,full}-20261114-r01/`及`actual-20261114-r02/`，原失败保持。
+
+用户授权16KiB D$ IPC测试已闭合：仅组数128→256（2路/32B不变），converted保断言原六答案及374104条九架构字段逐条相等、独立审计通过。几何IPC **1.109725209820→1.163892071852（+4.881106%）**；前四周期不变，qsort163214→159318（IPC+2.445424%）、rsort164296→126455（IPC+29.924479%）。原诊断/导入失败保持，成功lint/转换零重跑。证据`.cpu2026-synthesis/dcache16k-ipc-20261114-r01/{functional-completion,independent-verification}.json`；未综合、不声称16KiB面积/频率或采用，生产/软件不改。
+
+**用户明确“先保存作为历史记录，不应用到生产”：16KiB仅归档，不采用、不据此启动后续实验。** 唯一同生产流程PPA/232宏/独立叶面积/完整全组/post/handoff闭合：**35554.806081μm²（+10.414181%，余445.193919）/372.787258MHz（−0.705347%）/IPC1.163892071852**。逻辑29109.363660、SRAM6445.442421μm²；64数据宏和2metadata扩容，其余166宏不变。全局违例329→298但2247稳定端点退化、missing2，原全组拒绝/对应不足和预检失败均保持。源码/模型/raw/网表/日志/耗时证据完整保留；归档决定及SHA见`.cpu2026-synthesis/dcache16k-ppa-20261114-r01/historical-record.json`。生产仍8KiB/375.435380MHz/32201.304059μm²/IPC1.109725209820，真实指针SHA未改；未提交、推送或清理。
+
+同口径耗时：8KiB→16KiB整次make35分16.130秒→66分15.166秒，**增加30分59.036秒（+87.850725%）**；综合/映射17分7.836秒→18分2.617秒（+5.329806%），主要增量在elaborate16分43.249秒→46分40.999秒（+179.192688%）。单次历史基线非同时控负载因果实验，准备失败/嵌套计时不计入、不重跑基线；比较证书`.cpu2026-synthesis/dcache16k-ipc-20261114-r01/synthesis-time-comparison.json`。生产375.435380MHz/32201.304059μm²及两软件未改。
+
+展开变慢只读定位：Yosys hierarchy726.441→1924.212s（约占新增时间67%），proc_mux132.043→397.335s、proc_dff80.909→318.265s；CPU总时间990.79→2791.37s接近各自wall，非主要I/O等待。按SET逐组valid/PLRU复位/更新展开后DCache临时cell112184→155832、mux41954→59362，大过程处理成本超线性；不是把数据SRAM展开为FF。原脚本/HDL相同，仅授权参数不同；证据IPC根`elaboration-slowdown-analysis.json`，无新EDA，未作Yosys内部算法复杂度或精确因果证明。
+
+上一ready/wait版I$同端点只读对照/独立审计完成：两版均`headInner[0]`→way0/lane0地址[2]，裕量+986.962→−426.156ps；静态最大buffer路由的起始链10→19级，末级HB→NOR2。失败版保存STA的末级NOR2约976ps/80fF；基线无该端点完整STA，不能分摊精确增量或宣称映射根因已证。证据`.cpu2026-synthesis/frequency400-icache-same-endpoint-topology-20261114-r01/`；无新STA/模型/综合、mapped只读。
+
+## 前生产：SV两槽选择器（377.511521MHz）
+
+用户在知悉整体提频及局部退化后明确“采纳”，发布精确SV两槽选择器版：**377.511521MHz / 32554.227539μm² / IPC1.109725209820**，相对前生产频率+0.760369%、面积+1.004800%、IPC不变。仅`verilog/rtl/backend/rv32_rs.sv`组合分支，保完整排序包/invalid载荷/端口/全部writer/实际grant与旧行信用，无新状态或周期；LQ叶对比较及其他配置保持，不带失败ALU或通知旁带。原六374104条完整raw同周期、真实RS/反例/独立审计及唯一PPA/232宏/全组/post/身份复核精确复用，不重跑成功阶段。两软件126项输入不改，既有PC/周期资格经HDL完整raw相等复用，不声称新软件同步或全状态证明。旧RS/真实指针/文档精确备份；证书`sync/evidence/frequency400-sv-two-slot-select-production-adoption-20261113-r01/adoption.json`。2528稳定端点退化、missing0、原全组拒绝及未400MHz保留，本次采用不放宽后续门禁，旧request-age进程保持冻结，未提交、推送或清理。
+
+## 前生产：LQ叶对并行比较（374.662703MHz）
+
+按用户“改善即可，那就采用”发布精确LQ叶对并行比较版：**374.662703MHz / 32230.376579μm² / IPC1.109725209820**，对前生产频率+3.681683%、面积−0.142925%、IPC不变。仅LSU组合改写，28对年龄比较共享，各层保原树/invalid载荷/全部writer/实际grant，无新状态或周期；不含未合格request-age候选。原六374104条完整raw同周期、独立审计及唯一PPA/232宏/全组/post/身份复核精确复用，无新模型/转换/EDA。两软件126项输入不改，既有同步PC/周期资格经HDL完整raw相等复用，无新软件构建运行。旧LSU/真实指针/文档精确备份，正式证书`sync/evidence/frequency400-lq-pair-prefix-production-adoption-20261113-r01/adoption.json`；原全组拒绝、2613稳定端点退化、missing0及未400MHz保留，本次明确采用不放宽后续门禁，未提交、推送或清理。
+
+## 前生产及软件同步（361.358624MHz）
+
+按用户“那么就采用这个到生产中”采用精确old-row credit版：**361.358624MHz / 32276.507699μm² / IPC1.109725209820**。仅发布core五个REUSE参数，原issue旁路/selector/全部writer不变；全局违例10775→531。相对前生产频率−0.970446%、面积+0.414950%、IPC−1.115147%，2210稳定端点退化及原全组拒绝保持，未达400MHz；本次明确采用不放宽后续门禁。原六周期`8241/13428/3112/5732/163214/164296`，374104退休/独立审计及唯一PPA精确复用，不重跑模型/转换/EDA。旧core/真实指针/文档已备份；正式证书`sync/evidence/frequency400-old-row-credit-production-adoption-20261113-r01/adoption.json`。HDL采用时两软件126项输入不变、尚未同步，该历史证书保持原样。
+
+用户随后要求“同步软件”，双树现已关闭离站信用及槽回退复用，保WB唤醒/实际grant/全部RS writer。126项输入中4项更新、122项保持；Release/保断言四构建原六答案、退休数及`init+core+drain`全匹配，双树各374104条退休PC/周期匹配现存converted raw。双树各458752组分配oracle及五池旧源码有效反例、每拍RS占用/flush/freeze检查和独立raw审计通过；仅默认四宽原六资格，非软件九字段退休载荷或全状态证明。新证据`sync/evidence/software-old-row-credit-sync-20261113-r01/synchronization.json`，产物`.cpu2026-synthesis/software-old-row-credit-sync-20261113-r01/`；旧软件/指针/文档精确备份，原失败保留，无新HDL运行/转换/EDA，旧黄金/镜像/Slave/既有code/README不变，未提交、推送或清理。下一步仍以本生产研究DCache残链。
+
+## 最新研究（2026-11-14～15）
+
+用户新授权“今晚继续持续优化，争取到达400mhz，先进行agu/bru的寄存边界迁移”。以已采用381.289272MHz版为唯一生产基线，IPC门槛严格>1.06、面积严格<36000μm²，同时比较频率/违例端点/TNS/完整分组；AGU与BRU独立候选，不叠加未采用版、不自动采用或继续清理。清理后保留工作集、126软件及当前生产SHA已核验，基线PPA273项引用均可认证。
+
+AGU整段操作数寄存迁移已闭合：真实模块65540周期、三个有效结果反例、有效OLD/NEW年龄重放、原六374104条完整raw同周期及独立审计通过，IPC不变；唯一PPA/232宏/后测/handoff/同次身份均认证。**370.594888MHz（−2.804795%）/32434.394519μm²（+0.255260%），不采用**。违例22→610、TNS−1.708720→−71.268894ns，FF22323→22355；3134稳定端点退化、missing0，原全组拒绝保持。新最差offset寄存bit1→DCache地址（68组合单元），FF最差同起→way-mask（73单元）；下游加法尾链抵消上游切断。根`.cpu2026-synthesis/frequency400-agu-operand-retime-{screen,ppa,register-identity}-20261114-r01/`，完整闭合见screen根`final-cut-review.json`；旧失败及成功资产保持、不重跑。
+
+BRU唯一PPA/232宏/后测/handoff/同次身份已闭合：**382.714319MHz（+0.373744%）/32487.757319μm²（+0.420205%）/IPC不变**。FF违例14→10、RAS控制8→0，但DC地址0→172，总违例22→182、TNS−1.708720→−4.387792ns；4815稳定端点退化、missing0，原全组拒绝保持，不自动采用。实际FF22323→22425（+102），BRU直接公开状态别名71→173，声明+69不是优化后FF数。当前最差AXI word-response[33]/wordMiss[1]→AGU地址[31]，68组合单元；DC起于LQ tag[4][2]。根`.cpu2026-synthesis/frequency400-bru-operand-retime-{screen-20261114-r02,ppa-20261114-r01,register-identity-20261114-r01}/`，完整对照见screen根`final-cut-review.json`。真实两模式/三有效反例/原六374104条完整raw同周期及独立审计精确复用，旧准备/诊断失败保持。
+
+AGU16/16 carry-select寄存切点已闭合：独立oracle、真实模块196613周期/162186次捕获/81302次进位、三有效结果反例、原六374104条完整raw同周期及唯一PPA/232宏/后测/同次身份均通过资格审计。**379.259259MHz（−0.532407%）/32336.344019μm²（−0.047816%）/IPC不变，不采用**。违例22→300（FF52/DC地址240/RAS控制8）、TNS−1.708720→−9.437554ns；实际FF22323→22340（+17），2967稳定端点退化、missing0，原全组拒绝保持。新最差ROB head[1]→RAS控制，carry寄存位经高半选择→DCache地址成62单元尾链。根`.cpu2026-synthesis/frequency400-agu-carry-select-retime-{screen,ppa,register-identity}-20261115-r01/`，闭合见screen根`final-cut-review.json`；成功阶段不重跑，生产381MHz及软件不改。
+
+AGU16/16纯组合carry-select已闭合：**385.143394MHz（+1.010813%）/32506.259339μm²（+0.477395%）/IPC1.109725209820不变**。选择器在原结果寄存前，完整always_ff/writer不变、实际FF22323→22323；真实196613周期/三有效反例/原六374104条完整raw同周期、唯一PPA/232宏/后测/handoff/身份及独立审计均通过。TNS−1.708720→−0.978709ns、DC地址仍0违例且WNS改善19.567ps，但总违例22→29、3251稳定端点退化、missing0，原全组拒绝及未400MHz事实保持，不自动采用。最差DCache readIndex[1]→BRU mispredict，71单元/13buffer；根`.cpu2026-synthesis/frequency400-agu-carry-select-comb-{screen,ppa,register-identity}-20261115-r01/`，完整对照screen根`final-cut-review.json`。生产仍381MHz，不叠加未采用BRU。
+
+BRU四字节比较切点已完整闭合：**378.558226MHz（−0.716266%）/32174.637239μm²（−0.547654%）/IPC不变，不采用**。原六完整raw同周期、真实两模式各65605周期/三有效反例及唯一PPA/232宏/后测/同次身份全部认证；实际FF22323→22326（+3）。总违例22→359（FF23/DC地址328/RAS控制8）、TNS−1.708720→−15.263170ns，3427稳定端点退化、missing0，原全组拒绝保持。新最差ROB head[1]→RAS控制；FF最差AXI read-owner[1]→比较chunk[3]，70单元。根`.cpu2026-synthesis/frequency400-bru-compare-chunks-{screen,ppa,register-identity}-20261115-r01/`，闭合见screen根`final-cut-review.json`；成功阶段不重跑。
+
+BRU误预测并行cofactor已闭合：**382.357060MHz（+0.280047%）/32402.303939μm²（+0.156067%）/IPC不变，FF22323→22323**。真实两模式各65605周期/三有效反例/原六完整raw同周期及唯一PPA/232宏/后测/同次身份均认证。RAS控制8→0，但DC地址0→40、FF14→18，总22→58、TNS−1.708720→−2.301820ns；3842稳定端点退化、missing0，原全组拒绝保持、不自动采用，不及385MHz候选。最差AXI read-owner[0]→AGU地址[31]，65单元；根`.cpu2026-synthesis/frequency400-bru-mispredict-cofactor-{screen,ppa,register-identity}-20261115-r01/`，完整闭合见screen根`final-cut-review.json`。生产及软件保持。
+
+AGU四字节前缀版已完整闭合：**380.315692MHz（−0.255339%）/32511.318599μm²（+0.493033%）/IPC不变，不采用**。真实196613周期/三有效反例/原六完整raw同周期及唯一PPA/232宏/后测/同次身份均认证，FF仍22323。RAS控制8→0，但DC地址0→432、FF14→22，总22→454、TNS−1.708720→−18.929380ns；3688稳定端点退化、missing0，原全组拒绝保持。最差AXI read-owner[1]→AGU地址[31]，69单元；DC起于AGU auxiliary[0]。根`.cpu2026-synthesis/frequency400-agu-byte-prefix-comb-{screen,ppa,register-identity}-20261115-r01/`，screen根`final-cut-review.json`保完整证据；生产及软件保持。
+
+AGU OR-propagate r02已完整闭合：**381.911422MHz（+0.163170%）/32253.908699μm²（−0.302625%）/IPC不变，FF仍22323**。真实196613周期/三有效反例/原六完整raw同周期及唯一PPA/232宏/后测/身份审计均认证，r01静态lint失败及窄修记录保持。FF14→13、TNS−1.708720→−1.652005ns，但DC地址新增8违例、RAS控制仍8且成最差，总22→29；3762稳定端点退化、missing0、原全组拒绝保持，不自动采用、不及385MHz候选。最差ROB head[2]→RAS控制52单元；FF最差AXI read-owner[0]→BRU mispredict71单元。screen根`.cpu2026-synthesis/frequency400-agu-or-propagate-comb-screen-20261115-r02/`，PPA/身份根同前缀`{ppa,register-identity}-20261115-r01/`，闭合见screen根`final-cut-review.json`。
+
+381MHz生产及385MHz候选共8条保存路径的逐pin/类型/连接/完整公开别名及延迟窗口已通过独立审计。8条路径内部公开网别名均为0，不能可靠划分共享返回/唤醒段与执行尾段；生产AGU末16门约506ps、385版约541ps仅为门延迟和，不等于可删加法延迟。证据`.cpu2026-synthesis/frequency400-execute-tail-frontier-study-20261115-r01/`；无新模型/转换/EDA、候选叠加或采用。
+
+同版真实共享弧及9个不截断侧输入锥已通过独立审计：生产AGU/BRU误预测/nextPC共享前35门、门延迟和约1294.94ps，385MHz候选共享40门/1455.46ps。共享节点侧锥包含DCache request/MSHR、AXI条目/word-response及40个宏输出边界，只作结构支持，不认定RTL边界或功能敏化；每锥一个未区分主输入/无驱动根保持未知。证据`.cpu2026-synthesis/frequency400-execute-shared-cone-study-20261115-r01/`，无新模型/EDA或候选叠加。
+
+DCache响应出口packet onehot组合候选保持early>word>normal、无响应raw0及reset低时载荷，responseInner/正常winner、全部时序writer、容量/协议/周期不变。独立整数oracle及converted源码cut各524288组、三有效载荷反例通过；原独立审计因`run`同名导入失败保持，r02精确路径导入后仅补审计，成功转换/构建/模型重跑0。闭合入口cut根`cut-audit-handoff-r02.json`及`independent-verification-r02.json`；根`.cpu2026-synthesis/frequency400-dcache-response-packet-cut-20261115-r01/`，原pending/失败证据不回写。
+
+真实DCache/背靠存储器4配置及独立审计已闭合：生产LOAD_PREFETCH0两返回模式各630接受/334响应，hit262/265、buffer9/6、注册word43；原预取回归各742/398保持。全部公开输出/invalid载荷、byte/owner/延迟/Store/背压对照通过。原drop-buffered故障先触发内部实际grant断言，外层预期短语门禁失败保留；r02认证其受valid bit35保护的运行时身份反例，只补未完成word反例/审计，旧成功模型不重跑。两有效数据＋一实际grant身份反例完成，不冒称三个外层数据反例。入口actual根`{completion,independent-verification}-r02.json`；根`.cpu2026-synthesis/frequency400-dcache-response-packet-actual-20261115-r01/`。
+
+DCache packet版整核原六/完整raw同周期及唯一PPA/232宏/后测/handoff/身份审计已全部闭合：**383.072247MHz（+0.467617%）/32358.534779μm²（+0.020776%）/IPC不变，FF仍22323**。FF仍14违例，DC地址新增144，总22→166、TNS−1.708720→−5.314925ns；2710稳定端点退化、missing0，原全组拒绝保持、不自动采用，不及385MHz候选。最差AXI read-owner[1]→AGU地址[31]，76单元/12buffer。full根`.cpu2026-synthesis/frequency400-dcache-response-packet-full-20261115-r01/`，PPA/身份同前缀`{ppa,register-identity}-20261115-r01/`；完整闭合见full根`final-cut-review.json`，旧失败/成功资产保持。
+
+LSU响应CDB分支cofactor的独立整数oracle1048576组、converted源码cut98304组及三有效包反例/独立审计已闭合，收据/输入/转换SHA复核通过，成功阶段不重跑；r01准备锚点失败保持。仅改既有packet组合块，通知匹配、writer、实际grant/信用/寄存边界不变，不叠加383/385MHz版。cut根`.cpu2026-synthesis/frequency400-lsu-cdb-branch-cofactor-cut-20261115-r02/`。
+
+旧381MHz独立LSU r02正向双模式通过：各3840组packet、200074次22公开输出对照及owner/通知/信用回归。r03签扩展/目的寄存器两反例已有valid1见证，但反转选择在时间0得到original.valid0、gate.valid1，按门禁拒绝、不计有效反例；原失败/模型/日志保持。r04仅备“有效响应误选缓冲”新故障及独立审计脚本，尚未启动、未完成真实模块全资格或整核/PPA；所有unit已退出。actual根`.cpu2026-synthesis/frequency400-lsu-cdb-branch-cofactor-actual-20261115-r0{1,2}/`，不因本次385MHz采用改写旧成功或失败，也不自动叠加到新生产。
+
+本轮用户授权运算单元上游切点研究，并将IPC门槛改为**严格>1.06**；面积仍严格<36000μm²、目标400MHz，同时比较违例端点/TNS/完整分组。INT-only共享CDB先捕获后发射通过真实RS两形态/三有效反例、原六374104条九架构字段及独立审计，周期`8241/13570/3464/5777/163405/166712`；原导入失败保留、成功阶段零重跑。生产8KiB/375.435380MHz、两软件和旧停止任务不改，不自动采用。
+
+INT-only切点唯一PPA/232宏/全组/post/handoff/22118 FF同次身份及独立审计已闭合：**370.176231MHz（−1.400813%）/32338.020719μm²/IPC1.083902751388，不采用**。ALU结果负端点29→0，但总违例329→411（FF49→51、DC地址280→352、其他SRAM控制0→8），新最差ROB head[1]→RAS arch SRAM ce、−201.060ps；TNS−14.678912→−9.476633ns不能抵消降频/条数增加。2360稳定端点退化、missing0，原全组拒绝保持；闭合证据screen根`final-cut-review.json`及同前缀`register-identity-20261114-r01/`。局部切断有效不等于整核改善，后续从生产独立选点、不叠加本候选，生产/软件不改。
+
+INT shared-valid完整排名cofactor（无新状态/周期）代数、真实RS两形态/三有效反例、原六374104条完整raw同周期及独立审计通过；唯一PPA/232宏/全组/post/handoff/22118 FF身份闭合：**381.111886MHz（+1.511980%）/32339.172539μm²/IPC1.109725209820不变**。但总违例329→503（FF49→127、DC地址280→376）、TNS−14.678912→−20.855719ns，2685稳定端点退化/missing0，原全组拒绝保持，**暂不采用、不称最优**。原stdout分类失败保持、成功阶段零重跑；根`.cpu2026-synthesis/frequency400-int-shared-valid-cofactor-{screen,ppa,register-identity}-20261114-r01/`；两切点统一对照`frequency400-execution-upstream-cut-baseline-20261114-r01/cut-comparison.json`。
+
+ALU既有槽寄存边界前移全部闭合，随后用户明确采用，见当前生产。三深度真实ALU独立oracle各32772周期/全64操作、三个valid1结果反例、原六374104条完整raw同周期及独立审计通过；原invalid0反例、诊断/审计失败保持，正向及既有有效阶段零重跑。screen/PPA/同次22323 FF身份及全部22端点见`.cpu2026-synthesis/frequency400-alu-operand-retime-{screen,ppa,register-identity}-20261114-r01/`，screen根`final-cut-review.json`。采用不改写原全组拒绝、旧日志或两软件，不恢复其他候选。
+
+单LSU的AGU完整tag提前查询已闭合：数学/converted613635组查询、真实LSU双响应各32768新增例/557056检查及完整旧回归/三有效实际反例、原六374104条完整raw同周期及独立审计通过。唯一PPA/232宏/完整全组/后测/handoff及同次22118 FF身份复核完成：**378.383372MHz（+0.230947%）/32333.734199μm²（−0.677311%）/IPC1.109725209820不变**，未400MHz；2671稳定端点退化、missing0，原全组拒绝保留，未采用。根`.cpu2026-synthesis/frequency400-agu-forward-tag-{research,cut,actual,full,ppa,register-identity}-20261114-r01/`。仅改资格查询tag，所有消费仍由事件鉴权，数据查询/size/全部writer/grant保持；无效raw查询允许不同而必须屏蔽。原诊断失败/重启中断日志保持，r03只补未完成末段make，成功阶段零重跑。生产仍377.511521MHz、软件不改，旧request-age已停止且不恢复。
+
+单AGU 4位双进位/块前缀候选全部闭合：数学/converted组合AGU528384组双oracle/三反例，寄存单元1638403周期/3276806完整快照/五实际反例，原六374104条raw同周期及独立审计通过。唯一PPA/232宏/完整全组/后测/handoff及同次22118 FF身份复核完成：**368.179775MHz（−2.471910%）/32425.675679μm²（−0.394885%）/IPC不变**；3999稳定端点退化、missing0，降频/原全组拒绝，不采用。总违例494→396不抵消其他SRAM控制WNS退123.476ps，未400MHz。根`.cpu2026-synthesis/frequency400-agu-nibble-carry-select-{research,full,ppa,register-identity}-20261114-r01/`及同前缀`{cut,unit}-20261114-r0{1,2}/`；原数组/参考名失败保留，成功阶段不重跑。
+
+标量RS早期flush候选已闭合：数学/converted控制393216组、真实RS两生产形态11141120周期/22282240完整快照/六有效反例，原六374104条raw同周期及独立审计通过。唯一PPA/232宏/完整全组/后测/handoff及同次22118 FF身份复核完成：**371.687840MHz（−1.542650%）/32485.482839μm²（−0.211170%）/IPC不变**，4019稳定端点退化、missing0；FF WNS退49.569ps、DC地址退12.435ps，总违例494→420不能抵消降频，原全组拒绝，不采用。根`.cpu2026-synthesis/frequency400-scalar-rs-early-flush-{research,cut,actual,full,ppa,register-identity}-20261114-r01/`；生产/软件不改，不叠加失败候选。
+
+DCache r04地址掩码候选已闭合：307200组×16bank cut/三反例、真实DCache双响应各742接受/398响应及全部bank raw端口/metadata/三live反例、原六374104条完整raw同周期及独立审计通过。唯一PPA/232宏/完整全组/后测/handoff及同次22118 FF身份审计完成：**376.211251MHz（−0.344432%）/32383.685279μm²（−0.523871%）/IPC不变**；4775稳定端点退化、missing0，总违例494→506，降频/原全组拒绝，不采用。根`.cpu2026-synthesis/frequency400-dcache-bank-mask-{research,actual,full,ppa,register-identity}-20261114-r01/`及`cut-20261114-r04/`。全部旧失败/跨行case1940保持，成功模型/转换/EDA不重跑；live行内、跨行仅cut、非全状态/跨后端证明。
+
+DCache Fill/Store地址互斥项并行合并全部闭合：数学、307200组×16bank cut/三反例、真实双响应完整字节/owner/bank端口/metadata/三live反例、原六374104条raw同周期及独立审计通过。唯一PPA/232宏/完整全组/后测/handoff及同次22118 FF身份审计完成：**380.846118MHz（+0.883310%）/32266.549559μm²（−0.883689%）/IPC1.109725209820不变**。3387稳定端点退化、missing0；DC地址WNS改善119.863ps，但DC控制退29.657ps且新增10违例，原全组拒绝及未400MHz保持，未自动采用。根`.cpu2026-synthesis/frequency400-dcache-parallel-address-{research,cut,actual,full,ppa,register-identity}-20261114-r01/`。跨行/禁用地址和原失败记录保持，成功阶段不重跑。
+
+INT_RS完整包直接选择已闭合：数学/converted262144组完整包/三反例，真实RS19005440周期/38010880完整快照/三实际反例、原六374104条raw同周期及独立审计通过。唯一PPA/232宏/完整全组/后测/handoff及同次22118 FF身份审计完成：**369.425028MHz（−2.142052%）/32293.216379μm²（−0.801773%）/IPC不变**；4776稳定端点退化、missing0，总违例494→513，DC地址WNS退58.171ps，降频/原全组拒绝，不采用。根`.cpu2026-synthesis/frequency400-int-rs-decoded-payload-{research,cut,actual,full,ppa,register-identity}-20261114-r01/`。成功阶段不重跑，原诊断失败保持；live窗口/任意mask cut范围不扩称全状态证明。
+
+DCache数据bank enable分解已闭合：数学/380928组×16bank cut/三反例、真实双响应完整字节/owner/bank端口/metadata/三live反例、原六374104条raw同周期及审计通过。唯一PPA/232宏/完整全组/后测/handoff及同次22118 FF身份审计完成：**328.270888MHz（−13.043478%）/32520.635219μm²（−0.103189%）/IPC不变**；5352稳定端点退化、missing0，总违例494→3246，DC控制WNS退532.389ps，明显降频/原全组拒绝，不采用。根`.cpu2026-synthesis/frequency400-dcache-data-enable-factor-{research,actual,full,ppa,register-identity}-20261114-r01/`及同前缀`cut-20261114-r0{1,2}/`；原漏变异夹具失败保持，正向成功阶段不重跑。
+
+377生产/380未采用地址版/328使能版的只读拓扑与独立审计通过：13条保存负路径、5个稳定SRAM端点、922项stage负载。所选路径最大sink-pin数均10，同一地址端点生产65门/11buffer→328版80门/14buffer，证据不支持仅以最大扇出解释退化。根`.cpu2026-synthesis/frequency400-dcache-enable-topology-review-20261114-r01/`；无新EDA/模型，不跨版匹配匿名FF、未补非负端点缺失路径，非功能敏化或可达Fmax证明。
+
+lookup地址直接选择已闭合：数学/1048576组cut/三反例、真实DCache双响应/三实际反例、原六374104条raw同周期及独立审计通过。唯一PPA/232宏/完整全组/后测/handoff及同次22118 FF身份审计完成：**366.942889MHz（−2.799552%）/32348.168399μm²（−0.632972%）/IPC不变**；3182稳定端点退化、missing0，总违例494→565，降频/原全组拒绝，不采用。根`.cpu2026-synthesis/frequency400-dcache-lookup-direct-{research,cut,full,ppa,register-identity}-20261114-r01/`及同前缀`actual-20261114-r0{1,2,3}/`，成功阶段不重跑，全部原失败保持。
+
+用户指定AGU-tag＋DCache地址组合已闭合：新原六374104条raw同周期/独立审计、唯一PPA/232宏/完整全组/后测/handoff及同次22118 FF身份审计完成。**375.435380MHz（−0.549954%）/32201.304059μm²（−1.084110%）/IPC不变**；4628稳定端点退化、missing0，总违例494→329但FF WNS退22.656ps。最初因降频/全组退化不采用，随后用户明确采用此组合，原技术拒绝不改写。单项提频未相加，原失败/成功资产保持。根`.cpu2026-synthesis/frequency400-agu-tag-dcache-address-combination-{research,full,ppa,register-identity}-20261114-r01/`。
+
+LSU旧行通知归约仅完成数学审计及converted262144组×lane1/2/4共786432项检查、三有效反例和独立审计；真实LSU双响应服务随后被用户明确停止，无实际模块完成/原六/PPA资格，不含于新生产、不恢复。根`.cpu2026-synthesis/frequency400-lsu-notify-row-reduce-{research,cut,actual}-20261114-r01/`，原日志和成功资产保留；停止收据见本次采用根`stop-verification.json`。
+
+## 最新实验（2026-11-13）
+
+单ALU并行ADD/SUB完整功能、原六374104条raw/同周期及独立审计通过，IPC1.109725209820不变；唯一PPA/232宏/完整全组/后测/handoff及同次身份复核完成：**371.350861MHz（−0.883953%）/32472.798239μm²（+0.752153%）**，3093稳定端点退化、missing0，拒绝、不采用。FF WNS改善47.596ps，但DC地址退80.031ps成为最差，不能以违例517→489抵消降频；根`.cpu2026-synthesis/frequency400-alu-parallel-add-sub-{cut,unit,full,ppa,register-identity}-20261113-r01/`。生产/软件不改，旧request-age保持暂停；下一步从374.662703MHz生产独立研究SV两槽选择提前计算，不叠加失败ALU候选。原SV通知集合1048576项数学审计见`frequency400-first-ff-combinational-research-20261113-r01/`，不等于真实模块或提频资格。
+
+SV两槽选择器实验及用户随后“采纳”见当前生产；原审计导入失败、原全组拒绝及所有成功资产保持。根`.cpu2026-synthesis/frequency400-sv-two-slot-select-{research,cut,actual,full,ppa,register-identity}-20261113-r01/`。旧374MHz生产AGU→DC地址64门只读133侧输入/17445节点及独立DFS已完成（`frequency400-lq-pair-prefix-dc-bottleneck-20261113-r01/`）；仅旧版身份，不直接套到新生产63门，下一步从377.511521MHz基线继续组合优化，旧暂停进程不恢复。
+
+当前72门FF第一瓶颈的完整171侧输入/28257节点只读拆解及独立DFS复核通过；主要关注StoreValue通知→Load响应资格→共享CDB→INT_RS选择及晚ALU操作控制串联，非单纯加法器问题，分段不等于逐位RTL或功能敏化证明。根`.cpu2026-synthesis/frequency400-lq-pair-prefix-ff-bottleneck-20261113-r01/`；生产不改、暂停实验未恢复，无新模型或EDA，下一步仅据已认证结构研究组合提前计算。
+
+叶对版实验/采用结论见上；测量根`.cpu2026-synthesis/frequency400-lq-pair-prefix-ppa-20261113-r01/`，同次身份根`frequency400-lq-pair-prefix-register-identity-20261113-r01/`，原始拒绝及失败记录均保留。旧361MHz基线独立request-age比较方向1024对oracle/converted完整descriptor524288组/两有效反例及r02独立审计通过，真实LSU/原六screen未闭合、无PPA；根`frequency400-lq-request-age-prefix-cut-20261113-r01/`及同前缀`screen`。此次采用换代后旧生产pin不再适用，不据其启动或局部资格放行，也不自动叠加到374.662703MHz生产；后续先核退出收据及旧字节映射，成功阶段不重跑。
+
+此前用户恢复持续优化授权，以当时364.899777MHz为基线推进。该版75门路径原103个截断侧锥已补齐并独立复核：21620节点，原52个完整侧锥复用，155个侧输入已计全；仅支持/重汇合关系，不冒称字段或敏化路径。证据：`.cpu2026-synthesis/frequency400-production-side-frontier-20261113-r01/independent-verification.json`。
+
+LSU组合posted屏障功能/原六/独立审计、唯一PPA/232宏/完整后测及保存路径独立复核全部完成：358.826106MHz（−1.664477%）、33243.774059μm²（+3.424197%）、IPC1.122239838632不变；3264稳定端点退化，全组拒绝、不采用。证据：`.cpu2026-synthesis/frequency400-posted-hazard-ppa-20261113-r01/measurement-handoff.json`及`frequency400-posted-hazard-path-study-20261113-r01/independent-verification.json`（同一实验父目录）。
+
+独立LQ存活资格功能/374104退休/完整raw周期及独立审计通过，IPC1.122239838632不变；唯一PPA及232宏/全组后测、handoff已闭合：361.119683MHz（−1.035927%）/32062.575359μm²，2374稳定端点退化，全组拒绝、不采用。原driver误检检查点绝对路径的失败保留，r02仅补收尾，综合/ABC/STA零重跑。证据根：`.cpu2026-synthesis/frequency400-lq-live-ppa-20261113-r01/`、`frequency400-lq-live-closure-20261113-r02/`。同次具名FF归因/独立检查完成：22118个FF全覆盖；FF/PRF起于ALU0 tag[0][0]，DC地址/控制起于LQ tag[3][1]；仅此版本身份，证据`frequency400-lq-live-register-identity-20261113-r01/`。
+
+从364.899777MHz生产新建独立ROB身份bitmap，仅ROB一文件、旧完整tag资格组合表供ALU1/5及split Load查询，无新增状态/级，原writer与invalid元数据保持，不带LQ live候选。57344项代数、strict静态lint、converted六配置212992项/三有效反例、独立audit及cut告警复核通过；真实ROB六配置r02及独立审计通过：分配1/2/4×split0/1，退休2、DEPTH16，13项公开输出与每周期32身份查询均检查，epoch/valid两变异在真实模块检出。真实模型告警逐项复核未完成，整核原六及PPA未运行，不采用。r01反例提取漏声明与真实夹具SIDEEFFECT失败均保留；证据`.cpu2026-synthesis/frequency400-rob-identity-bitmap-cut-20261113-r02/`及`frequency400-rob-identity-bitmap-actual-20261113-r02/`。
+
+用户要求暂停综合并计划删除实验目录：只读盘点2026-11-13 `.cpu2026-synthesis/`约62GiB、166个顶层目录；含原始模型、完整退休日志、mapped网表、全端点/STA、checkpoint及失败和审计证据。按用户要求已复制生产采用证书直接引用的471个文件及正式指针/证书共473文件、1351372130字节至`RISC-V-CPU-2026/synth/production-evidence/`，逐文件源/目标SHA核验；468个直接文件另有证书摘要绑定。清单`RISC-V-CPU-2026/synth/production-evidence-manifest.json` SHA256 `2942cbf1cd35ea390e1df7401d53d25457cdf64abe02ecbf1cd044da82395ce8`。只覆盖直接引用而非历史传递闭包；旧实验及未引用资产未备份，符号链接按内容复制。原证书与正式指针仍使用旧绝对路径，删除旧目录会使原有路径复核失效；未删除原件、未修改生产指针。
+
+用户删除实验目录后继续优化：新独立ROB bitmap局部/真实ROB及有效变异、整核原六374104退休/完整raw周期、独立审计及告警复核通过，IPC1.122239838632不变；归档生产基线按SHA适配。唯一PPA、232宏及完整全组/后测/handoff已闭合：361.040106MHz（−1.057735%）/31981.233539μm²（−0.503673%），2805稳定端点退化、missing0，全组拒绝、不采用；DC地址WNS改善26.646ps不抵消DC控制/PRF数据退化138.135/82.217ps。根`.cpu2026-synthesis/frequency400-rob-bitmap-ppa-fresh-20261113-r03/`，生产364.899777MHz保持。
+
+ROB bitmap保存路径/独立复核完成，FF/PRF代表源为同一AXI writer、共享63弧，DC地址/控制另由LSU writer发起，仅过程和代表路径归属。生产归档网表最差FF launch→全端点组合支持分析/独立DFS完成：该单一DCache writer发射点保守支持14759端点（FF12060、PRF数据1504/控制47、DC地址462/控制132/数据554）；非时序弧/功能敏化证明。r01离线脚本缺导入失败保留，r02未运行EDA；根`.cpu2026-synthesis/frequency400-production-launch-fanout-fresh-20261113-r02/`。
+
+独立DCache响应存在性仅改一处guard，原winner/数据/grant/writer及级数保持；局部1048576项、真实DCache/有效变异、整核374104退休/完整raw周期及独立审计、告警复核通过，IPC1.122239838632不变。唯一PPA、232宏及全组/post/handoff闭合：348.225292MHz（−4.569607%）/32370.344579μm²（+0.706884%），3803稳定端点退化、missing0，全组拒绝、不采用；原生产保持。同次generic具名归因及独立检查完成：FF/PRF代表起于AXI `writeHeadOwnerInner[0]`，FF终点LSU `sqAddressInner[2][10]`。根`.cpu2026-synthesis/frequency400-dcache-response-presence-ppa-20261113-r01/`及`frequency400-response-presence-register-identity-20261113-r01/`。
+
+独立DCache写ACK资格前移各MSHR，保完整victim/status、同周期ACK→fill/writer/级数；低域与4bit高域补测、真实DCache/有效反例、整核374104退休/raw周期及独立审计、告警复核通过，IPC1.122239838632不变。唯一PPA/232宏/全组/post/handoff闭合：353.255714MHz（−3.191031%）/32345.223239μm²（+0.628730%），3763稳定端点退化、missing0，全组拒绝、不采用。DC地址改善3.229ps不能抵消FF/PRF数据退90.521/94.292ps，生产保持364.899777MHz。同次具名归因/独立检查完成：FF74门/PRF72及71门起于AXI `readHeadOwnerInner[2]`，FF终点StoreValue RS `src1ValueInner[0][2]`；DC68/63门起于`lqTagInner[4][0]`。根`.cpu2026-synthesis/frequency400-dcache-write-ack-ppa-20261113-r01/`及`frequency400-write-ack-register-identity-20261113-r01/`。
+
+独立读head 3→8bit singleton（+5bit、无新级）完整功能/374104退休/raw周期、独立审计及告警复核通过，IPC1.122239838632不变。唯一PPA/232宏/全组/post/handoff及同次具名复核已闭合：358.120219MHz（−1.857923%）/32250.424079μm²（+0.333801%），2657稳定端点退化、missing0，全组拒绝、不采用。新最差LQ tag[1][1]→DC地址66门，FF75/PRF67及65门起于ALU1 tag[0][3]，仅本次身份；前端独立逆变换证实RHS/writer原样、工具/脚本/综合序列保持，不重跑EDA。根`.cpu2026-synthesis/frequency400-axi-read-head-mask-ppa-20261113-r01/`及`frequency400-read-head-mask-register-identity-20261113-r01/`、`frequency400-read-head-mask-frontend-review-20261113-r01/`。
+
+用户要求从组合重排转向多条关键路径上游共享切点；LQ叶对位候选已完成strict静态lint/converted524288项/两有效反例及独立审计，现暂停，不推进真实LSU/原六/PPA，不删除资产。根`.cpu2026-synthesis/frequency400-lq-tree-pair-flags-cut-20261113-r02/`。
+
+生产10775条完整保存违例最差路径及独立重数完成：FF/PRF代表共享52弧，约1.297ns处覆盖10111违例端点；DC地址/控制代表共享44弧，约1.232ns处覆盖648端点。两束代表无共同弧，中段无具名RTL别名，不直接照匿名门加FF。源码边界研究也已完成，436419图节点正反计数一致：全部RS信用虚拟切后仍留普通WB→PRF及DCache响应→下一lookup，rename仅fire/完整分配包均非完整断集。证据`.cpu2026-synthesis/frequency400-production-shared-cut-frontiers-20261113-r01/`与`frequency400-shared-register-contracts-20261113-r01/`；下一步从生产隔离检查四池ALU-only即时issue/全CDB寄存捕获，须实测额外Load-use周期及IPC，不复跑旧Branch-only候选。无新PPA或提频结论，生产364.899777MHz保持。
+
+四池共享issue切点已闭合：真实RS八配置/强化stress/三有效反例、原六374104退休九架构字段及独立审计通过；几何IPC **1.077279690032（−4.006287%）**，低于1.1，不综合、不采用。原六周期`8435/13220/3475/5618/174050/166923`，vvadd/qsort周期增加12.060626%/7.204011%。原审计拒绝的新linear selector两处零初始化诊断在full-audit-resume r02窄复核，旧失败/日志保持、模型/转换零重跑。证据`.cpu2026-synthesis/frequency400-shared-issue-edge-full-audit-resume-20261113-r02/independent-audit.json`；生产364.899777MHz保持。下一步区分唤醒延迟与信用反馈，检查保原同拍issue、仅用寄存占用隔离分配信用的独立合同，不叠加本候选。
+
+独立old-row credit切点已闭合：仅core五个REUSE参数，原issue/selector/全部writer保持；真实RS十配置/反例/原六374104退休九架构字段/独立审计通过，IPC **1.109725209820（−1.115147%）**，周期`8241/13428/3112/5732/163214/164296`。唯一PPA/232宏/全组/post/handoff完成：**361.358624MHz（−0.970446%）/32276.507699μm²（+0.414950%）**，2210稳定端点退化、missing0；原技术拒绝保留，用户随后明确采用为生产。FF违例8689→41、PRF数据1504/控制47→0，信用反馈束有真实组级改善；全局10775→531违例，但DC地址WNS退40.963ps成为最差。证据`.cpu2026-synthesis/frequency400-old-row-credit-edge-ppa-20261113-r01/measurement-handoff.json`。
+
+同次generic具名及独立复核完成，22118 FF全覆盖：DC地址67门/控制61门均起于`lqTagInner[1][1]`，代表共享42弧；剩余FF69门起于DCache `requestInner[0][50]`，终点别名含ALU1 value[0][29]，不能跨版套用身份。精确launch残支研究也已完成，127336图节点正反支持一致；Load winner metadata虚拟切边只截断该LQ源→DC，DCache源→DC/ALU仍在，不等于实际新D/使能时序。证据`frequency400-old-row-credit-register-identity-20261113-r01/`与`frequency400-old-row-credit-residual-boundaries-20261113-r01/`。后续从用户新采用的361.358624MHz生产继续，不重跑成功EDA或叠加其他未采用候选。
+
+AXI收集资格预计算完成：361.757562MHz（−0.861117%）、32097.100799μm²、IPC不变；1855稳定端点退化，全组拒绝、不采用。功能/232宏/完整后测及保存路径独立复核齐全，不重复工具，继续独立优化。证据：`.cpu2026-synthesis/frequency400-axi-collect-cofactor-ppa-20261113-r01/measurement-handoff.json`。
+
+AXI共享信用比较完成：361.837456MHz（−0.839223%）、32253.937859μm²、IPC不变；3623稳定端点退化，全组拒绝、不采用。功能/232宏/完整后测及保存路径复核齐全，继续独立优化、不重复EDA。证据：`.cpu2026-synthesis/frequency400-axi-credit-compare-ppa-20261113-r01/measurement-handoff.json`。
+
+Load CDB年龄旁带完成：356.794425MHz（−2.221254%）、32268.284579μm²、IPC不变；3527稳定端点退化，全组拒绝、不采用。功能/232宏/完整后测及保存路径复核齐全，继续从生产独立检查AXI信用资格组合逻辑，不重复工具。证据：`.cpu2026-synthesis/frequency400-load-cdb-age-ppa-20261113-r01/measurement-handoff.json`。
+
+字节重叠偏移布尔化完成：355.632733MHz（−2.539614%）、32155.027139μm²、IPC不变；2970稳定端点退化，全组拒绝、不采用。功能/232宏/完整后测及保存路径复核齐全，成功工具不重复。证据：`.cpu2026-synthesis/frequency400-byte-overlap-offsets-ppa-20261113-r01/measurement-handoff.json`。
+
+LSU RAM/跨行资格窄化完成：350.609887MHz（−3.916114%）、32008.396079μm²、IPC不变；2950稳定端点退化，全组拒绝、不采用。r02复用完成转换补中断阶段，232宏/完整post/handoff齐全；继续只读路径复核和独立优化。证据：`.cpu2026-synthesis/frequency400-yield-line-guard-ppa-resume-20261113-r02/measurement-handoff.json`。
+
+整数双发信用fit完成：356.949891MHz（−2.178649%）、32180.673359μm²、IPC不变；4085稳定端点退化，全组拒绝、不采用。功能/232宏/完整后测齐全，生产364.899777MHz保持。证据：`.cpu2026-synthesis/frequency400-integer-credit-fit-ppa-20261112-r01/measurement-handoff.json`；接续只读保存路径复核，不重跑已完成工具。
+
+SA信用fit完成：355.324225MHz（−2.624160%）、32287.763459μm²、IPC不变，3750稳定端点退化，不采用；功能/232宏/完整全组及后测齐全。证据：`.cpu2026-synthesis/frequency400-sa-credit-fit-ppa-20261112-r01/measurement-handoff.json`。
+
+分配元数据旁带完成：354.172071MHz（对生产−2.939905%）、32092.464359μm²、IPC1.122239838632不变，全组退化，不采用。r02只复用重启前prepared.json补未完成综合，232宏及完整后测通过；生产364.899777MHz保持。证据：`.cpu2026-synthesis/frequency400-allocation-meta-ppa-resume-20261112-r02/measurement-handoff.json`。
+
+## 主要阶段
+
+| 时间 | 演进与决策 |
 |---|---|
-| 8-26 | TAGE、取指预译码训练 RAS（`a2c61f3`）；已有 I$、LQ/SQ、RAT/PRF/ROB 及恢复。 |
-| 8-30～31 | 迁移 `Register/Wire/work()/sync()`（`03828f0`），读拍初、写拍末；统一 epoch＋slot 完整 ROB tag（`3f17f30`）。周期漂移按实际错误修复，不接受隐含软件执行顺序旁路。 |
-| 9-01～03 | 引入 64 KiB/4 路/16 B 行写回 D$（`8b20648`）、改 PLRU（`76da3c4`）；I$ 冷缺失为主，未升级两路。 |
-| 9-05～13 | ALU/Load 独立双 CDB（`cbc6a0e`）、Booth/CSA 流水乘法（`a11c47f`）、SRT radix-4 除法及第四 CDB（`b2cb0d8`）。并行执行/写回不等于多发射。 |
-| 9-18～23 | 收紧循环和身份宽度，支持非二次幂编码；PRF 收至 48、checkpoint 收至 32（`3ef79f9`）。 |
-| 9-20～23 | TAGE→Tournament（`3e13e55`），删除当时语料无收益的间接 Target Cache（`8db1ed7`），GHR16→8、压缩 BTB 对齐位（`3ef56bf`、`e310f2f`）；不推广为任意负载均无收益。 |
-| 同期 | 退役 MDP Load 违例恢复：未知更老 Store 阻塞准入；伪 SARAS 改为提交/投机 RAS，后续恢复重放完整栈。建立 RTL 计划（`feb764a`、`59243da`），先单发射正确性、再多宽扩展。 |
+| 2026年8—9月 | 从软件原型建立拍初读取/拍末写入、完整epoch+slot身份、乱序执行与顺序退休；预测器由TAGE收敛为Tournament。 |
+| 10月上中旬 | 对齐两软件与RTL周期合同；DCache SRAM化、4 MSHR、owner及同行合并，接入AXI/MMIO；退出改为等待对应B握手，不扫描全部dirty行。 |
+| 10月下旬 | 逐步扩宽译码、分配、退休和执行，形成双ALU/三CDB；10月29日四宽仅有功能/六perf结果，当时没有有效最终PPA。旧数据不恢复，随后从同源快照建立新测量epoch。 |
+| 11月1—4日 | 采用PRF SRAM/共享写仲裁、Store位置表4项、空IQ/FQ整组旁路、RS真实离站信用、ROB Load完整身份校验及载荷复位分离；按要求删除Store地址→Load数据通知。 |
+| 11月5—6日 | 采用Load下一行预取、SQ≤4/owner=0安全Load让行、同link JALR只push、SQ完成事件及LSU通知资格提前计算。 |
+| 11月7日 | 采用跨16B四取指；完成14配置168次原六双模型参数验证，随后采用ROB16/PRF48；采用DCache读地址及整数双发RS直接行选择，完成严格warning清理。 |
+| 11月8日 | 新16 KiB DCache完成PPA、两软件资格并正式采用；后续生产回到8 KiB，指标不得交叉套用。 |
+| 11月9—10日 | 用户只认可HDL源码提频，否决独立postmap路线；采用SRAM先读＋`-defer`综合前端方法，但不把工具提速算成RTL提频。动态验证后续改为仅converted，native仅保留静态lint。 |
+| 11月10—12日 | 新8 KiB基线316.110361MHz；先后采用三项组合333.346897、完整CDB包346.311562、双队列反向信用357.339149MHz，三次原全组非退化拒绝均保持。 |
 
-<a id="history-2026-10"></a>
+### 11月12日晚：AGU→DCache地址预选择（已完成，不采用）
 
-### 10 月上旬：落实三端逐拍合同
+仅隔离改DCache需求/预取查询地址预选择，保原取消、grant、任意年龄无winner回退及全部writer/级数。converted局部262144项、真实Cache/SRAM两环境、两个有效反例及参考/候选原六374104退休、全部完整raw/周期同生产，独立审计通过；IPC1.122239838632不变。cut结构嵌套和采用证书字段来源两次流程失败已保留，仅接续未完阶段，成功局部与参考模型未重跑。
 
-软件主树、模板树与 RTL 比较握手、身份、写回和退休，而非只比最终结果：
+旧357MHz网表/端点已清理，本次**一次新同源参考＋一次候选串行PPA**均已完成，2.5ns、INVx1/5fF、SRAM先读＋`-defer`，独立逐叶232宏、完整全端点/路径组及后测通过。新参考重现357.339149MHz/32256.416459μm²；候选347.265791MHz（−2.818991%）/32234.473559μm²（−0.068026%），IPC不变。DCache地址/控制WNS退80.969/34.024ps，FF/PRF及其他组也退化，4036稳定端点退化、missing0，**全组拒绝、不采用**。参考是当前生产重建，不冒充旧工件复用；PPA准备的symlink路径错误在EDA前保留并窄修。生产/两软件未改；随后仅复用实际网表/完整STA研究瓶颈，不重复工具。工作根：`.cpu2026-synthesis/frequency400-dcache-lookup-preselect-pair-20261112-r02/`（工作区路径）。
 
-- epoch 队列可用满，FQ/IQ 与返回允许消费同拍补入；PRF FIFO 分配/回收，旧结果须完整 tag 认证。
-- ALU 单槽消费同拍重填、AGU 登记地址/身份、MUL 三级弹性、DIV 取消与准入统一；坚持写回拍捕获、下拍依赖派发。
-- LQ 退休才释放，SQ 已提交项内存接受才释放；转发统一为单源完整覆盖，不拼多源字节。
-- 训练运输真实 taken，RAS 双 link 先 pop 后 push；BTB 分槽仲裁、Flush Arbiter 选择最老恢复。
+随后转上游**旧LQ地址行插入预选择**：完整年龄树对各物理行提前计算，晚AGU事件/index/forward仅选结果，保任意非传递年龄/失效载荷和全部writer。源绑定419904组代数及保守假想图研究后，converted筛选r02的524288项cut、真实LSU两配置、四有效反例边界及原六374104退休/全部完整raw/周期、独立审计均通过，IPC不变；夹具重复端口导致的r01转换失败保留，仅修两冗余binding并复用成功lint/cut转换。唯一候选PPA及完整后测完成：**364.899777MHz（+2.115813%）/32143.129859μm²（−0.351206%）**，DC地址/控制WNS改善72.453/159.988ps；但I$地址新增16违例及其他组退化，3222稳定端点退化/missing0，**全组拒绝、未采用**。根`frequency400-lq-address-insertion-ppa-20261112-r01`，复用357MHz参考模型/PPA/全部端点，参考0重跑；随后只读研究新瓶颈，生产不变。
 
-10-10～11 旧 18 ISA＋6 IPC 完成三端逐拍与最终内存核验（`fdaddea`），但不含课程 AXI。当时 D$ 为贴合软件时序使用寄存器，HALT 后扫描 dirty 排空；该边界不能与后续 MMIO 周期拼接。
+保存路径只读研究已完成：新全局最差为DCache writer→LSU writer，DC地址/控制组代表起点转LSU writer，I$新增违例为独立21门路径；具体字段bit未识别，不当全图/敏化证明。接续只读逐sink/Liberty负载核对，尚未新增RTL或EDA，也未叠加旧I$候选。开放workflow仅精确追加两条成功行的SHA修正独立记录，原证书/失败不回写，无工具重跑。
 
-### 10 月中旬：从容量代理转向物理测量
+负载核对首版因标准库fF/SRAM库pF与bus引脚表示不同被解析门禁拦下，原失败保留。仅修单位归一化和总线范围解析、通过正反向小测试后r02只读研究完成：两版I$每个地址bit均16×5fF=80fF，候选未增加地址负载；新慢链上游还直接驱动16个SRAM写使能＋9个组合pin，rise总83.986095fF，再进入80fF地址门。参考WE实际20sink/81.875377fF且不直接接末地址门，候选25sink/约84fF且接末门A1；I$源码未改，这是全核映射共享/驱动形状线索，不相减推Fmax。随后研究新75门全局共享路径的有界侧输入来源，无模型/综合/STA重跑或自动叠加。
 
-| 阶段 | 取舍 |
+新75门主链155个侧输入有界回溯完成，103个截断；第68级XNOR侧支到AGU writer，62/63级侧支含FIFO/RS等但截断，不能凭此识别tagbit或敏化。候选展开中DCache writer1444具名Q位→LSU具名D位查询完成，所达图无环，地址ready保守见证经CDB→SA真实离站信用→rename→稀疏分配rank→兼容地址匹配；仍非映射路径逐门归因。转研究预览槽地址相等位先算、rank后选的等价边界，不改分配/信用、不删除同拍兼容，未启动新RTL/EDA或叠加未采用候选。
+
+随后地址rank匹配131072控制类别/32768任意预览槽地址代数同值、三种错误见证通过；从正式357MHz版**独立**准备单LSU匹配位重组，分配器/fire/index/信用/全部writer保持，不带LQ插入或I$候选。严格静态lint、converted局部524290/两反例、真实LSU两配置/两活动反例及原六374104/全部raw周期、独立审计均过，IPC不变；首cut保留字失败只改夹具名接续且复用lint。唯一PPA/完整后测完成：**330.722648MHz（−7.448526%）/32050.196939μm²（−0.639313%）**，DC地址/控制及FF/PRF均退化，5315稳定退化/missing0，**全组拒绝、不采用**。根`frequency400-address-rank-match-ppa-20261112-r01`，参考0重跑；继续只读核新路径，不机械追加同类rank/mux综合，生产不变。
+
+该负结果保存路径已核：AXI owner→prefix FIFO的75门FF最差与PRF代表共享58弧，DC代表仍AGU起点且共享49弧；只限代表/过程归属，不是全图或精确字段敏化。转共享CDB唤醒源绑定研究，要求Load实际LQ index/响应route也纳入、保持真实grant及ALU优先级；仅研究，不叠加或延迟CDB，无下一RTL/EDA。
+
+Load-index唤醒源绑定代数已完成：131072个6bit源tag/LQ匹配类别、196608个允许preview组合、64个仲裁类别、32768个完整payload优先级样本同值；错误index/未grant/ALU优先级各有见证。非法preview11另有反例（两destination OR不等于OR后index查表），不冒称任意控制等价、不放宽原onehot0断言。下一先验证未改真实LSU的destination/index契约，之后才决定RS候选接口；无新PPA或生产变更。
+
+新真实LSU生产者合同测试只用新公开刺激检查含invalid的destination/index、全64个destination、允许preview route及缓冲竞争，不重跑旧成功回归/参考整核。首版跨层结构观察未被sv2v展平而在构建失败，原失败保留；仅换同一packed位观察，r02又因driver路径变量被同名目录遮蔽在工具前停止。r03仅修路径变量接续，LSU/刺激/断言保持。另已准备默认关闭RS匹配接口helper及六配置真实arbiter/RS差分夹具，未运行消费者；须生产者新合同过后才执行，无生产接线/整核/PPA。
+
+生产者合同r03已完成768新例、23040次检查（含13824次invalid），两配置全部64destination及缓冲/响应竞争通过；错index和原非法route拒绝均有效，原工具不重跑。随后才启动六配置真实arbiter＋RS消费者测试及两变异；三文件接线方案只做源码逆变换/全部writer/原arbiter与payload静态核对，尚未运行整核或综合，生产不变。
+
+RS消费者r02已过六配置3072组/177664次全公开含invalid差分及两有效变异；首版单ALU夹具固定索引告警保留，只修索引不豁免。独立LSU/core/RS三文件候选开启四个当拍issue消费者的Load-index匹配，原writer/完整CDB包/仲裁和SV前缀保持；严格整核lint通过。组合夹具两个观察符号分别被SV保留字/工具公共符号检查拦下，原失败保留，只改名并复用成功lint；r03转换/环锁存静态检查过后已启动真实子系统→候选原六/独立审计完整筛选，参考0重跑。尚无新IPC/PPA结论或生产变更。
+
+完整screen r03及独立audit已通过：真实LSU-CDB-RS两配置各12287次子系统检查及错别名反例、新候选原六374104退休/全部完整raw周期保持，IPC1.122239838632（0%），先前模块/357MHz参考0重跑。已启动唯一候选PPA，根`frequency400-load-index-wakeup-ppa-20261112-r01`，只读复用357MHz参考PPA/全部端点；保持原工具/五库/2.5ns/INVx1-5fF，不叠加旧候选，不自动采用。当前尚无新面积/Fmax/全组结论，生产不变。
+
+该Load-index唤醒候选唯一PPA/完整后测已完成：**353.103448MHz（−1.185345%）/32632.405499μm²（+1.165626%）/IPC不变**。FF WNS改善83.216ps、PRF数据/控制39.583/70.096ps、DC控制78.686ps，违例11624→9402/TNS改善740.103927ns；但DC地址WNS退33.094ps、其他正slack组及真实输入FF退化，2186稳定退化/missing0，**全组拒绝、不采用**。参考0重跑、308927叶/232宏/所有SHA保持；继续只读核保存路径，不直接合并旧候选或追加综合，生产357MHz不变。
+
+该保存路径研究已passed/通知结束：DC地址/控制为AGU writer起点70/69门、共享49弧，FF为AXI owner→RS writer68门，PRF数据/控制64/63门；具体字段bit未知，仅代表共享非全图/敏化证明。最差100ps内84端点全是DC地址，200ps内DC418/FF1584/PRF数据115/DC控制4。转回独立AGU→LSU准入→DCache地址研究，不叠加未采用Load-index/LQ/I$；没有下一RTL或EDA，参考资产不重跑。
+
+当前357MHz保存展开的新准入边界研究完成：只虚拟切Cache阻塞，AGU→DC地址仍112逻辑目标可达、最长支持216→175算子；9个RAM/跨行返回位全切仍216，所以不将已过代数的小跨行化简直接排综合。均为保守支持非STA/敏化/收益。转**独立单LSU旧年龄位预比较**，保原8路字节overlap，不复制旧逐LQ全地址admission的64路重叠锥；32768 tag/control和65536任意原树年龄代数过，锚点空白失败保留。新converted切片163840项/三个有效变异已过。
+
+该候选完整screen r01被严格lint发现真正的generate作用域错误（年龄块误在原CDB输出分支，preview下不可见），未跑实际LSU/整核，原失败保留。r02仅将相同块移到模块级，精确逆回/切片字节与全部writer保持；成功切片不重跑，新严格整核lint和两实际配置converted静态前端过后，已启动真实LSU→候选原六/独立audit完整筛选，根`frequency400-cache-block-age-full-screen-20261112-r02`。尚无新IPC/PPA结论，生产357MHz/两软件/指针不变，参考0重跑。
+
+r02在新committed排除用例失败：实际converted证实夹具把两路12位完整身份的commit向量赋`2'b01`且ROB退休无效，根本未触发真实Store退休；原/新差分未报错不等于完整资格。原失败/模型/所有SHA保留。r03仅补完整同tag commit＋ROB-retire激励及实际ready/fire断言，原其他刺激/断言和候选RTL不变，成功严格lint/切片精确复用；新实际转换/静态lint过后已接续完整筛选。参考/整核/PPA未重跑，无新IPC或采用结论；PPA脚本只做静态准备，尚未启动。
+
+该r03真实LSU/三实际控制反例及候选原六374104退休/全部完整raw周期已通过，IPC1.122239838632（0%）。原服务随后因旧切片delta仍记旧作用域位置被独立审计拒绝，exit1/failure保持；实际测试源精确为模块级同块移位结果。r04只追加严格作用域元数据更正/三错误更正拒绝，再只读完整审计passed，不改原清单/失败或重跑工具。之后才启动唯一候选PPA `frequency400-cache-block-age-ppa-20261112-r01`，原工具/五库/2.5ns/INVx1-5fF/全组/232宏/通用后测保持，357MHz参考0重跑；当前尚无新面积/Fmax，生产不变。
+
+Cache阻塞年龄预比较唯一PPA及全组/后测完成：**344.563617MHz（−3.575184%）/32248.791119μm²（−0.023640%）/IPC不变**。DC地址WNS退103.284ps，FF退101.731ps、PRF数据/控制退106.438/109.832ps；DC控制改善48.512ps不能抵消。全局12342违例/TNS−2733.753824ns，4813稳定端点退化/missing0，**全组拒绝、不采用**；304913叶/232宏与全部SHA保持，参考0重跑。虚拟图216→175不等于实际RTL收益；继续只读核本轮保存路径，不机械扩大比较器或合并旧候选，生产357MHz不变。
+
+该保存路径研究已passed/通知结束：DC地址/控制AGU writer起点69/64门，FF/PRF为AXI owner起点73/69/68门；100ps内DC272/FF2093/PRF控制5。AGU具体launch身份研究亦结束，两版42个同writer FF、无具名Q别名或具名pre-ABC，具体字段bit仍未知，不按编号猜测或重建参考证据。
+
+转独立条件化新地址Load请求资格：旧SQ存在已知地址/数据的潜在转发源时，让未address-ready、未broadcast的旧LQ等待地址捕获，旧ready行/forward/返回/CDB及writer保持。65536 tag/control＋6561 cover/order＋384谓词源绑定代数过；已有改变同拍选择的明确见证，**非逐拍等价，需新测IPC**。首次空白锚点拒绝在工具前保留，窄修后源码逆变换/作用域/3变异预检通过，converted consumer切片已启动，尚无cut/真实LSU/IPC/PPA结论；357MHz参考仅复用，不重跑。
+
+该consumer切片随后131074项/3策略变异passed，额外延后536/选择变化432不是整核周期损失。新真实LSU夹具按字节、完整owner、真实提交/flush及有界进度检查，不做旧生产同拍请求差分；保原多owner/同tag取消回归。严格整核静态lint及两响应配置converted前端通过后，完整筛选`frequency400-selective-address-full-screen-20261112-r01`已启动。仅候选新原六比较九架构字段序列、允许cycle/lane变化并实测IPC；架构比较器5负向通过。当前尚无完整动态/IPC/PPA结论，生产和两软件不变，参考0重跑。
+
+该完整screen r01随后实际LSU在t2880有界进度断言失败，原六/PPA未开始；原failure/模型/源码及全部SHA保留。仅在新converted诊断副本原断言前加打印，保持刺激、原断言和40拍上限，确认是否有未解除Store屏障后再决定窄修；当前未归因为RTL或夹具，未放宽门禁，生产357MHz不变。
+
+只打印诊断随后确认SQ tag8/valid/地址未知，对Load2较年轻、对Load16却较老；Load2已完成，Load16被正确unknown屏障阻塞。r02仅在原边界检查后补原SQ的真实地址事件，不改候选RTL/原oracle/40拍上限，成功静态lint和cut复用。新夹具converted静态检查过后接续完整真实LSU→候选原六/架构审计；当前尚无完整动态或IPC结论。PPA入口只做源码准备并修为按双方实测IPC计算损失，未启动PPA，生产/参考保持。
+
+该条件化请求边界r02完整功能及独立架构审计通过：两真实响应配置各576场景/896结果、3个实际策略变异和原owner回归过，候选原六答案/374104九字段架构序列匹配。**几何IPC1.112876428071（−0.834350%），仍>1.1**；周期8401/13124/3173/5555/164080/163202，较生产+60/+5/+72/+24/+1726/+792，六项均回退，非零代价。需360.345694MHz才抵消IPC×Fmax估算损失，非频率承诺。随后才准备并启动唯一候选PPA`frequency400-selective-address-ppa-20261112-r01`，原工具库/2.5ns-5fF/全组/232宏/post保持，参考0重跑；当前尚无新面积/Fmax，未采用，生产357MHz及两软件不变。
+
+条件化请求边界唯一PPA/全组/后测最终完成：**359.062021MHz（+0.482139%）/32129.978699μm²（−0.391977%）/IPC1.112876428071（−0.834350%）**；IPC×Fmax估算−0.356234%，频率收益不足以抵消IPC损失。DC地址WNS改善13.834ps、DC控制改善231.556ps/66→0违例，但FF TNS退170.180481ns、PRF数据退34.612ps及其他组退化，4129稳定退化/missing0；**全组拒绝、不采用**。302753叶/232宏/全部SHA保持，参考0重跑。继续只读核本轮保存路径，不扩大延后或叠加候选，生产357MHz不变。
+
+随后选择性请求边界的只读保存路径脚本因DC控制代表已转正slack、原脚本却仅从负slack详情索引代表而KeyError退出；原失败/已认证reference路径保留，研究未完成，不是PPA失败或端点缺失，未重跑EDA。用户接着明确选择**采用LQ新地址行插入预选择364.899777MHz版本**，覆盖其此前未采用状态，但原I$新增16违例/其他组退化/全组拒绝不改写。
+
+采用入口`sync/adopt_frequency400_lq_insertion_20261112.py`只核精确已测单LSU（其余43RTL/SRAM和两软件126输入不变），闭合workflow沿既有严格尾段收据认证；不叠加后续rank/唤醒/年龄或条件边界。新软件Release/断言四构建及两外部退休PC/周期资格已启动，根`frequency400-lq-insertion-production-adoption-20261112-r01`；通过后才备份/审阅补丁/原子发布指针。**此时尚未发布**，当前仍357MHz；采用不重建RTL模型或重复综合/ABC/STA，不清理提交推送。
+
+### 11月12日：364.900MHz正式采用完成；按新关键路径持续优化
+
+上述软件资格随后全部通过，审阅补丁后仅替换精确LSU并发布正式指针。`sync/evidence/frequency400-lq-insertion-production-adoption-20261112-r01/finalization.json`及发布后复验passed；当前生产**364.899777MHz / 32143.129859μm² / IPC1.122239838632**，原六8341/13119/3101/5531/162354/162410不变。指针SHA `6d7abc8f649663a85284bc58d639714c0715d9930e23d6041cacc19d9487af8e`，采用证书SHA `6883c178e8e00ac538b8bcaabcabcdf6b3a5f20e76415d6daea3c173f22e5374`。真实旧指针/单LSU/文档备份保持；原I$新增16违例/3222稳定端点退化/全组拒绝不回写。采用无RTL模型/native动态/sv2v/EDA重跑，无提交推送或清理。
+
+用户明确“采纳后继续根据最新关键路径持续优化不能停”，持续授权无自行设定时间/候选数终点。按本次精确备份映射认证复用既有路径、侧输入、反馈支持和I$负载四项研究，不重复分析工具或修改旧manifest。新版全局FF为DCache writer→LSU writer75门/−0.240110ns，与PRF反馈支路相关；DC地址独立LSU writer起点70门/−0.225989ns，I$独立21门/−0.122452ns。具体匿名FF字段bit仍未知，侧锥103截断仍标明，保守支持不是逐门归因/敏化或时序收益。后续优先检查DCache响应资格/事务选择到LSU/CDB反馈的源契约，兼顾DC地址和I$；此刻尚无下一RTL模型或综合启动，不自动叠加未采用旧补丁。400MHz、面积<36000、IPC>1.1和未来候选全组非退化要求保持。
+
+下一独立hit-owner旁带目前仅准备五文件可逆源码helper/生产者与消费者切片夹具，尚未转换/构建/验证或排综合。原预览端口含invalid保持，新旁带仅由旧readIndex选事务号、真实hit route最后授权；缓冲/fallback晚路径仍在，不能宣称切完整主链。用户追加“用之前综合的结果，看有什么可以互补当前生产关键路径缺陷”，优先新只读七版比较：当前364.900、前生产357.339、DC地址347.266、地址rank330.723、Load-index353.103、年龄344.564、条件边界359.062MHz。`sync/compare_frequency400_current_complements_20261112.py`已后台单次提交，根`frequency400-current-complements-20261112-r01`，复用完整保存STA/已认证代表，仅新增当前同名弱端点的逐pin核对，不合并RTL或测新PPA；独立重数检查器已准备。更旧FQ旧信用/I$地址选择/I$行匹配原mapped已不存在，不恢复、不把历史摘要冒充可重审网表。当前尚无完整比较结论，不据源码无冲突自动叠加或将端点乐观拼接称组合频率。
+
+七版比较随后完成，独立重数/共同门弧/输入SHA审查亦passed，无模型/sv2v/EDA。最强互补线索为**Load-index唤醒**：对当前FF/PRF数据/控制组WNS好71.545/39.122/71.382ps、IPC不变、FF TNS好593.570775ns；但DC地址/控制差105.547/81.302ps，6043稳定端点中4163改善/1880退化。其与当前LQ插入源码区间无冲突仍不当组合资格，未合并/综合。当前同名最弱DC地址锚点在该版好36.014ps，但其组最差转到其他端点，不能只挑原最差宣布DC改善。条件化边界能关闭当前57个DC控制违例，却有IPC−0.834350%/4112稳定退化等代价，不作首选。rank/年龄/DC预选择均不补当前FF/DC主链，不机械叠加。
+
+当前FF/PRF代表共享前52弧，DC地址/控制共享44弧，两组及I$代表间无共同弧，仅代表非全图/敏化。当前16个I$ addr[3]违例在旧版均转正，但七版I$源码未改、地址pin负载同80fF，属全核共享/驱动形状线索，不存在可凭这些结果直接合入的I$补丁。10对旧版稳定端点乐观取较好仍至少1545退化，不是实际组合/Fmax或不可能改善证明。报告`sync/FREQUENCY400-CURRENT-COMPLEMENTS-20261112.md`。先保留Load-index为互补对照，继续当前DCache响应身份链的窄旁带合同验证；不自动将旧候选叠加或采用，生产364.900MHz/两软件/指针保持。
+
+独立hit-owner合同r01在任何工具前被正向专用提取锚点拒绝故意错readIndex的变异；失败/partial/冻结脚本封存，不当RTL失败或有效反例。r02只修切片提取以保留输入实际变异赋值，五文件候选/全部writer/刺激保持；新严格native静态lint及两个保断言converted前端已过。`cpu2026-frequency400-hit-owner-contract-20261112-r02.service`已确认active/running/MainPID291787，单次退出通知已附加，根`frequency400-hit-owner-contract-20261112-r02`。仅执行生产者切片262144/消费者完整packet切片98304计划及三有效变异，不运行参考模型、原六或PPA；实际DCache/LSU模块合同及整核资格仍须后续验证，当前不能称完整候选通过或已提频。持续授权保持，此服务退出不是整体任务结束。
+
+该r02生产者262144（hit352/multi1024/未选旁带不同225520）及消费者完整packet98304（live36680）正向过，错readIndex反例有效。错selected-owner亦实际−6被完整packet oracle检出，但脚本预期另一条更窄合同assert报错而停止，原failure/13步/全部模型日志保留。r03按实际原converted行/top/精确三行abort/−6认证该有效反例，改top/消息/退出码三负向拒绝，未改候选/刺激或旧收据。`sync/resume_frequency400_hit_owner_contract_20261112_r03.py`复用上述全部已完工具，仅补原未做的leak-unselected-owner反例；新unit确认active/running/MainPID293130/单次通知附加，根`frequency400-hit-owner-contract-20261112-r03`。实际模块/原六/PPA仍未开始，不将切片通过当整核资格。
+
+该r03切片合同已完整passed、三有效converted反例均结束，通知不再等待。随后新实际模块阶段已准备：真实DCache+SRAM整行/寄存早字两环境保原全部公开含invalid gold差分及字节owner oracle，并新查raw read-owner/selected-hit合同；真实LSU/gold两响应配置保原取消/同tag复用/posted/地址插入回归，另每配置384例三route/全destination/invalid旁带差异/缓冲年龄/flush的全部公开差分。只复用候选精确44源的已过严格native静态lint，不重复切片或参考模型；两个新保断言converted实际前端过。`sync/run_frequency400_hit_owner_actual_20261112.py`及根`frequency400-hit-owner-actual-20261112-r01`已启动，unit确认active/running/MainPID295591/单次通知附加。当前仅实际正向阶段，真实模块负向/候选原六/独立audit及PPA尚待，不提前称完整功能或提频；生产/软件/指针364.900MHz保持。
+
+真实模块正向阶段随后完整passed/通知结束：DCache两环境各742接受/398响应/185行读/47脏写，hit-owner选中检查313/315；LSU两配置各384新例/35770全公开差分/1280未选旁带差异，原取消/同tag复用/posted等回归保持。源/步骤/日志原SHA再验过，不重跑。接续`sync/run_frequency400_hit_owner_full_20261112.py`仅补真实DCache错read-owner与LSU未选owner泄漏两反例（精确原oracle/top/converted行/−6门禁）后，才候选-only新converted原六374104退休/全部raw/周期严格同当前364.900参考及独立audit。原切片/模块正向/候选strict native静态lint和参考模型/raw明确复用，不带旧Load-index、不运行native动态。
+
+新根`frequency400-hit-owner-full-screen-20261112-r01`，两个真实反例保断言converted前端通过；unit `cpu2026-frequency400-hit-owner-full-screen-20261112-r01.service`确认active/running/MainPID299056/单次退出通知附加。此时尚无新原六/IPC或完整audit结论，PPA未准备/启动；独立审计入口`sync/audit_frequency400_hit_owner_20261112.py`已写，过后才同364.900基线新候选唯一PPA/232宏/完整全组。用户持续授权保持，任何单阶段退出不是总任务停止，不自动采用/叠加/清理提交推送。
+
+该完整screen和独立audit现已passed、服务通知结束：两个真实模块反例均有效（DCache错read-owner、LSU未选owner泄漏），新converted原六374104退休/全部完整raw及周期严格保持，IPC**1.122239838632（0%）**；已有切片/模块正向/候选strict native静态lint和参考模型0重跑。原completion保留审计前pending字段，最终另看`independent-audit.json`（SHA `b40a03975ec5e04e4c2ae289a7b534d6ac2b6bbc2527058308e119aba5c5beca`），不回写旧收据。
+
+已新增`sync/measure_frequency400_hit_owner_20261112.py`/launcher，首次候选PPA根`frequency400-hit-owner-ppa-20261112-r01`。明确以**当前364.899777MHz**原PPA/完整端点作为比较基线，不误用357MHz；只读reference适配器将原授权中旧LSU/旧正式指针两项按本次精确采用备份映射认证，其余618原输入保持，不改旧manifest或重测reference。实际make/inside-stats绑定、五文件逆变换/全部writer、screen全部原SHA及baseline364.9检查已过；实际AppImage工具库/显式sv2v/INVx1-5fF/2.5ns dry-run准备已单次后台提交。**此时只是PPA准备执行中，尚未启动综合**，无候选面积/Fmax；准备通过后才独立服务唯一新PPA/232宏/全组/后测。新后测输出另捕获且SHA绑定，避免原workflow自哈希后追加成功行，不忽略原工具日志。
+
+PPA准备随后完整passed，原工具库/232同形状宏/显式前端与2.5ns-5fF dry-run绑定通过，reference零重跑。首次PPA独立unit `cpu2026-frequency400-hit-owner-ppa-20261112-r01.service`已确认active/running/MainPID304178，单次全链退出通知已附加；根仍`frequency400-hit-owner-ppa-20261112-r01`。当前只是首次候选测量服务启动，尚无新面积/Fmax/全组结果，不当提频成功。后续看本根completion/post/measurement-handoff，禁止另起重复PPA、重跑原screen/prepare或采用叠加；本项全链完成后按新实际路径继续持续任务，不将它当整体停止。生产364.899777MHz/32143.129859μm²/IPC1.122239838632及两软件/正式指针保持。
+
+### 11月12日：hit-owner完整测量349.115704MHz，拒绝；继续保存路径研究
+
+上述首次且唯一PPA/ABC/STA、独立232宏/完整全组/只读后测/handoff现均完成，服务success/inactive/dead，所有旧通知结束。面积**32297.371679μm²（+0.479859%）**、Fmax**349.115704MHz（−4.325591%）**、IPC**1.122239838632（不变）**，面积/IPC过、未400MHz、全组拒绝，不采用。28160 timed/11101违例/WNS−0.364202ns/TNS−2969.201041ns，4269稳定端点退化/missing0、匿名FF逐个对应未建。
+
+对当前364.900生产，FF/PRF数据/PRF控制/DC地址/DC控制WNS分别退124.092/149.914/147.637/34.687/67.868ps；FF TNS退1213.615671ns，其他SRAM控制0→8违例。I$地址16→0违例/WNS改善944.896ps、DC地址TNS改善5.816164ns均不抵消其他组退化。304889叶/232同形状宏、全部source/raw/steps/lib/report/端点/mapped SHA及374104退休/全部原周期保持，生产/两软件/指针不改。
+
+handoff已核completion SHA `9310a5261ae60bce43da53a21d18111a95a06f176cd32a5228fa908bbb47c34c`、post SHA `ed4a20ae77292e2aca128a1ffa0f7e2d8b0d0e7eb186a36276f33d9964eb17c6`及post-verifier-exit SHA `72e46a9b216b6f4b6fda1b216030ba692aa159d51bf700f88fe46ead9d937729`，不重跑任何工具/后测。报告`sync/FREQUENCY400-CURRENT-COMPLEMENTS-20261112.md`已补负结果；后续只读保存路径，复用已认证生产代表，正slack组无负路径详情明确标记，不能凭编号/门数/过程归属宣称目标依赖移走。持续授权保持，无下一RTL或EDA启动，不自动采用/叠加/软件变更/清理提交推送。
+
+新`sync/study_frequency400_hit_owner_paths_20261112.py`已后台单次提交，根`frequency400-hit-owner-path-study-20261112-r01`；仅认证hit-owner保存mapped/负路径逐pin及FF/PRF/DC/其他SRAM控制代表与同名锚点，完整正/负端点表分别重算。364.900生产路径从七版认证结果精确复用，不重复解码；正slack代表明确无负路径详情，不新STA。独立算术/覆盖检查器`sync/verify_frequency400_hit_owner_paths_20261112.py`已写，此时研究尚未宣称通过，无下一RTL/模型/EDA。
+
+该路径研究和独立算术/覆盖/SHA审查随后均passed、通知结束。新9条代表/稳定锚点逐pin认证、11101负详情全枚举；生产路径不重复解码。新FF DCache writer `_584447_/QN`→LSU writer `_573726_/D`74门/−0.364202ns，与PRF数据/控制代表共享前52弧，50ps内FF2871/PRF控制25/PRF数据1022。新DC地址/控制均LSU writer `_579737_/QN`起点、61门/−0.260676/−0.122544ns、共享前39弧，与FF/PRF代表无共同弧。RAS架构SRAM控制新最差45门/−0.030794ns，I$最差已正+0.822444ns且无保存正路径逐门详情。仅同版代表/过程身份，未识别FF字段bit或跨版匿名对应，不据此证明hit-owner依赖被切除，亦不从门数/局部延迟推新收益。
+
+### 11月12日：新独立LSU旧owner资格表，先完整packet切片合同
+
+继续当前生产单LSU独立候选，仅把返回owner→FIFO索引→完整LQ身份/flush/相对buffer年龄比较重排为8物理旧owner先算一位资格，晚返回owner选bit；forward优先/完整packet含invalid/所有writer/级数/实际grant及其他43RTL保持。不是hit-owner旁带扩大，不带旧Load-index/年龄/rank/条件边界；复制8组相较3 route有面积/扇出与重合并风险，尚无动态/IPC/时序资格，不声称一定快。
+
+helper `sync/frequency400_owner_qualification_table_20261112.py`及入口`sync/run_frequency400_owner_qualification_cut_20261112.py`；源码逆变换/全writer和原packet后缀字节保持。首纯源码TB空白锚点失败/原helper封存`frequency400-owner-qualification-development-20261112-r01`，随后只修夹具移除旧无关旁带激励的空白，源RTL不变；初诊空白方向错误由追加diagnosis-correction明确更正，不回写原failure。
+
+新严格native静态lint和保断言converted cut前端过；合同根`frequency400-owner-qualification-cut-20261112-r01`，独立unit确认active/running/MainPID316088，单次全链通知附加。计划98304完整packet任意旧态cut/错owner选择、漏epoch身份、反转buffer等龄tie三个有效converted反例，尚未宣称动态过；真实LSU/原六/独立audit/PPA均未启动。生产364.899777MHz/32143.129859μm²/IPC1.122239838632/指针6d7abc8f...保持。400/面积<36000/IPC>1.1/全组不放宽，持续授权保持，不自动采用/叠加/软件变更/清理提交推送。
+
+上述cut随后完整passed：98304完整packet检查、三个变异均由原oracle实际−6检出，旧合同服务及通知结束，不重跑。`drop-epoch-identity`实际变异是移除整条LQtag==FIFOtag（含epoch）检查，不只是高位epoch，名称不扩大为高位专项穷举；有限切片非全状态形式证明。随后新实际LSU/gold两response配置夹具保原多owner取消/同tag复用/posted/reset/地址插入，另每配置384例三route/全destination/缓冲竞争与flush，已去掉旧hit-owner新接口/激励，不引入新生产者合同。
+
+完整入口`sync/run_frequency400_owner_qualification_full_20261112.py`、实际夹具/独立audit同名已写，三个保断言converted实际前端过；`cpu2026-frequency400-owner-qualification-full-screen-20261112-r01.service`确认active/running/MainPID317981，单次完整退出通知附加，根`frequency400-owner-qualification-full-screen-20261112-r01`。依次真实LSU正向→错owner/无视buffer年龄两个实际反例→仅候选新converted原六374104/全部raw周期须同生产→独立audit，全部通过才准备唯一新匹配PPA。旧cut/三反例/strict native静态lint和364.900参考模型/raw均精确复用不重跑。当前只是完整screen启动，无新真实模块/原六/IPC/PPA资格；生产/两软件/正式指针保持，不把单服务退出当持续授权结束。
+
+上述完整screen所有工具均完成：真实LSU两配置各384新增例/全部原public含invalid/取消同tag/posted/reset回归及两个实际变异有效，新converted原六374104退休/全部raw/周期严格同生产，IPC1.122239838632（0%）。原服务最终exit1发生在独立审计：`ignore-buffer-age`有效三行abort前先打印两行原定向用例PASS，审计错误要求整个文件恰三行，原失败及completion.pending均保留，不能当完整资格已过或RTL失败。
+
+`sync/audit_frequency400_owner_qualification_20261112_r02.py`仅对该一个反例精确鉴权`PASS LQ insertion real directed PREVIEW=0/1`两行前缀，再执行原三行fatal/top/源行/消息/−6及全部原审计；额外/改字/缺前缀/零退出四负向拒绝。原失败/关闭workflow/所有模型raw/脚本封存同根`failure-finalization-r02.json`，另写`negative-prefix-review-r02.json`，未改RTL/刺激/原收据，未重跑模型/局部/反例/原六/EDA。r02只读完整独立audit现已passed、通知结束，同根`independent-audit.json`为最终资格。
+
+新PPA入口`sync/measure_frequency400_owner_qualification_20261112.py`/launcher只绑定此独立单LSU候选，复用已完成hit-owner测量所用原匹配框架，但不复用其候选网表或叠加其五文件。以真实364.899777MHz生产原PPA/完整端点为基线，旧授权LSU/指针仅按精确采用备份映射，reference不重测；r02audit/全部raw/关闭失败及actual make/inside-stats绑定无工具预检通过。首次候选PPA准备已后台单次提交，根`frequency400-owner-qualification-ppa-20261112-r01`；**此时尚未启动综合**，准备通过后才一次新PPA/232宏/完整全组/后测。无新面积/Fmax、不自动采用/组合/软件变更/清理提交推送，持续授权保持。
+
+首次PPA准备随后完整passed：单LSU差异/全部writer与其余RTL-SRAM-script同源、实际AppImage三工具/五库/显式sv2v/2.5ns-INVx1-5fF dry-run通过，参考0重跑。独立unit `cpu2026-frequency400-owner-qualification-ppa-20261112-r01.service`已确认active/running/MainPID324350，单次完整退出通知附加；根仍`frequency400-owner-qualification-ppa-20261112-r01`，只此一次新候选综合/ABC/STA/232宏/全组/后测。r02完整screen审计SHA `67b6aa3abc41e3733613fbd381323bd4db7ed1e38f0dbbbff3f94d3872f37e78`；真实LSU两配置各384例/35770次公开差分、6周期和374104退休保持。**当前只是PPA服务启动，尚无新面积/Fmax/全组结论**。后续看本根completion/post/measurement-handoff，不重复PPA/后测/screen或原六；原审计失败保持，不自动采用/叠加/软件指针/清理提交推送，持续授权无自行停止线。
+
+### 11月12日：旧owner资格表356.949891MHz完整测量拒绝，转保存路径研究
+
+上述唯一PPA/ABC/STA、独立逐叶232宏/完整全组/后测/handoff现均完成，服务success/inactive/dead，旧通知结束。面积**32296.846799μm²（+0.478226%）**、Fmax**356.949891MHz（−2.178649%）**、IPC**1.122239838632（不变）**；面积/IPC过、未400MHz、全组拒绝、不采用。28160 timed/10680违例/WNS−0.301046ns/TNS−1757.403335ns，2958稳定端点退化/missing0，匿名FF对应未建。
+
+相对当前364.900MHz生产，DC地址WNS退75.057ps、FF退25.652ps/PRF数据73.098ps/PRF控制57.275ps；DC控制WNS退5.541ps，虽57→44违例/TNS好0.265105ns，不能抵消。FF TNS退178.108671ns，其他SRAM控制0→8违例，真实输入FF退89.474ps；I$地址16→0/WNS好564.186ps、DC地址TNS好11.138271ns亦不能代替全组通过。305642叶/232同形状宏、所有输入/raw/步骤/库/report/端点/mapped SHA及374104退休/原六周期保持，生产/两软件/正式指针未改。
+
+通知后仅认证原完成/后测/handoff与关闭SHA，不重跑工具：completion SHA `f9cd5d5bc7528d61c0ecbef245597b1b86a0ec945abc39da1b237490fb5af0e1`，post SHA `bd16e2fcc376f02ffce13a81a6104d6dc8066f582d7f28e6b4587891b1ecef86`。8物理owner身份/年龄资格前移未获得整核收益，不继续机械扩大同类比较复制。新保存路径入口`sync/study_frequency400_owner_qualification_paths_20261112.py`与独立算术/覆盖检查器已准备，仍复用已认证364.900生产代表，仅对新candidate的代表/同名锚点逐pin；正slack组无负路径详情明确标记，不新STA/模型/EDA。研究结果待后再选不同切点，持续授权/400/面积<36000/IPC>1.1/完整全组保持，不自动采用/叠加/软件变更/清理提交推送。
+
+该保存路径研究已单次后台提交并附带完整退出通知，根`frequency400-owner-qualification-path-study-20261112-r01`；此时尚无研究完成结论。所有旧screen/PPA/审计通知结束，不重复等待或重启；当前只有该只读研究待通知。
+
+该保存路径研究及独立算术/覆盖/SHA审查现均passed，通知全部结束；9条新代表/具名锚点逐pin/net认证，10680负端点详情完整枚举，生产代表精确复用，无模型/sv2v/EDA重跑。FF代表AXI owner writer `_581354_/QN`→RS writer `_577846_/D`73门/−0.265762ns，与PRF数据/控制代表共享前48弧（任意位置54弧）；DC地址/控制代表LSU writer `_589829_/QN`起点64/62门、−0.301046/−0.060217ns，共享前40弧，与FF/PRF代表无共同弧。10ps近关键4个全DC地址，50ps内DC地址8/FF30/PRF数据100/PRF控制1。RAS架构SRAM ce新最差55门/−0.010999ns；I$最差+0.441734ns，无保存正slack逐门详情。仅同版代表/过程归属，未识别具体字段bit或跨版匿名FF对应，不当目标依赖移除或敏化证明。completion SHA `28a55f8b29a6c82cc935b5e897c2f814dfc721190f4bc28d257545f4f7500d03`，原pending字段不回写，最终独立审查另存。
+
+接续不同的共享物理目的tag one-hot编码源码契约研究：生产者先解码、真实shared grant最后选mask，RS仍取原完整包/最低port优先，Load须包含三route的response/buffered cofactor。完整PHY_TAG_W编码（含P0及48..63）保持，SV仅ALU issue前缀不扩源；非法preview=11不能将OR tag解码冒充OR掩码，明确研究边界。当前尚无新候选RTL/动态资格/综合，64bit宽掩码/源tag动态索引/全核共享与扇出代价待评价，不带旧Load-index或owner表补丁；生产364.900MHz/两软件/正式指针保持。
+
+### 11月12日：共享PHY编码代数完成；独立三文件候选合同准备
+
+`frequency400-shared-phy-decode-research-20261112-r01`已passed，仅源码绑定两态分解代数：4096完整tag对、1048576三候选tag/真实grant掩码、8192 response/buffered选择、786432合法route、16384完整WB优先级/前缀例，7错误逻辑见证/3源码锚点负向。非法preview11另262144组中258048不等价，明确只在原onehot0合同内重组，不声称无约束等价；无RTL模型/sv2v/EDA。
+
+选定新独立LSU/core/RS三文件helper `sync/frequency400_shared_phy_mask_20261112.py`：只shared端口共用64bit目的匹配mask，LSU旧LQ解码→三route response/buffered mask→真实shared grant，RS仅四个早issue池开启；ALU比较、SV/乘除RS路径、完整包含invalid/最低port优先、全部writer/级数/grant保持。精确逆回三文件/顺序writer/其余硬件保持通过，不套旧Load-index。逻辑8×64解码bit/64位共享线不是面积结果，源tag多路选择、扇出及重合并可能退化，不预判提频。
+
+纯Python切片提取首次因localparam行空白锚点0匹配失败，在工具前封存`frequency400-shared-phy-mask-development-20261112-r01`原helper/driver和诊断（非伪造原raw）；只修锚点，候选RTL不改，后续正负实际提取预检过。新入口`sync/run_frequency400_shared_phy_mask_cut_20261112.py --prepare`已单次后台提交，根`frequency400-shared-phy-mask-cut-20261112-r01`，执行严格native静态lint及两保断言converted切片前端。计划生产者98304完整packet-mask/真实arbiter+RS匹配65536例和三有效变异，**尚无动态/真实模块/原六/PPA资格，尚未启动综合**。文档`sync/FREQUENCY400-SHARED-PHY-MASK-20261112.md`；生产/软件/指针364.900MHz保持，持续授权无停止线，不自动采用叠加/清理提交推送。
+
+该prepare随后完整退出0：严格native静态lint及两个保断言converted前端均过。独立unit `cpu2026-frequency400-shared-phy-mask-cut-20261112-r01.service`确认active/running/MainPID346307，单次完整退出通知已附加，仅新converted合同正向/三变异阶段；不重复prepare/转换或参考成功资产。此时尚无动态完整结论，真实模块/原六/独立audit/PPA仍待后续，不将启动当提频/面积收益。所有此前owner表研究/测量通知已结束，不再等待或重启。
+
+r01通知随后结束：首producer converted构建被2条PROCASSWIRE拒绝，动态/真实模块/原六/EDA0。错误是提取切片把由always_comb写的loadPhyMaskOutput声明为wire；实际候选LSU output为logic且严格静态lint过，不归因为已证RTL功能失败。原failure/全部产物/冻结helper-driver封存r01 `failure-finalization-r02.json`不回写。
+
+r02新helper/接续入口仅提取夹具内部wire→logic，正向/两producer变异均可精确逆回，三文件候选RTL/全部刺激/oracle/消费者切片保持。原strict native静态lint和不受影响consumer转换按原命令/日志/源码SHA复用，只有受影响producer转换新做且通过；不重跑原成功工具。新独立unit `cpu2026-frequency400-shared-phy-mask-cut-20261112-r02.service`确认active/running/MainPID347564，根同r02、单次完整退出通知附加。当前仍仅合同动态阶段，尚无完整动态/真实模块/原六/PPA结论，生产364.900MHz/两软件/指针保持；r01旧通知结束不再等待或重启，持续授权保持。
+
+r02动态正向生产者98304/消费者65536例和丢buffer反例有效，丢P0反例退出0被门禁拒绝。只读实际变异LSU/生成cut确认：LSU含`phy!=0`但cut没有，生成器插回原DECODE常量而非从变异源提取。是切片绑定缺口，不能当有效反例或笼统归因覆盖不足；原r02failure/模型raw/全部脚本封存`failure-finalization-r03.json`。
+
+r03仅将decoder块改从实际候选/变异源码提取，正向/丢buffer切片逐字节同r02，成功正向/有效反例/native静态/转换全部精确复用不重跑；只补正确P0与未做grant泄漏反例。根`frequency400-shared-phy-mask-cut-20261112-r03/completion.json`现passed/3有效converted反例，top/源行/精确三行abort/−6均过。独立`sync/audit_frequency400_shared_phy_mask_cut_20261112.py`只读源码绑定/16步骤日志/复用链/正负来源/逆变换writer/保护Git审计passed，同根`independent-audit.json`，原pending字段不回写。合同通知全部结束，无EDA。
+
+接续实际模块**正向阶段** `sync/run_frequency400_shared_phy_mask_actual_20261112.py`，两新保断言converted前端prepare已后台单次提交，根`frequency400-shared-phy-mask-actual-20261112-r01`；此时尚无实际动态完整结论。真实LSU/gold两响应配置保全部公开含invalid及原owner/取消/同tag/posted/reset/新地址插入，每配置384新route/全64tag/缓冲/flush例并查完整mask；真实arbiter+实际RS/gold六配置各512 source/合成索引例，检查分配捕获/旧行唤醒/全公开含信用和无效载荷/优先级/未grant/freeze/flush/短issue前缀。RS Load掩码为夹具合成输入，不能冒称真实LSU-RS整合；core接线仍须新候选整核。只复用夹具代码不套旧模型资格，真实模块反例/原六/完整独立audit及PPA均待后续；生产/软件/指针364.900MHz保持，不自动采用/叠加/清理提交推送。
+
+该实际prepare随后完整退出0，两保断言converted前端过；独立正向unit `cpu2026-frequency400-shared-phy-mask-actual-20261112-r01.service`确认active/running/MainPID354347，单次完整退出通知附加。当前只是实际模块正向运行，无新实际完整结论/IPC/PPA，旧合同与审计不重复；后续看本根实际完成/失败通知再补真实变异和候选原六/独立audit，不将此阶段退出当整体停止。
+
+实际正向现已passed/通知结束：LSU两配置各384新例、各35770次全公开差分/mask检查、全64目的tag覆盖`ffffffffffffffff`；RS六配置各512例，标量26624次检查，其余各30208次检查，完整公开含无效payload/信用/操作数oracle通过。该完成只代表正向，未冒称真实LSU-RS整合/原六或新PPA，原产品SHA保持不重跑。
+
+新完整入口`sync/run_frequency400_shared_phy_mask_full_20261112.py`/独立审计同名已写，根`frequency400-shared-phy-mask-full-screen-20261112-r01`；真实LSU丢P0与RS错source bit两有效converted反例前端prepare已单次后台提交，过后才独立screen服务。后续只补两反例→候选-only新converted原六374104/完整raw周期与当前生产严格同→独立audit；原静态/正向模块/切片及364.900参考成功资产不重跑，不运行native动态。**此时尚无新原六/IPC/PPA结论，尚未启动综合**。生产/两软件/指针保持，持续授权无停止线，不自动采用/叠加/清理提交推送。
+
+该prepare随后完整退出0，两真实变异保断言converted前端过；完整screen unit `cpu2026-frequency400-shared-phy-mask-full-screen-20261112-r01.service`确认active/running/MainPID360832，单次完整退出通知附加。当前仅依次真实反例→候选原六→独立审计运行，尚无此完整动态/IPC/面积/Fmax结论，PPA未启动。当前唯一待通知是该完整screen，旧合同/实际正向通知全部结束，不重复成功工具或将单项退出当持续任务终点。
+
+共享PHY完整screen随后完成，独立`independent-audit.json`passed、通知结束：两个真实模块反例有效，候选新converted原六374104退休/全部完整raw SHA和周期8341/13119/3101/5531/162354/162410严格同当前生产，几何IPC**1.122239838632（0%）**。三文件inverse/全部writer、切片3反例、真实LSU两配置/RS六配置/2实际反例、full raw/source保护Git和同源参考完整鉴权；参考模型构建运行0、native动态0。原completion审计前pending字段不回写，最终看新增独立audit，不能因pending旧字段再重跑成功功能或审计。
+
+首次PPA入口`sync/measure_frequency400_shared_phy_mask_20261112.py`及匹配launcher已写，新根`frequency400-shared-phy-mask-ppa-20261112-r01`。无工具实际make/inside-stats/三文件范围/launcher及显式sv2v/2.5ns/INVx1-5fF绑定预检过，实际AppImage工具五库/dry-run准备已单次后台提交。仍仅复用已采用364.899777MHz原PPA/完整全端点，原授权旧LSU和正式指针两项按精确采用备份映射、其余原SHA不放宽，不套旧owner/hit-owner网表或重测reference。**此时只是首次准备执行中，尚未启动综合/ABC/STA，无新面积/Fmax或全组结论**；准备过后才唯一新PPA/232宏/完整全组/只读后测。生产/两软件/指针364.900MHz保持，持续授权无停止线，不自动采用/叠加/清理提交推送。
+
+该准备现已完整passed：真实AppImage三工具/五库/原脚本/显式sv2v与2.5ns/INVx1-5fF dry-run绑定通过，reference0重跑。首次独立PPA unit `cpu2026-frequency400-shared-phy-mask-ppa-20261112-r01.service`确认active/running/MainPID370714，单次完整退出通知已附加；根仍`frequency400-shared-phy-mask-ppa-20261112-r01`。仅此一次新候选综合/ABC/STA、独立逐叶232宏/完整全组/后测，当前尚无新面积/Fmax/全组结论，不能把启动/IPC不变当提频成功。后续看本根completion/post/measurement-handoff，禁止重复prepare/成功功能/审计/PPA或手工再启动。当前唯一待通知是该完整PPA，所有旧screen/合同/实际通知已结束；生产364.899777MHz/32143.129859μm²/IPC1.122239838632/两软件/正式指针保持。完整退出后按实际新路径继续持续任务，不自动采用/叠加/清理提交推送。
+
+### 11月12日：共享PHY掩码345.508224MHz完整测量拒绝；继续保存路径研究
+
+上述首次且唯一PPA/ABC/STA、独立逐叶232宏/完整全组/只读后测/handoff现均完成，服务success/inactive/dead，旧通知结束。面积**32716.648739μm²（+1.784266%）**、Fmax**345.508224MHz（−5.314213%）**、IPC**1.122239838632（不变）**；面积/IPC过、未400MHz、全组拒绝，不采用。28160 timed/11016违例/WNS−0.394153ns/TNS−2844.861512ns，3000稳定端点退化/missing0，匿名FF对应未建。
+
+相对364.900生产，DC地址/控制WNS退168.164/179.480ps、FF退119.093ps、PRF数据/控制退136.980/131.424ps，FF TNS退1052.805740ns；其他SRAM控制0→8违例，真实输入FF退55.790ps。I$地址16→0/WNS好661.534ps等局部改善不抵消全组退化。309375叶/232同形状宏、全部source/raw/steps/lib/report/端点/mapped SHA、374104退休及六周期保持，生产/两软件/正式指针不改。
+
+通知后仅核原completion/post/handoff及关闭SHA，无工具重跑：completion SHA `9bbba08f1e5423fa41fc2f72ccf374f729d3efcdb87ca0d285b4119d6aec9cea`，post SHA `c5756ca33bcc4210361e3ae9273d6532b3f41f4e39170b0a2dfd4c13fdd6665a`。共享64bit目的编码这一具体版本无整核收益，不继续机械放大解码/比较器；不把代数等价当提频，也不单因归为扇出或永久否决所有编码实现。新只读入口`sync/study_frequency400_shared_phy_mask_paths_20261112.py`及独立算术/覆盖检查器已准备，根`frequency400-shared-phy-mask-path-study-20261112-r01`；复用生产代表，只新candidate代表/同名锚点逐pin/net，完整端点与负详情覆盖重算，正slack缺详情标缺，不新STA。持续授权保持，无下一RTL或EDA启动，不自动采用/叠加/清理提交推送。
+
+该保存路径研究现已单次后台提交并附加完整退出通知，尚无完成结论；当前唯一待通知是此只读研究。原共享PHY PPA/功能/审计服务全部已结束，不再等待或重启。
+
+共享PHY保存路径和独立算术/覆盖/SHA复核现均passed，所有旧通知结束：新10条代表/锚点逐pin/net认证、11016负详情完整枚举，生产代表精确复用，模型/STA/EDA0重跑。FF为AXI owner过程起点81门/−0.359203ns，与PRF数据/控制代表共享前62弧，PRF76/75门、−0.324082/−0.328091ns；DC地址/控制LSU过程起点68/64门、−0.394153/−0.234156ns，共享前55弧，与FF/PRF代表无共同弧。10ps内32个全DC地址，50ps内DC地址40/FF189；RAS架构SRAM ce47门/−0.170129ns，I$+0.539082ns无保存正路径详情。仍只同版代表/过程归属，不识别具体字段bit或据此宣称敏化/全图独立/跨版匿名对应，也不把退化单因归为mask扇出。
+
+下一不同方向先研究**Load重复flush准入消去**：LSU输出有效包已以包自身robTag鉴权同一global flush，而core在CDB准入又比较一次。新`sync/research_frequency400_load_flush_fusion_20261112.py`仅源码绑定两态代数/错误见证，保完整ROB lookup身份、全部LSU身份/flush/forward/age、真实grant/完整payload/优先级与恢复门控，不用未证明可达性或删除安全检查。原preview onehot0合同须保持，非法11另记录反例，不冒称无约束等价。尚无该方向候选RTL/转换/动态/原六/EDA，编译器可能已化简重复项且其他晚链仍在，不预判提频。生产364.900MHz/两软件/指针与持续授权保持，不自动采用/叠加/清理提交推送。
+
+该新源码代数研究已单次后台提交，根`frequency400-load-flush-fusion-research-20261112-r01`，完成结果尚待通知；这是当前唯一待通知任务，不重等已结束共享PHY路径/PPA/审计。
+
+Load重复flush研究r01在源码锚点检查因两续行各多写一个空格而拒绝，代数/模型/sv2v/EDA均未开始；实际core原字节与预期语义相同，未改RTL。原failure/inputs/冻结脚本封存r01 `failure-finalization-r02.json`。新`sync/research_frequency400_load_flush_fusion_20261112_r02.py`只修精确缩进锚点并改独立r02根，保全部研究算法/覆盖/错误见证；已单次后台提交，尚无完成结论，不重复任何工具或改生产。
+
+该r02源码代数现已passed/通知结束：16384全部32×32 tag对/valid/flush/recovery/ROB-live例、1572864组三route组成例、3源码绑定拒绝及producer缺flush/非法11/丢ROB/丢恢复错误见证。组成例第四flushTag为确定公式而非全部第四tag穷举，任意flushTag由逐packet引理覆盖；仅源码两态代数非实际RTL/形式/IPC/PPA资格。
+
+选定新独立**单core表达式**候选：`sync/frequency400_load_flush_fusion_20261112.py`只删Load准入中已被未改LSU有效packet蕴含的同一flush重复项，保完整ROBlive lookup、恢复、LSU所有身份/flush/forward/age、原实际仲裁/grant/完整invalid payload和全部writer/级数；新core仿真断言仍检查producer合同及旧准入全方程。不叠加共享PHY掩码或旧Load-index；单core逆回/原always_ff与真实producer+consumer片段/三变异提取静态过。新入口`sync/run_frequency400_load_flush_fusion_cut_20261112.py --prepare`已单次后台提交，根`frequency400-load-flush-fusion-cut-20261112-r01`，严格native静态lint/保断言converted前端准备，尚无动态结果。
+
+计划98304完整packet/准入合同、丢ROB身份/丢恢复门控/缺producer flush三有效converted反例；最后一项同时破坏两producer副本以显露必要合同，不冒称候选改LSU。还须独立审计/真实core集成新原六374104退休及完整raw/最终独立audit才PPA，不能以源码删重复项预判提频，综合器可能已吸收且其他晚链仍在。报告`sync/FREQUENCY400-LOAD-FLUSH-FUSION-20261112.md`；生产364.900MHz/两软件/指针及400/面积<36000/IPC>1.1/完整全组不改，持续授权不设停止线，不自动采用/叠加/清理提交推送。
+
+该prepare随后完整退出0，严格native静态lint/保断言converted前端通过；新独立unit `cpu2026-frequency400-load-flush-fusion-cut-20261112-r01.service`确认active/running/MainPID402909，单次完整退出通知附加。当前只是converted合同及三反例运行，尚无完整动态/真实core原六/独立audit/PPA结论；此前共享PHY/新代数研究通知全部结束，不再等待或重启。生产/两软件/指针保持。
+
+### 11月12日：Load重复flush合同98304/三有效反例与独立审计过；新整核converted原六启动
+
+上述合同现已完整退出：98304完整packet/准入例通过；live字段36993是原切片计数，不当退休或省拍数。丢ROB身份/丢恢复门控/缺producer flush三变异均指定oracle真实−6、准确三行abort及converted行号/原始SHA通过。独立审计r01误把flush端口锚点要求在整个core唯一，实际11个原消费者同接global flush，非候选失败；原失败`audit-r01-failure.json`和冻结脚本保留。r02仅限定实际LSU实例，保其余规则，独立passed；重建producer/consumer/三变异、原converted来源/断言、13步骤、单core逆回/全部writer/生产保护/Git，模型/转换/EDA0重跑。缺producer flush仍是合同依赖反例，不冒称候选改LSU。
+
+新入口`sync/run_frequency400_load_flush_fusion_full_20261112.py`及独立audit，根`frequency400-load-flush-fusion-full-screen-20261112-r01`。prepare无新工具通过，精确复用合同/严格native静态lint和现364.900参考源码/原六raw；参考模型构建/运行0。新候选完整student_top直接集成实际core/LSU/ROB/arbiter并保两条新合同断言，不称独立真实core夹具或重跑旧未改LSU模块资格。只新converted完整原六374104退休/全部raw周期必须等同生产，最终独立audit过才后续唯一同生产PPA/232宏/完整全组。
+
+独立unit `cpu2026-frequency400-load-flush-fusion-full-screen-20261112-r01.service`确认active/running/MainPID409239，单次完整退出通知附加。此时尚无新完整动态/IPC/面积/Fmax结论，PPA未启动；原合同/源码研究/共享PHY通知全部结束，不重等或重启。生产364.899777MHz/32143.129859μm²/IPC1.122239838632/两软件/指针保持，400/面积<36000/IPC>1.1/全组非退化及持续授权不放宽，不自动采用/叠加/清理提交推送。
+
+整核等待期间仅静态准备`sync/measure_frequency400_load_flush_fusion_20261112.py`及对应PPA launcher，实际导入/launcher→measure→configure、仅单core差异与逆变换、完整screen独立audit/98304及三有效反例门禁绑定通过。沿用364.900参考原PPA的精确采用备份映射和2.5ns/INVx1-5fF/232宏/完整全组/后测；当前未调用PPA prepare、PPA根尚未创建、EDA0。仍只等当前整核完整退出通知，通过后才正式准备/唯一启动，不把静态接口检查当原六或PPA资格。
+
+### 11月12日：Load重复flush新原六/完整raw/独立审计过；首次PPA准备提交
+
+上述完整screen现已退出且独立audit passed。新候选converted原六374104退休/全部完整raw及周期8341/13119/3101/5531/162354/162410严格等同当前364.900生产，几何IPC1.1222398386316592/变化0%；实际core/LSU/ROB/arbiter整核中两条producer合同与旧完整准入oracle断言均保留。参考构建/运行0、成功合同/静态lint精确复用，通知后只核关闭SHA与全部保护，无工具重跑。completion SHA `61e73ba8166e313a111bbc69daf76dc684d600b406f10582d71536ddae6eb132`，audit SHA `dc68abd11a3d82b1423e0ecc24fdffc3fea540bccdafc34f9351b518205a65ac`。
+
+已单次后台提交`sync/measure_frequency400_load_flush_fusion_20261112.py --prepare`，首次PPA根`frequency400-load-flush-fusion-ppa-20261112-r01`，核现成功screen及364.900参考/采用备份映射/工具库/原约束。当前仅prepare提交，尚未确认通过或实际综合启动，无新面积/Fmax/全组结论；唯一待通知为prepare，原screen/合同通知全部结束，不重等或重复成功工具。生产/两软件/指针保持，不自动采用/叠加/清理提交推送，持续400MHz/面积<36000/IPC>1.1/完整全组保持。
+
+上述prepare现已完整passed：资格与364.900参考采用备份映射、真实AppImage工具/五库/原脚本及2.5ns/INVx1-5fF dry-run绑定通过，reference0重测。首次PPA unit `cpu2026-frequency400-load-flush-fusion-ppa-20261112-r01.service`确认active/running/MainPID413202，单次完整退出通知已附加；根仍`frequency400-load-flush-fusion-ppa-20261112-r01`，仅该单core候选一次新综合/ABC/STA、独立逐叶232宏/完整全组/只读后测。此时尚无新面积/Fmax/全组结论，不把启动或IPC不变当提频成功；后续看本根completion/post/measurement-handoff，禁止重复prepare/成功功能/audit/PPA。当前唯一待通知是完整PPA，所有旧prepare/整核/合同通知结束；生产364.899777MHz/32143.129859μm²/IPC1.122239838632/两软件/正式指针保持。完整退出后审阅真实新路径继续持续优化，不自动采用/叠加/清理提交推送。
+
+### 11月12日：Load重复flush354.708811MHz完整拒绝；继续保存路径研究
+
+上述首次且唯一PPA/ABC/STA、独立逐叶232宏/完整全组/后测/handoff均完成，服务success/inactive/dead。面积32322.770039μm²（+0.558876%）/Fmax354.708811MHz（−2.792812%）/IPC1.122239838632（不变）；面积/IPC过、未400MHz、全组拒绝，不采用。28160 timed/10693违例/WNS−0.318641ns/TNS−1495.537120ns，2333稳定端点退化/missing0，匿名FF对应未建。
+
+DC地址WNS退92.652ps/TNS退10.493624ns、PRF数据退11.731ps/TNS退14.580914ns；其他SRAM控制0→8违例/WNS退132.499ps，真实input-from FF退72.928ps。FF WNS好14.929ps/DC控制好14.176ps/I$地址16→0/WNS好531.075ps及全局TNS好22.046118ns，不抵消上述退化；不由源码重复检查删去宣称提频。305040叶/232同形状宏、全部source/raw/steps/lib/report/完整端点/mapped SHA与374104退休/六周期保持；通知后只核关闭completion/post/handoff和保护，无工具重跑。completion SHA `dbfea4f98f50aacc58904a9ad5dcf0fa2495ed85d8f7a7d7a578368f3af3b703`，post SHA `ccef99e68c32df49868c36556f5f2611d74763732a36106374b6d07080dd8e7a`。
+
+持续授权继续，不叠加或采用本项。新`sync/study_frequency400_load_flush_fusion_paths_20261112.py`及独立检查器已准备，根`frequency400-load-flush-fusion-path-study-20261112-r01`；生产代表精确复用，只新candidate代表/锚点逐pin/net和完整表/负详情覆盖，正slack缺详情标缺、不新STA、不冒认字段/敏化。当前尚无下一RTL/EDA，生产364.900MHz/两软件/指针及400/面积<36000/IPC>1.1/全组非退化保持，不清理提交推送。
+
+上述保存路径与独立重数/共享弧/覆盖/SHA复核随后均passed，通知结束：新10条代表/锚点逐pin/net、10693负详情全枚举；DC地址/控制LSU writer起点63/60门、−0.318641/−0.040500ns、前41弧共享。FF DCache writer起点72门/−0.225181ns，PRF数据/控制69/68门，和FF共享前34弧/共有37弧；10/50ps内4/24条全DC地址，100ps内DC208/FF99。I$+0.408623ns无保存正路径详情；仍仅同版代表/过程身份，不是字段bit/敏化/全图独立/跨版匿名对应。无模型或EDA重跑。
+
+### 11月12日：转请求侧完整输入边界研究，不再机械扩大比较器
+
+新`sync/study_frequency400_request_boundary_edges_20261112.py`已完整passed，根`frequency400-request-boundary-edges-20261112-r01`，只用当前364.900生产原展开，不用拒绝flush候选作基线，不恢复缺失旧357MHz metadata资产或重跑旧查询。实际DCache cpuRequestInput每个消费者输入边在离线图隔离为透明身份节点，假想寄存只替换这些边，不全局删共享producer网；小图核另一消费者必须保持。透明节点会多一层图算子，非硬件门/时序，新假想Q单独及合并旧LSU/DCache/AGU源均计入。
+
+只valid1bit/valid+write2bit/只address32bit，旧LSU→DC地址仍112/112逻辑目标；control+address34bit/除writeData外43bit/完整75bit才0/112。34bit只是结构前沿非正确协议，完整75bit含3bit不可变运输owner及一致size/strobe/data。完整packet下DCache状态仍支持112 DC地址及PRF全部组，LSU仍支持1504 PRF数据/47 PRF控制，新Q仍支持112 DC地址，不能说切完整全核或400MHz可达。保守202/88等算子深度不换算ps，LSU D逻辑集合非物理端点/匿名对应。Ready/信用其余接口保持原图，未虚构已处理背压、flush/取消/实际Store接受。
+
+新独立检查`sync/verify_frequency400_request_boundary_edges_20261112.py`已后台单次提交，仅读保存图独立BFS/拓扑重算覆盖/深度/环/新源与非切点扇出；此时尚待结果。当前唯一待通知为该检查；旧路径/PPA通知全部结束。后续须先评估请求稳定性/IPC预算及定义owner预留、真实下游接受、Store FIFO、flush/reset/同槽再用/退出排空合同，再决定是否实现，当前无新RTL/模型/IPC/EDA。不复活已否决LSU返回寄存或整体延迟CDB，不盲排综合、不叠加未采用候选。报告`sync/FREQUENCY400-REQUEST-BOUNDARY-EDGES-20261112.md`，生产364.900MHz/两软件/指针与持续授权保持，不清理提交推送。
+
+上述消费者边界独立保存图检查现已全部passed，原通知结束：7场景覆盖/深度/环/字段位布局、新源数及未切producer扇出保持由独立BFS/拓扑重算，无原图重解析/模型/EDA。没有因此获得stage或IPC资格，不将34bit前沿当安全半包时序边界。
+
+下一新被动请求稳定性观察`sync/profile_frequency400_request_stability_20261112.py`已后台单次提交，根`frequency400-request-stability-profile-20261112-r01`。仅重链接现有364.900生产converted archive外部observer，内存调度/刺激/模型不改，新sidecar测完整75bit packet是否前拍已是同完整Load/SQ身份/运输owner的未接受proposal、连续接受间距、背压后变化/消失、旧地址与同拍地址事件、flush。实际模型头字段/75bit/72bit/9bit宽度、observer精确逆回及6个事件公式边界预检通过，独立raw/sidecar重数audit已先写好。原六所有raw SHA/答案/周期及374104退休必须保持；事件不是候选IPC或可省/损拍数，proposal变化不预判原协议错误。当前结果尚待通知，唯一待通知是此观察；生产/两软件/指针保持，新RTL模型/sv2v/EDA0，不复活返回寄存/自动叠加或清理提交推送。
+
+该观察与独立raw/sidecar重数审计随后均passed，通知结束：131404实际请求接受中7469次前拍已有同完整包/源身份且未接受，median/multiply0、vvadd3/1502、towers48/3169、qsort3/57043、rsort7415/66547。原六raw SHA/答案/周期与374104退休保持，只有外部observer链接一次，无模型/sv2v/EDA。不能把其余请求当固定损一拍或预测buffer后IPC；当前到严格IPC1.1的几何周期余量约2.021804%。
+
+新离线分类`sync/classify_frequency400_request_stability_20261112.py`/根`frequency400-request-stability-classes-20261112-r01`已完成，无重复观察：rsort642背压后变化**全部是Load/Store kind切换**，owner-only/payload-only/消失均0；此前owner漂移只是待区分假设，不当实测结论。qsort2次包相同而完整源身份不同；flush拍合计10Load/708Store真实接受，不能统一丢弃已接受stage。分类不构成真实stage的年龄/owner安全证明或IPC估计。
+
+### 11月12日：请求侧完整包寄存级，先新独立局部时序合同
+
+新`sync/frequency400_request_stage_20261112.py`只提供实验模块和独立深度1队列oracle，未接整核/改生产。完整75bit DCache请求，明确无组合fallthrough；实际入队应转移buffer容量并预留运输owner，同拍旧包真实出队可接新包，全包背压持有，不随源proposal撤回/变化而丢弃。无flush输入/清包口，已入队Load/Store持续递交，取消Load将沿原LSU drop身份真实排空；reset是协调清空，退出仍等原Cache/总线。不是恢复已否决的返回寄存/整体延迟CDB，不含旧未采用候选。
+
+新入口`sync/run_frequency400_request_stage_local_20261112.py`，局部根`frequency400-request-stage-local-20261112-r01`。计划65573拍时序oracle（reset/全包含invalid/持有/源撤回与变化/连续同拍出入）和背压覆盖、源撤回清包、丢同拍替换、错owner、组合fallthrough五有效converted反例。源码/锚点预检过，严格native仅模块静态lint/保断言converted prepare已后台提交，尚未宣称通过。夹具没有真实LSU owner ledger/Store hazard/flush，不冒称实际子系统资格；后续局部通过才新真实子系统/反例、候选原六架构/实测IPC与独立audit，全部合格才PPA。当前唯一待通知为此prepare，所有旧观察/审计/分类通知结束；无整核候选/PPA，生产364.900MHz/两软件/指针及400/面积<36000/IPC>1.1/完整全组保持，不清理提交推送。
+
+请求stage局部r01 prepare随后仅strict静态lint失败：37公共package UNUSEDPARAM及1新增断言SYNCASYNCNET，转换/模型/EDA0。原failure/全部partial/冻结driver和recipe封存r01 `failure-finalization-r02.json`，不冒称动态失败或成功。r02去无必要wildcard import、错owner变异类型全限定、新断言敏感列表与异步复位统一，stage原always_ff方程及65573拍TB/oracle字节保持。严格模块静态lint用原package精确类型依赖闭包（DATA_REQUEST_ENTRIES/宽度/transport typedef/完整75bit结构），非告警豁免；实际动态转换仍完整原package，未来完整整核strict lint不豁免。新`sync/run_frequency400_request_stage_local_20261112_r02.py`/根r02经实际导入/所有stage writer/依赖闭包/TB/五变异锚点静态检查过，prepare已单次后台提交、尚无通过结论。当前唯一待通知是r02 prepare，旧r01通知结束；无整核候选/IPC/PPA/生产变更，不重复成功工具或清理提交推送。
+
+该r02 prepare随后完整passed，strict模块静态lint零告警、完整原package保断言converted前端通过。独立unit `cpu2026-frequency400-request-stage-local-20261112-r02.service`确认active/running/MainPID443968，单次完整退出通知附加。当前仅新65573拍局部队列时序oracle/五变异运行，动态完成与真实LSU owner/Store/flush、候选原六IPC/PPA均未形成资格；独立源/转换/19步骤/精确原始abort审计器已先准备。不重跑成功lint/转换或原生产模型；当前唯一待通知为该局部服务，旧prepare/观察/研究通知均结束，生产/两软件/指针保持。
+
+## 关键采用与指标
+
+以下是各次精确版本的历史整核认证，不表示当前工作树重新测量。Fmax均为理想时钟、无寄生STA估计，不是后布局频率。
+
+| 版本 | 面积 μm² | Fmax MHz | 原六几何IPC |
+|---|---:|---:|---:|
+| ROB载荷复位分离 | 34238.371507 | 313.341493 | 1.010966177065 |
+| Load下一行预取 | 34417.443067 | 307.138572 | 1.035819497011 |
+| SQ≤4/owner=0安全让行 | 34506.745567 | 314.399754 | 1.043690365779 |
+| 标准同link JALR只push | 34614.841687 | 313.437404 | 1.059446088949 |
+| SQ完成事件旁路 | 34465.105087 | 306.770521 | 1.063329023912 |
+| LSU通知资格提前计算 | 34699.405687 | 316.146959 | 1.063329023912 |
+| 跨16B四取指，旧ROB32/PRF64 | 34947.061567 | 319.301528 | 1.137201912621 |
+| ROB16/PRF48最初采用 | 当时未测 | 当时未测 | 1.122239838632 |
+| ＋DCache读地址优化 | 31764.108179 | 317.617866 | 1.122239838632 |
+| ＋整数双发RS直接行选择 | 31793.603519 | 327.784891 | 1.122239838632 |
+| 历史16 KiB DCache | 35107.695801 | 331.498867 | 1.184086472112 |
+| 新8 KiB epoch：三项HDL组合 | 32111.330879 | 333.346897 | 1.122239838632 |
+| ＋完整CDB包（已含响应预览） | 32193.460019 | 346.311562 | 1.122239838632 |
+| ＋双队列反向信用，当前生产 | 32256.416459 | 357.339149 | 1.122239838632 |
+
+16 KiB版本相对当时8 KiB版IPC提高5.511000%，但`Fmax²×IPC/Area`下降2.271463%，用户知情采用；不能将其IPC拼入后续8 KiB结果。三项组合采用时两软件容量头由256组同步回128组；后两次仅HDL组合拓扑改变，两软件126项构建输入不变。
+
+### 当前采用身份
+
+2026-11-12正式采用双队列反向信用三RTL版本，保留此前三项组合和完整CDB包。原六周期仍为8341/13119/3101/5531/162354/162410；converted原六374104条架构退休、局部oracle及有效反例、两软件Release/断言四构建和两个外部副本各374104退休PC/周期资格通过。
+
+面积<36000、IPC>1.1通过；**未400MHz，全组非退化仍失败**，527个稳定命名端点退化，匿名FF跨版本对应未建立。用户明确采用不改写原拒绝结论。25项独立PPA与当前瓶颈详见[频率分析](频率分析.md)。
+
+- [正式生产指针](../../sync/evidence/current-production.json)
+- [三项组合采用证书](../../sync/evidence/frequency400-triple-production-adoption-20261111-r03/adoption.json)
+- [完整CDB包采用证书](../../sync/evidence/frequency400-payload-production-adoption-20261111-r01/adoption.json)
+- [双队列反向信用采用证书](../../sync/evidence/frequency400-queue-backward-production-adoption-20261112-r01/adoption.json)
+
+采用链只按真实记录保存：三项组合入口当时缺少旧指针，没有伪造前驱；后续两次保存了实际前驱。证书不随文档整理重写。
+
+## 重要否决与无效结果
+
+| 方向 | 决定或边界 |
 |---|---|
-| 10-11～12 | RS 共 23→12 槽、FQ/IQ 4→2、RAS32→16；软件容量代理下降，但综合暴露寄存器 D$ 占面积约 64% 及全局 flush 高扇出。转向 SRAM 和恢复/选择网络优化。 |
-| 10-13～14 | SRAM D$（`d7c98ef`）；valid 独立复位，删除初始化扫描及释放网络；RAS 深度收紧，early restart 提高 IPC，但合并物理吞吐仍不胜仅 RAS 版。建立互斥模块面积归属。 |
-| 10-14 | ABC 驱动/负载、buffering/cell sizing（`302f0cf`）属于流程改进，不能将跨流程频率差归因于微架构。 |
-| 10-14～15 | 固定 4 KiB 扫描九种行长/相联度；32 B 单路候选改善密度，不是已证明全局最优。固定整行延迟模型未体现课程 AXI 串行带宽成本。 |
-| 10-16 BTB | 单 SRAM→4-bank tag/target 分离，需新增预测汇合、训练 FIFO/credit、取消逻辑；面积收益抵不过旧负载 IPC 损失，课程路径恢复寄存器 BTB，保留两模块独立实验。 |
-| 10-16 数据侧 | D$ 改 4 MSHR/两路，支持合并、hit-under-miss、乱序返回；LSU 用独立 owner/持久 drop，不用有序 FIFO 猜归属。中间 4 请求/owner 后扩为 8。 |
-| 10-16 课程集成 | 接 AXIFetch/AXIData/AXIBus；退出 Store 退休冻结核心，对应 B 握手结束，不再全 dirty 排空。后续 ALU 独占 CDB0、MUL/DIV/LQ 共用 CDB1。 |
-| 10-17 | AXIData 共享 payload/游标及三模块收敛减少面积；提交 RAT/RAS 改 SRAM＋四拍恢复，以 IPC 损失换面积。D$ 局部 SRAM 地址消除原地址广播瓶颈。 |
-| 10-18 | 收敛 D$ 提取/ROB 重放窗口、AXI 容量和 LSU 扩展/重叠逻辑；PPA 与测试只对各自快照有效，最新结果不等于已达到课程 IPC 或 2 ns 目标。 |
+| PRF重定时、并行分配排名 | 前者面积代价被拒绝；后者Fmax退7.199562%，用户明确否决，不同于已采用的目的tag旁带。 |
+| Store地址→Load数据通知、接受沿回填字复用、DCache miss接续 | 已删除或明确否决，不自动恢复。 |
+| 前端部分接受、最老可发出Load、Store数据RS扩至4项 | 分别为六项周期持平、IPC微降、IPC退1.461943%；用户不采用。 |
+| I$扩至2/4 KiB、4行寄存器victim cache | 前者当时仅towers少46拍，决定不扩；后者Fmax293.157744MHz，用户明确否决。 |
+| 11月4日旧16/32 KiB DCache | 旧16 KiB面积38112.641969μm²超限，32 KiB仅IPC筛选；不等同11月8日已采用的另一同源版本。 |
+| ROB载荷SRAM | 更省面积但Fmax268.414155MHz，未采用，非用户永久否决全部SRAM化。 |
+| 单发RS提前资格/直接信用 | RTL筛选过，但综合存在三个RS信用无驱动，PPA无效；工具退出0及后续check成功不能补救。 |
+| DCache同读沿tag快照、静态端口方案 | 用户明确不采用；功能资格不等于提频。 |
+| LSU返回寄存边界 | Fmax338.288735MHz但IPC退5.273834%，用户明确否决。 |
+| 独立postmap插buffer/换驱动 | 用户只认可RTL优化，不计作有效RTL提频成果，不采用。 |
+| 提前Load地址旁带、ROB普通查询、Branch共享CDB切链及后期失败组合 | 测过的具体版本未采用；不是对所有同类实现的永久否决，详见三份分析。 |
 
-10-16 课程接入提交为 `71c7421`，10-18 面积收敛提交为 `61ba5e6`。下面阶段主要来自工作区快照与外部实验记录，不把它们伪装成已提交里程碑。
+## 清理与证据边界
 
-### 10 月 20 日：双提交、窄控制与缩容边界
+<a id="unused-frequency400-checkpoints-20261111"></a>
 
-先扩宽退休：ROB连续旧ready前缀，RAT/PRF/LSU/RAS共同消费退休lane；本拍写回不旁路退休，退出Store截断年轻lane。双提交不等于双重命名或双整数执行。
+**2026-11-11定界清理已完成。**先记录后删除14份已完成PPA中各一份`ppa/opt/elaborated.json`及`ppa/opt/ram/prepared.json`，共28文件、8,463,174,430逻辑字节（约7.88GiB），不是删除14个目录。当时逐文件意图/删除日志配对、目标不存在及1878份保留PPA文件核验通过；保留全部最终mapped/STA、源码、模型、日志、证书及活跃任务依赖。原证书未回写，删除后展开/准备链已不能完整重审。入口为工作区`sync/clear_unused_frequency400_checkpoints_20261111.py`。
 
-同容量实现优化逐步从宽索引/串行选择转向局部控制：Load请求与结果的平衡年龄选择、RAT SRAM局部写使能、转发覆盖检查窄化、SQ本字/邻字预计算、D$返回ID早选、I$使能表达式重构。局部RTL变“短”不保证整核Fmax提高：Q2空槽预选仅改善约1 ps却增面积，放弃；Store选源树、进位摘要、邻居前缀和SQ8→4也因整核回退撤回。部分被撤回实验仅完成18或21个课程程序，不记作25例全通过。
+**2026-11-12用户要求清空旧实验根前做好历史记录，并指定直接记录在本页。**本次整理检查时，`.cpu2026-synthesis/`仅见`tmp/`，旧实验工作集已不可用；这不是本次执行了删除，也不据此推算整根删除文件数或释放空间。
 
-合法RV32IM/对齐控制转移成为明确输入边界，删除RTL异常检测、传播与trap状态；该变更功能域收窄，但映射面积略增、频率下降，不能称天然PPA优化。
+- 硬件/两软件工作树及`sync/evidence/`不在旧实验工作集内；持久证书与文档不等于完整工件备份。
+- 指向旧实验目录的路径、SHA只保留历史归属；不篡改manifest，也不把引用缺失误判为过去工具未完成。
+- 不能再声称旧模型可直接运行、raw可重数、mapped可逐pin复核或checkpoint可接续。未来测量从当前生产和实际可用输入建立新工作集，不伪称缓存复用或恢复旧数据。
+- 历史文字中的“已保留、可重审”仅属当时状态；原完成、失败、否决与采用结论不因工件清理而改写。
 
-容量最终先选BTB64→32、取指/AXIFetch信用8→4，保持完整PC tag和运输身份；面积降至约24,164 μm²，六perf IPC约0.553333。原两软件/golden不改，对拍使用对应容量的私有副本。
+## 原始计划（历史）
 
-来源：[双提交](../../sync/DUAL-COMMIT-20261020.md)、[SQ4否决](../../sync/LSU-DEPTH4-20261020.md)、[无异常域](../../sync/RTL-NO-EXCEPTIONS-20261020.md)、[BTB/取指容量](../../sync/FETCH4-AREA-20261020.md)。
+12周路线为：W1模型，W2—3单发射，W4—6扩宽，W7中期验证，W8—9性能/面积权衡，W10—11时序收敛，W12参数实验与交付。最初IPC≥1.12、面积≤34000μm²、频率≥525MHz是余量计划，不是测量结果或现行门槛；后续目标与验证口径见[评估说明](assessment.md)。
 
-### 10 月 21 日：调度、Load ABC 与双取指
+### 11月12日：请求stage局部资格完成；真实LSU两配置时序夹具启动
 
-1. **调度先行**：Branch RS2→4，Integer/Branch旧项支持授权WB当拍派发、实际离站同拍复用；恢复仍遍历完整原ROB窗口，但处理完可提前结束。IPC提高，Fmax下降，采用是明确的IPC/结构权衡，不称吞吐全面改善。
-2. **Load ABC**：D$旧hit消费与下一lookup重叠、AGU交付地址当拍发Load、合法Cache返回当拍参加CDB。IPC升至约0.639255，但初版出现SQ→I$片选跨模块长链，频率仅约232.52 MHz。
-3. **切断晚控制链**：I$物理读使能提前，不让后端ready控制片选；缓冲Load结果先选最老，再与迟到返回只比一次年龄，转发资格提前共享。无新流水级，整核约322.93 MHz；额外闲置读的功耗没有测量。
-4. **双取指packet_first**：I$行内预译码，在8 B包内最早控制流截断，用一个BPU查询；FQ拆包、每条CID，译码/重命名当时仍单宽。IPC约0.648484，频率下降使估算吞吐比父版低约0.59%；接受该回退是为建立宽前端能力。
+局部r02已完整退出，65573拍独立队列时序oracle、五有效converted变异及独立只读审计全部passed。未重复局部模型/转换/审计；原r01静态失败和冻结脚本保持。此局部资格不包含真实LSU、Store顺序、flush或候选IPC/PPA。
 
-取指/提交随后改为独立静态宽度参数，不用运行时开关。来源：[RS](../../sync/RS-PRESSURE-IPC-20261021.md)、[Load ABC](../../sync/LOAD-ABC-20261021.md)、[时序收口](../../sync/FREQUENCY-TARGET-20261021.md)、[双取指](../../sync/DUAL-FETCH-FIRST-CFI-20261021.md)。
+新`sync/frequency400_request_stage_actual_20261112.py`与`sync/run_frequency400_request_stage_actual_20261112.py`完成实际导入/生成/packed驱动/端口/变异锚点预检，独立审计器`sync/audit_frequency400_request_stage_actual_20261112.py`先写好并绑定输入SHA。原LSU/完整package与已合格stage原字节复用，不改生产。计划PREVIEW=0/1各352例：192取消Load/同tag槽复用、96已提交Store跨flush/停止排空、32部分字节Store后word Load、32背压Load后Store优先切换；各192取消返回、256有效Load返回、256真实Store递交。独立深度1 packet FIFO及owner预留/递交/响应ledger不读DUT内部状态，flush不清ledger。两配置当前均走preview route00回退，不冒称已测route01/10或真实DCache/SRAM。
 
-### 10 月 22～24 日：固定容量的物理实现优化
+prepare首次完整通过，保断言转换及环/锁存静态lint成功。独立unit `cpu2026-frequency400-request-stage-actual-20261112-r01.service`确认active/running/MainPID450125，已附加单次完整退出通知；根`frequency400-request-stage-actual-20261112-r01`。正向后才错owner、源撤回清包、跳过LSU入队owner预留三实际反例。当前只是动态启动，尚无完整实际LSU资格、整核IPC或PPA结论；唯一待通知为此服务，所有局部/观察/图任务均结束。生产364.899777MHz/32143.129859μm²/IPC1.122239838632/两软件/指针保持，持续授权和400/面积<36000/IPC>1.1/完整全组不放宽，不自动采用叠加/清理提交推送。
 
-以当时双取指、单译码/分配、双提交配置为基线，先比较RS/RAS容量，再转向固定容量逻辑。Integer最终取4、Branch保留4、RAS16→8；Branch3虽有合格数据，未因缩容评分更高就覆盖固定容量路线。
+### 11月12日：真实LSU＋stage704例/三反例/独立审计过；新整核周期可变筛选启动
 
-- AXI按槽提前比较完成位、缓存队头物理槽，避免顺序环→描述符间接索引。
-- Integer/Branch用并行年龄关系、一热选源和WB mask因式分解，ALU加减共享网络。
-- D$在同步读沿保存offset/size、响应一热选择、将迟到hit从宽仲裁中提出。
-- BRU仅保留实际使用的六种条件分支通路，PC+4用窄增量；BTB分字段写、flush有序队头直读、双字包地址利用对齐不变量。
+上述实际服务完整退出。PREVIEW=0/1各352例/5920检查，分别192取消返回、256有效Load返回、256Store真实递交、352同拍出入及192背压kind切换检查；三实际变异均指定时序oracle真实−6。独立审计passed，核原LSU/package/合格stage精确字节、原13步骤/转换来源/断言、两配置覆盖、独立不读DUT内部的owner/FIFO账本及原始三行abort/行号。没有重跑成功动态；两配置route00范围保持，不冒称真实Cache/SRAM或所有preview route覆盖。
 
-测试要求周期/profile与父版相同，再比较完整顶层PPA；不从单模块门数或综合网名直接推断整核瓶颈。评分从早期IPC²×Fmax转为IPC⁶×Fmax/Area³，决定只对当时目标有效。单译码冻结组合达到约24,262 μm²、352.62 MHz，不能套给后来的双/四宽。
+新`sync/frequency400_request_stage_full_20261112.py`只在隔离student_top接完整75bit请求寄存级，新增原已合格module与filelist一行。backend真正ready只送stage，stage入队ready送原core/LSU；原LSU、DCache、原全部writer/其余源和两软件保持，不混入任何未采用补丁。原stage无flush清包口，真实Load在入队时预留owner；Store先后出入顺序保持，周期/owner压力允许变化但须实测。
 
-来源：[逻辑优化](../../sync/IPC2-FMAX-OPT-20261022.md)、[BRU专用化](../../sync/BRU-CONDITIONAL-ONLY-20261024.md)、[冻结组合PPA](../../sync/LOGIC-PPA-20261024.md)。
+新整核入口r01在任何工具前因snapshot函数依赖shutil未导入而停止，partial/原failure/冻结driver封存`frequency400-request-stage-full-screen-20261112-r01/failure-finalization-r02.json`。r02仅补导入和新根，所有RTL/刺激/门禁不变。实际namespace/精确top及filelist逆回/原writer、九字段退休parser正向及错误字段/格式/时序自测、独立parser与现参考raw交叉通过。`sync/run_frequency400_request_stage_full_20261112_r02.py --prepare`已完整passed，新完整整核strict native静态lint零告警，非局部type闭包替代。
 
-### 10 月 25～26 日：双译码、双分配与木桶优化
+新unit `cpu2026-frequency400-request-stage-full-screen-20261112-r02.service`确认active/running/MainPID457722，单次完整退出通知附加，根同名r02。只新候选converted模型及原六；复用现364.900参考模型/raw不重跑。允许cycle/lane变化，九个架构字段逐条等同参考/374104退休、每例ordinary与observer原始日志自身一致，全部六项完成后判断几何IPC严格>1.1；即使IPC不过也完整保存实测与独立审计，不带病PPA。独立整核源码/raw/真实IPC审计器已先写并绑定。此时尚无新整核功能/IPC/面积/Fmax结论，PPA0；当前唯一待通知是完整screen，所有actual/local/观察旧通知已结束。生产/两软件/指针及400/面积<36000/IPC>1.1/全组非退化保持，不自动采用或叠加/清理提交推送。
 
-双译码先建立逐指令FQ、已译码prefix IQ和连续消费信用；奇偶分银行写、信用分类、D$字节终点快照、AXIFetch计数mux降低控制开销。随后打通双路RAT/PRF/ROB/七池RS/LSQ共同分配，支持组内RAW/WAW、LINK即就绪及双Load/双Store入队，**不增加ALU/AGU/数据请求口**。
+### 11月12日：完整请求寄存级功能正确，但IPC1.069942未过，不综合
 
-同配置双分配令六perf IPC约0.660200→0.735362，首次PPA面积约26,172 μm²，超过当时25,000上限；后来面积门槛改为27,000后再继续路径优化，不能回写旧报告为“当时已达标”。PRF写mask、CDB晚到比较bit选择与D$响应身份组合进一步改善物理评分。
+上述完整screen现已结束，原六374104条九字段架构退休均保持，ordinary与observer自身raw一致，独立审计passed。周期8472/13230/3476/5715/174534/169563，相对生产+131/+111/+375/+184/+12180/+7153；逐项IPC−1.546270%/−0.839002%/−10.788262%/−3.219598%/−6.978583%/−4.218491%。几何IPC1.069941911803（−4.660138%），严格>1.1失败，completion passed=false保持；独立audit passed只表示测量/功能审阅可靠，eligible_for_PPA=false，不偷换为候选整体合格。
 
-以六perf最弱项为目标逐轮优化：Load RS授权WB派发/复用、chooser按PC索引、纯局部预测、一位局部历史、三位饱和计数器、PC/历史拼接、空队列Load接受沿同步读。纯局部版虽有IPC回退但当时面积评分更优；两位历史未胜一位方案，不采纳。第七轮双宽IPC约0.758905，median仍最弱，改预测和读时序比盲目加容量更有效。
+无参考模型/运行或成功local/actual重复，综合/ABC/STA0，无候选面积/Fmax，不拼接364.900生产PPA，不采用或叠加。通知后只核现关闭completion/audit及全部verified hashes，没有重跑审计。completion SHA `6f878f05e457b9656353c15b0fad8f8720213abf06f9c1d97da3c99846e97d9e`，audit SHA `265d900f33618d66ce8ac874cd3ea309d6f2d25ec7fc65ab88a3dfa6644ddc2c`。所有本stage通知完整结束，无PPA待启动；持续任务继续研究不增加Load请求周期的内部边界，不由此恢复已否决返回寄存/放宽IPC。生产364.899777MHz/32143.129859μm²/IPC1.122239838632/软件/指针保持，不清理提交推送。
 
-双AGU独立实验确实交付了第二地址，但median周期不变、六项几何IPC略降，**拒绝该同池批量双地址方案**，没有继续为它跑完整PPA；不推广为所有双AGU都无收益。
+### 11月12日：新旧地址重叠影子元数据引理完成，仅研究非RTL资格
 
-来源：[双分配](../../sync/RTL-DUAL-RENAME-20261025.md)、[木桶路线](../../sync/PERF-BOTTLENECK-LOOP-20261026.md)、[双AGU](../../sync/DUAL-AGU-20261026.md)、[接受沿读](../../sync/MEDIAN-DCACHE-ACCEPT-20261026.md)。
+新`sync/research_frequency400_registered_overlap_20261112.py`/根`frequency400-registered-overlap-research-20261112-r01`只读研究：在原地址捕获沿同步缓存8LQ×8SQ的64bit overlap，旧已就绪Load/Store才可读缓存，新Load地址保原组合旁路，不新加请求级。实际生产原address/size/addressReady全部writer源码及完整函数/指针绑定。2688000单对状态转移/66560字节模型比较过，五错误见证（漏Load/Store更新、同拍分配用旧size、忽略停止、flush统一清表）有效；不是实际RTL/使能接线/动态/IPC/STA证明。
 
-### 10 月 26～27 日：四路分配与预测/数据侧重新同步
+独立符号归纳144义务和writer/计数/五见证检查passed。首独立检查r01错误将读取sqSize且含<=比较的行算writer，冻结脚本及`verifier-r01-failure.json`保留；r02只限定赋值LHS，无重跑原成功研究/模型/EDA。引理要求双方旧addressReady真才缓存等于旧地址/size关系；分配清ready，最后地址写必须用有效分配后size更新缓存，原停止/flush/地址写优先级保留。复杂实际完整身份/allocator使能目前仅抽象输入，尚未证明实际接线。新增64bit与更新逻辑/AGU扇出、新FF D路径/旧FF-PRF-Cache分支风险明确，不把缓存Q当免费或承诺零IPC损失。
 
-四译码/四分配采用数组RAT/PRF/ROB和统一前缀规划器，ROB32/PRF64/CKPT64、FQ8/IQ8；RS/LSQ稀疏请求按本池排名认证，真实消费者共用fire。先以fetch2/commit2验收，实际decode4/issue4和ROB占用>16均出现；六perf IPC约0.798448，相对双宽提高5.21%，**包含容量扩容，不是纯宽度收益**。直接扩容的双宽PPA候选超当时面积上限且降分，未采用；四分配功能启用不等于已完成四取指/四提交。
+当前无新RTL候选/模型/sv2v/EDA，不叠加本次失败请求stage或已拒绝返回级，不自动采用/清理提交推送。下一先查实际overlap消费者范围与行/列更新的共享边界再决定立项；报告`sync/FREQUENCY400-REGISTERED-OVERLAP-20261112.md`。生产364.900MHz/两软件/指针与400/面积<36000/IPC>1.1/完整全组保持。
 
-预测侧重新采用真实Tournament：LHT256×1、local256×3、global/chooser各256×2，并将预测时局部历史和两分量预测加入checkpoint；训练不能用解析时上下文代替。D$64→128组成为8 KiB，完整容量/脏写回oracle与生产复验通过。旧软件主树保留，模板建立独立实测表，不能再默认两树周期相同。
+### 11月12日：独立影子overlap候选真实两响应配置筛选启动
 
-双向同步把RTL已有的接受沿同步读、Load RS真实WB旁路/复用移回模板。critical-word部分行早返回则只在隔离候选验证；紧凑版虽功能通过，但频率/IPC未过新门槛，未带入生产。当前仅保留**完整行到达后的**early restart。
+新helper `sync/frequency400_registered_overlap_20261112.py`只在实验LSU加入64bit影子overlap payload，Load/Store原地址捕获沿更新一列/行，16个RTL源函数调用（不是mapped比较器数保证）；旧addressReady双方真才可用，未知Store/同拍新Load地址仍原检查。有效capture size保原allocation写优先级，原完整身份/flush/停止/真实grant、所有旧writer及转发/通知/最老Load/owner不变。精确逆回生产且剥新region的原writer保持，不包含请求stage或任何未采用候选。首次纯文本posted锚点写反参数/缺换行在工具前拒绝，源码及说明冻结development-r01，修正确切原调用后预检过。
 
-来源：[四分配贯通](../../sync/FOUR-LANE-INTEGRATION.md)、[BPU/D$采用](../../sync/ADOPT-BPU-DCACHE-20261027.md)、[双向同步与早返回否决](../../sync/MUTUAL-OPT-SYNC-20261027.md)。
+新actual保生产gold全部公开输出与原owner/取消/同tag复用/flush/reset回归，增加PREVIEW0/1各256例（32tag×4size×Load/Store同拍allocation+address）、重复已就绪地址、存活flush和停止禁止地址更新，内部blocked/posted亦差分；每个旧ready pair有缓存等于原byte_overlap的断言。三变异为漏Load写、漏Store写、capture旧size。动态分配宽度此阶段仅RENAME4，不由此冒称标量/双路或所有preview route已测。
 
-### 10 月 28～29 日：完整四宽、双 ALU 与默认切换
+actual r01新完整整核strict native静态lint已零告警成功，sv2v随后因继承夹具原已接yield=1、新夹具再加一次同端口而失败，模型/原六/EDA0；不是候选RTL功能判定。原日志/partial/steps/冻结driver-fixture-auditor封存r01 failure-finalization-r02；原failure.json未由CLI生成，因为prepare()由前台预检直接调用，明确记录不伪造旧失败收据。r02只移除重复yield端口及无用变量，保原constant1和全部刺激/oracle，精确逆回原夹具；候选RTL全部字节不变。原strict整核静态lint按原SHA/命令/所有源复用，无重跑，实际转换及环/锁存静态lint通过。
 
-先在隔离快照打通4/4/4/4：16 B包边界和首控制流截断、最多128 bit取指、按实际1～4条分配CID，四退休贯通RAT/PRF/LSU/RAS；保留单AGU、Load/Store RS各2。恢复每拍槽数随ROB容量派生，ROB32为8槽，最多四拍；四取指恢复期间保守停取。
+新入口`sync/run_frequency400_registered_overlap_actual_20261112_r02.py`/独立audit-r02已绑定；unit `cpu2026-frequency400-registered-overlap-actual-20261112-r02.service`确认active/running/MainPID475012，单次完整退出通知附加，根同名r02。此时仅实际动态/三反例运行，尚无完整实际/整核IPC/面积Fmax资格，PPA未启动。当前唯一待通知是此服务，所有失败请求stage/源代数/独立检查通知均已结束，不重等或重跑成功工具。生产364.899777MHz/32143.129859μm²/IPC1.122239838632/软件/正式指针及400/面积<36000/IPC>1.1/完整全组保持，不自动采用叠加/清理提交推送。
 
-三种四宽对照均只跑六个原始perf与独立退休ISA，不扩大成全量资格：
+### 11月12日：影子overlap实际512新增例/三反例/自动审计过；新整核原六启动
 
-| 执行/写回方案 | 六perf core周期几何IPC | 结论 |
-|---|---:|---|
-| 单ALU、两CDB | 0.829014 | 四宽真实握手已贯通，执行仍单整数口。 |
-| 双ALU、共享整数CDB | 0.829644 | 旧结果竞争严重，仅小幅收益，并有单例回退。 |
-| 双ALU、各自CDB，第三路共享Load/MUL/DIV | 0.859878 | 比共享整数CDB提高约3.64%，真实双算术/三路同拍写回均出现。 |
+actual r02完整退出，PREVIEW0/1各256新增案例、原生产gold所有公开输出/owner/取消同tag复用/flush/reset回归及三有效converted变异完成，自动独立audit passed。关闭workflow明确两条最终成功；通知后仅读关闭completion/audit和全部verified hashes，无重跑成功审计/模型。audit SHA `82950b9fea63aa31928c7c7f9e37e885a743a46391ec4490b25217921483ed93`。completion的independent_audit_pending=true是审计前不可变字段，不据此误报未审计。实际RENAME4及route00范围不扩大为其他配置资格。
 
-10月29日明确选择最高已验证IPC候选作为生产默认，采用4/4/4/4、双ALU三写回、8 KiB D$；不是自动通过PPA筛选。默认课程入口重新lint/构建后六perf通过，课程退出计时IPC为0.858428，和上表core周期边界不同。
+新full入口`sync/run_frequency400_registered_overlap_full_20261112.py`及独立audit先写好，source精确复制actual r02，LSU新增64bit状态/原writer分开鉴权；其余所有生产RTL/SRAM/框架保持。原strict native静态lint按源/命令/SHA复用，现364.900参考原六raw/model不重跑。prepare实际导入/两入口语法/候选精确逆回/原writer/launcher namespace和静态命令同源绑定通过，新增模型/sv2v/EDA0。
 
-完整顶层综合在展开/TECHMAP遇到工具兼容与资源问题，多轮中断曾误归于“重启”，后以内核日志确认OOM。随后隔离资源、分阶段/分批断点、原生文件系统及低内存续接；静态化pool路由只做独立局部实验，未混入采用源码。**截至10月29日，正式PPA暂停，没有有效最终面积/Fmax**，不能拿旧2442或2222结果为新4444背书。后续补测见下文，不回写这一历史阶段为当时已经通过。
+独立unit `cpu2026-frequency400-registered-overlap-full-screen-20261112-r01.service`确认active/running/MainPID486832，单次完整退出通知已附加。新候选converted整核原六必须374104条九字段架构退休/全部raw与周期同生产、IPC严格>1.1及独立audit过才准备该方向首次PPA；不将实际夹具资格当整核已过。当前尚无新整核功能/IPC/面积Fmax结论，PPA未启动，唯一待通知是此full screen；所有actual/研究/请求stage旧通知已结束。生产364.899777MHz/32143.129859μm²/IPC1.122239838632/软件/正式指针与400/面积<36000/IPC>1.1/完整全组保持，不自动采用叠加/清理提交推送。
 
-当时性能政策改为：Area<30,000 μm²、Fmax>300 MHz、六perf IPC>0.865，评分IPC⁴×Fmax/Area²；均须同配置实测且严格满足。当时IPC仍低于门槛，已采用不等于已达标。
+等待本screen期间仅source-only准备影子overlap首次PPA适配/launcher：复用原364.900参考关闭PPA及真实采用前备份身份映射，不重测参考，原2.5ns/INVx1-5fF/232宏/全组/逐叶/后测保持。明确允许新增64bit状态并用original_writers鉴权原writer，严格仅一LSU差异，不错套所有时序文本相同。实际导入/launcher→新measure→configure/inside-stats命令绑定预检过，未调用prepare/无PPA根/未启动排队或EDA。首helper清单精确空白锚点在导入时拒绝，源码/失败封存ppa-development-r01，仅修空白锚点；未修改当前screen任何冻结输入，不重复成功工具。原六及自动独立audit完整退出后再审阅资格，不能提前称IPC保持或提频成功。
 
-来源：[四宽接入/资源诊断](../../sync/SUPERSCALAR4-BRINGUP-20261028.md)、[默认采用凭据](../../sync/evidence/superscalar4-production-adoption-20261029-r01/adoption.json)、[性能政策](../../sync/PERFORMANCE-POLICY.md)。
+### 11月12日：影子overlap整核原六/审计过，IPC保持；首次匹配PPA启动
 
-### 10 月 30～31 日：新测量epoch与完整整核PPA
+full screen完整退出，全部六项ordinary/observer自身一致、完整trace/raw/周期逐字节匹配364.900生产参考，374104条九字段架构退休保持。周期8341/13119/3101/5531/162354/162410，几何IPC1.1222398386316592/变化0%/严格>1.1通过。自动独立audit passed且关闭workflow有两条最终成功，failure不存在；通知后只核关闭audit/全部verified hashes，无模型/原六/成功审计重跑。audit SHA `dc61a06dac720c56b62f90a1fedb2b62a7198d0a81165851019db2c7bc67e6ab`，原completion中independent_audit_pending是写入时状态，不误报未审计。
 
-用户决定不恢复缺失的Linux旧实验数据，以当前生产源码建立F盘独立测量epoch。新的源码副本、构建、模型、trace、网表、checkpoint和工具临时目录统一进入 `.cpu2026-synthesis/`；旧结果只保留历史归属，不冒称已恢复。后续已审计基线采用 **fetch2/decode4/allocation4/commit4、双ALU/三写回、单AGU、ROB32/PRF64/CKPT64、FQ8/IQ8、8 KiB D$**，不能与10月29日四取指结果混用。
+新`sync/measure_frequency400_registered_overlap_20261112.py --prepare`完整通过实际AppImage工具/五库SHA、显式sv2v/原2.5ns-INVx1-5fF dry-run、一LSU候选源/新增64bit状态与原writer、原364.900参考关闭测量/真实采用前备份路径绑定。没有参考模型/转换/EDA重跑，不把原LSU所有时序文本等同（新增影子FF明确计入），不叠加请求stage/owner等未采用方案。
 
-`production-baseline-20261031-r01`完成原六项native/converted及全新整核综合/ABC/OpenSTA，独立审计面积 **35603.510308 μm²**、Fmax **324.153213 MHz**、几何IPC **0.863669235770**。这是新epoch实测，不是为早期四取指快照补写PPA；按其当时Area<30000策略仍未达标。
+首次独立PPA unit `cpu2026-frequency400-registered-overlap-ppa-20261112-r01.service`启动确认active/running/MainPID491021，单次完整退出通知附加；根`frequency400-registered-overlap-ppa-20261112-r01`。流程为本候选首次综合/ABC/STA、独立逐叶232同形状宏、全部端点/真实输入/全组非退化及只读后测，当前仅启动，无新面积/Fmax/全组结论，不把IPC保持称提频成功。所有actual/full screen旧通知已结束，唯一待通知为本PPA全链，不重启screen/prepare/重复综合。生产364.899777MHz/32143.129859μm²/IPC1.122239838632/两软件/正式指针保持，400/面积<36000/IPC>1.1/全组非退化不放宽，不自动采用叠加/改mapped/清理提交推送；本项结束后仍按实测继续持续授权。
 
-后续每轮要求面积专项与IPC候选先独立实现、验证和整核PPA，不能因IPC持平或下降跳过面积专项。最新推进条件为面积严格 **<36000 μm²**、六项几何IPC提高，继续记录 **Fmax>300 MHz**、长期几何IPC **>1.0985**和 `IPC⁴×Fmax/Area²`。综合大产物只保留最近3次，活动及待首次审计任务延后清理；源码、模型、trace、指标和审计出处继续保留。
+### 11月12日：影子overlap348.966986MHz完整拒绝，转新路径只读归因
 
-来源：[存储与新epoch边界](../../sync/EXPERIMENT-STORAGE.md)、[新基线独立审计](../../sync/evidence/production-baseline-20261031-r01/completed-audit-r01/completion-audit.json)、[迭代合同](../../sync/ITERATIVE-OPTIMIZATION.md)。
+首次唯一PPA/ABC/STA、独立232宏/完整全组/只读后测和handoff均完整结束，unit success/inactive/dead。面积32448.143458977μm²（+0.948923149%）、Fmax348.966986155MHz（−4.366347178%）、IPC1.122239838632/原六全部raw周期不变。新增64bit状态明确计入，新28224 timed端点（原28160）/11574违例/WNS−.365413/TNS−2720.194936ns，TNS退1202.611698ns。FF WNS退125.303ps/TNS退989.254084ns，DC地址/控制退99.074/72.891ps，PRF数据/控制退107.132/98.351ps，其他SRAM控制0→8违例、输出退140.921ps，真实输入FF退77.815ps。其他SRAM地址16→0违例/WNS改善518.084ps及数据组正slack改善不抵消。3541稳定端点退化/missing0，匿名FF跨版对应未建立，完整全组拒绝、不采用、不叠加。
 
-<a id="history-2026-11-01"></a>
+只读post passed，独立307186叶/232同形状宏及全部源/raw/步骤/报告/库/端点/mapped SHA、374104退休/生产两软件指针保持。通知后只核已有关闭handoff/post和verified hashes，无EDA/功能/成功后测重跑。completion SHA `da34ef0230ddf9c211734c72cb6937193df33d087e8ef4a58871337bbeb00761`，post SHA `e6b8cf1aaf06a45b3598deb777df67ee9386e5e04144a12ad387a8c26dc9c7e4`。面积/IPC过、未400MHz/全组失败，原completion passed仅测量完整，不冒称候选合格。
 
-### 11 月 1～2 日：PRF、Store位置复用与正式生产收敛
+继续持续授权，新增只读`sync/study_frequency400_registered_overlap_paths_20261112.py`已后台提交：复用原生产代表路径，只补新候选实际逐pin/net与端点分档/共享弧，先区分原反馈writer与新影子状态writer，不凭门数或源进程推断敏化/字段bit/时序改善。独立review入口已准备，尚无该只读研究完成结论。当前无新RTL或EDA、唯一待通知是本只读研究，所有PPA/screen旧通知已结束；生产364.900MHz/32143.129859μm²/IPC1.122239838632/软件/正式指针保持，400/面积<36000/IPC>1.1/完整全组不放宽，不自动采用/叠加/清理提交推送。
 
-下面均为各自当时明确采用的历史版本，不把它们的IPC与其他版本PPA拼接：
+### 11月12日：影子最差终点鉴权为新增cache writer；更新反馈支持研究启动
 
-| 阶段 | 采用内容与取舍 | 面积 μm² | Fmax MHz | 六项几何IPC |
-|---|---|---:|---:|---:|
-| 第17轮 | PRF值载荷使用63个1×32 SRAM，保留P0、写优先级及旁路合同 | 34584.063307 | 315.270936 | 0.903890966873 |
-| 第18轮 | 局部预测计数器等价翻转实现；IPC持平，采用较小的物理评分收益 | 34617.305707 | 317.815022 | 0.903890966873 |
-| 第19轮 | 两项Store命中位置元数据，复用此前确认的Cache命中way，省掉重复标签查询 | 34734.558067 | 307.599880 | 0.923231817701 |
-| 第20轮 | PRF共享写优先级仲裁；用户拒绝更大面积的重定时版 | 34590.361867 | 316.440049 | 0.923231817701 |
-| 第21轮 | 新接受Load可越过不同行的排队Store提前查询，旧查询/写入优先级不变；median回退已披露 | 34587.314647 | 308.805790 | 0.930507527921 |
-| 第22轮 | 按用户要求删除Store地址就绪通知旁路，保留Load地址查询SQ及Store数据通知 | 34433.947627 | 326.843281 | 0.930507527921 |
-| Store位置表4项 | 仅位置元数据2→4，Store地址/数据RS仍2项、Branch RS仍4项 | 34678.235527 | 316.733684 | 0.940054209024 |
+只读registered-overlap路径研究与独立verify均passed，10条候选代表/稳定锚点逐pin/net认证，完整11574负端点详情枚举与表一致。FF `_589500_/QN`（DCache主writer，具体字段bit未知）→`_580781_/D`，75门/slack−.365413ns，终点src只写cachedOverlapRowsInner，明确是新影子状态writer；不是具体SQ/LQ索引已识别或跨版匿名对应。PRF数据/控制与FF代表同起点，共享前53/57门。DC地址/控制仍原LSU主writer起点，68/62门/共享44门，与FF-PRF代表无共同门弧。10ps内3全FF；50ps316=FF252/DC地址64，100ps5061=FF3587/DC168/PRF控制17/数据1289；正slack I$地址没有负路径详情，不新STA或推测。
 
-Store位置表4项是最低无效项优先、已有同行原位训练、victim取训练项后一项，**不是精确四项LRU**。相对第22轮，IPC +1.025965%，但Fmax −3.093102%、评分 −0.471751%，按各自Fmax估算IPC×Fmax −2.098872%（不是墙钟实测）；披露代价后按授权采用。44项RTL及公共SRAM同源认证、原六项native/converted完整日志、两软件Release/断言四构建与外部退休PC/周期对照均通过；不扩大为任意输入完整状态等价。
+下一只读`sync/study_frequency400_overlap_update_feedback_20261112.py`已后台提交，根`frequency400-overlap-update-feedback-20261112-r01`：原保存elaborated图检查DCache旧态→新shadow D、capture值、effective size、完整鉴权写使能和index支持/组合虚拟边界，不把保守支持当75门映射对应/敏化/频率收益。独立反向reachability检查器先写好，导入/分支边界/有环遍历小自测过；当前新研究尚无完成结果，不立刻复制更大缓存或追加RTL综合。旧路径研究/PPA通知均已结束，当前唯一待通知为此支持研究；生产364.900MHz/软件/指针保持，400/面积<36000/IPC>1.1/全组不放宽，不自动采用叠加/清理提交推送。
 
-两个未采用方向保留：第23轮当前/前一拍回填字复用被用户明确否决，不以收益更小的当前字版替代；Store地址/数据RS 2→4和Branch RS 4→8仅完成局部及六项native筛选，未做整核PPA，也未带入生产。后者说明有容量压力不等于扩容一定提高整核IPC。
+### 11月12日：影子更新双反馈已核；转原生产分配元数据早形成研究
 
-**截至11月3日正式生产仍为Store位置表4项版**，六项课程周期为 `9338/19591/4278/6127/177204/168587`（median/multiply/vvadd/towers/qsort/rsort）；面积、频率通过，长期IPC目标未达。正式身份以 [`current-production.json`](../../sync/evidence/current-production.json) 为准。
+overlap-update支持研究完整结束，独立2646反向目标检查passed：原图/仅隔离size/仅隔离write-enable/仅隔离capture值均64/64影子D可达，size+write-enable同时虚拟隔离才0/64。AGU addressInput39bit/index3bit本来无本次DCache旧态支持；新的反馈同时经有效分配size和兼容allocation+address的真实鉴权写使能。结论仅保守支持，不当75门映射逐门对应/敏化/可实现切点或提频，无EDA/模型重跑。旧支持研究通知已结束，不再等，不继续基于本未采用缓存叠加小修。
 
-来源：[第19轮采用](../../sync/STORE-LOCATION-PRODUCTION-20261101.md)、[PRF共享写采用](../../sync/PRF-GLOBAL-WRITE-PRODUCTION-20261101.md)、[Load提前查询采用](../../sync/DISJOINT-LOAD-PRODUCTION-20261102.md)、[第23轮否决](../../sync/ROUND23-MEMORY-20261102.md)、[参数筛选](../../sync/PARAMETER-SCREENING-20261102.md)、[4项位置表正式采用](../../sync/STORE-LOCATION4-PRODUCTION-20261102.md)。
+新独立源码合同`research_frequency400_allocation_meta_preview_20261112.py`及独立verify均passed：当前planner的nextRobTag+lane、decoded size/unsigned可研究独立旁带早给LSU，但只允许原真实fire授权五个字段writer和两个同拍地址匹配消费者，原packet/valid/slot/公开invalid载荷保持。393216样本/完整5bit tag及回绕/四lane/四size码/全部fire-credit-query、四错误见证和七原源码消费者核对，独立packet oracle真值SHA一致；仅有限代数/source合同非RTL资格。默认四lane32条wire、无新状态，未改生产/实现候选，不把已采用PRF旁带收益套到这里。
 
-### 11 月 2～3 日：逐拍瓶颈诊断与第25轮奇字双取指
+立项前新只读`sync/study_frequency400_allocation_meta_sources_20261112.py`已后台启动，根`frequency400-allocation-meta-source-study-20261112-r01`：只用现364.900生产原elaborated图，查询raw nextROBtag/decoded size/unsigned相对原gated metadata/actualFire/addressMatch的支持；字段布局绑定真实package和展开宽度，不套旧6bit tag。独立反向review已写好；当前新结构查询尚未完成、无下一RTL/模型/EDA。即便raw支持0也不等于实际enable及全链已切。当前唯一待通知为新source study，其他旧通知均结束；报告`sync/FREQUENCY400-ALLOCATION-META-PREVIEW-20261112.md`。生产364.900MHz/32143.129859μm²/IPC1.122239838632/软件/指针与400/面积<36000/IPC>1.1/全组保持，不自动采用/叠加/清理提交推送。
 
-诊断不只按指令比例猜瓶颈：median的退休Load返回→CDB均无额外拍，关键比较分支就绪后很快派发；towers的1074拍顺序资格等待中，SRAM始终在做其他访问，不是1074个闲置读机会。后者在保留其他资格时严格仅Store写口拒绝为0、仅回填写口拒绝为1拍，不能据此宣称物理端口不构成约束或删除门禁必然提速。
+### 11月12日：分配元数据早旁带源图独立过；两文件候选actual四配置启动
 
-multiply实际执行的是移位/条件加法循环，没有MUL指令。`0x120`的3200次BEQ均在其ANDI生产者派发后一拍派发，就绪后额外等待为0；条件加法484次也均入站后一拍派发。633次退休条件分支误预测中，位测试分支贡献524次、循环分支102次。观察支持先改善供给/控制开销，而不是扩大乘法器或RS。
+生产raw元数据支持研究完整结束，独立87目标反向检查passed：DCache旧态可达bit统计为raw nextROBtag0/5、decoded size0/8、unsigned0/4；原gated Load tag20/20、size/unsigned12/12，Store tag20/20、size8/8均可达；实际Load/Store fire各4/4和地址match各1/1仍在。这里“0/总数”明确无支持，不等于真实enable或所有受限分支已断，不预测Fmax。source合同393216样本及独立真值SHA仍保持。
 
-第25轮在当前生产上独立测量两项候选：
+新独立helper `sync/frequency400_allocation_meta_preview_20261112.py`仅实验core/LSU两文件：core32bit原next-tag+lane/decoded size/unsigned候选wire，LSU60bit候选输入pin共享tag/size连线，无新状态/always_ff/级。新增ALLOCATION_META_PREVIEW默认0，core仅四宽打开；原公开分配packet/valid/实际fire/slot/flush/owner/请求周期保留。只七个metadata RHS替换，core原writer字节同、LSU原writer控制和优先级精确逆回，不伪称有意改变的RHS文本也相同。不叠加未采用shadow/request stage/owner等。
 
-1. **奇字位置双取指**：允许两条连续指令跨8字节对齐对，但不跨I$行尾，仍截止最早控制流指令；不改BPU。例如从`0x124`起的add/srai/slli/bne可由三次请求变两次，不代表整核必然节省一拍。
-2. **BRU载荷面积专项**：保留valid复位，受valid保护的载荷仅在接受时覆盖；无效载荷不要求为零。有效输出契约、复位/冻结/冲刷/tag回绕及负向控制独立验证。
+新actual保原gold全部公开输出含invalid和owner/取消同tag/flush/reset/四lane稀疏回归；PREVIEW0/1×META0/1各514新增例（32tag×4size×2unsigned×Load/Store同拍allocation-address512、未接受候选不得鉴权两例），META0毒化候选数据检查fallback。三变异为错Loadtag、错Storesize、忽略关闭参数。实际fire时新断言核候选字段与原packet相同；关闭时原fallback核对。该夹具仍只RENAME4/route00，真实core原候选producer运行时绑定/整核IPC须后续新full验证，不扩大局部范围。
 
-两项均完成原六项native/converted、答案/退休数/九字段退休序列核对、整核PPA与独立Liberty叶实例面积重算。服务器重启后，取指候选从**本轮同一测量**已认证DFF checkpoint接续ABC/STA，不冒称再次从RTL重跑，也不复用其他历史候选PPA；面积候选复用既有正确性资格，首次执行独立整核综合。测试台随机选择、转换typed-port和接续参数问题的失败记录均保留，未据此修改候选RTL。
+r01新完整strict native整核静态lint零告警成功，actual sv2v因夹具新类型声明先于package import无法解析rob_tag_t而失败，动态模型/原六/EDA0。原failure/partial/steps及冻结driver-fixture-auditor封存failure-finalization-r02。r02只移动原DECL到import/输入声明后和DUT前，候选/刺激/oracle字节保持；原成功strict静态lint按源/命令/SHA复用，新actual转换和环/锁存静态lint过。
 
-| 版本 | 面积 μm² | Fmax MHz | 六项几何IPC | 评分 |
-|---|---:|---:|---:|---:|
-| 正式生产 | 34678.235527 | 316.733684 | 0.940054209024 | 2.056799041947e-7 |
-| 奇字双取指候选 | 34742.970727 | 312.480928 | 0.953361761030 | 2.138555515103e-7 |
-| BRU载荷面积候选 | 34471.738987 | 309.739867 | 0.940054209024 | 2.035552533509e-7 |
+unit `cpu2026-frequency400-allocation-meta-actual-20261112-r02.service`启动确认active/running/MainPID524682，单次完整退出通知附加，根同名r02。入口/auditor-r02均预写绑定，当前仅实际动态四配置/三变异运行，尚无完整actual/core绑定/原六IPC或PPA结论。当前唯一待通知是该actual，旧source合同/结构图/影子更新/拒绝PPA通知均已结束，不重等或重复成功工具。生产364.899777MHz/32143.129859μm²/IPC1.122239838632/两软件/指针与400/面积<36000/IPC>1.1/全组保持，不自动采用叠加/清理提交推送。
 
-奇字双取指相对生产：面积 +0.186674%、Fmax −1.342691%、几何IPC +1.415615%、评分 +3.974937%；IPC×Fmax仅估算提高 **0.053917%**，不是墙钟实测。面积专项实际省206.496540 μm²，但Fmax −2.208106%、评分 −1.032989%，IPC持平。两项**未组合、未替换正式生产或同步两软件**；两者均未达到长期IPC目标。
+### 11月12日：分配meta actual2056新增例/三反例/审计过；真实core整核原六启动
 
-| 原六项 | 生产周期 | 奇字双取指周期 | IPC变化 |
-|---|---:|---:|---:|
-| median | 9338 | 9607 | −2.800042% |
-| multiply | 19591 | 18947 | +3.398955% |
-| vvadd | 4278 | 3995 | +7.083855% |
-| towers | 6127 | 6126 | +0.016324% |
-| qsort | 177204 | 175315 | +1.077489% |
-| rsort | 168587 | 168588 | −0.000593% |
+actual r02完整退出，PREVIEW0/1×META0/1各514新增例（合2056）、原gold全部公开输出/地址match/owner/取消同tag/flush/reset稀疏分配回归、三有效converted变异和自动独立audit均passed。关闭workflow明确最终两成功，failure不存在；通知后只核原关闭audit和verified hashes，没有重复成功模型/变异/审计。audit SHA `6ea5286b2aa3368aa62cdff93f202f143732bcc28b006d19f030e5c86a5548d8`，不把completion审计前pending字段当作未执行。
 
-multiply的633次退休误预测及736/866拍flush/恢复均未减少；有退休的周期由14139降至13510，同样21722条指令退休更集中，不能把收益描述成预测改善或IQ空拍减少。该候选成为后续实验基线不等于生产采用许可。按用户最新方向，后续优先分析IPC最高的rsort，而非自动套用此前最弱项策略。
+新full入口`sync/run_frequency400_allocation_meta_full_20261112.py`/同名独立audit先写好，精确复制actual两文件candidate源，原strict完整native静态lint按源/命令/SHA复用，现364.900参考model/raw不重跑。新整核启用真实core nextTag+lane/decoded候选wire并保实际fire下与原gated packet一致的断言，补齐producer→LSU运行绑定；core原writer字节同，LSU只七RHS改写、控制/优先级逆回，无新状态/级，不伪称有意变化的RHS文本全同。导入/生成/真实两文件逆回/launcher namespace和prepare无工具检查passed。
 
-来源：[median诊断](../../sync/MEDIAN-LOAD-BRANCH-20261102.md)、[towers顺序等待复核](../../sync/TOWERS-REQUEST-ORDER-20261102.md)、[multiply瓶颈](../../sync/MULTIPLY-BOTTLENECK-20261102.md)、[第25轮对比](../../sync/ROUND25-MULTIPLY-20261102.md)、[双取指审计](../../sync/evidence/round25-multiply-odd-fetch-20261102-r01/completed-audit-r01/completion-audit.json)、[面积专项审计](../../sync/evidence/round25-bru-payload-area-20261102-r02/completed-audit-r01/completion-audit.json)。
+独立unit `cpu2026-frequency400-allocation-meta-full-screen-20261112-r01.service`启动确认active/running/MainPID545283，单次完整退出通知附加，根同名full-screen-r01。当前仅新converted整核原六，须374104条九字段退休/全部raw/周期同生产、IPC>1.1和自动独立audit过才准备首次PPA；尚无完整core绑定/IPC/面积Fmax结论。
 
-<a id="history-2026-11-03"></a>
-
-### 11 月 3 日：第26轮rsort仲裁与LQ结果载荷专项
-
-按用户方向选择IPC最高的rsort，在第25轮奇字双取指实验基线上定位散布循环入口`0x1f0`：2048条退休Load累计占据38502个队首等待周期，其中22831拍尚未被Cache接受。观察器完整日志与已审计模型逐字节一致，退休源生产者、物理端口与请求资格均复核。分析器漏认的既有pending-load字捕获路径另补地址/MSHR/前拍返回证明，不是恢复被否决的当前/前拍接受请求捕获优化。
-
-本轮两个独立候选均完成原六项native/converted、局部端口契约及负向控制、全新整核综合/ABC/STA与独立Liberty叶实例面积复算：
-
-| 版本 | 面积 μm² | Fmax MHz | 六项几何IPC | 评分 |
-|---|---:|---:|---:|---:|
-| 第25轮实验基线 | 34742.970727 | 312.480928 | 0.953361761030 | 2.138555515103e-7 |
-| 单Load有界仲裁 | 34765.642627 | 309.739867 | 0.950332085529 | 2.090249622906e-7 |
-| LQ结果载荷去复位 | 34753.395427 | 315.757015 | 0.953361761030 | 2.159680159578e-7 |
-
-仲裁在一次Store接受后允许一个普通Load提前入Cache，要求SQ有效行地址全部已知/对齐/不同行/非MMIO，并保留原消歧和Store发送顺序。六项周期为`9607/18945/3994/6244/174672/169272`：qsort改善，但rsort增加684拍、towers增加118拍；几何IPC−0.317789%、评分−2.258809%，不推进。
-
-独立逐拍对照证明提前入Cache确实发生5573次；`0x1f0`队首等待减少27269拍，但后续`0x1f4/0x1f8`分别增加14609/10120拍，全体队首Load等待只少28拍，有退休的周期增加775拍。不能把一个PC的等待减少当作整核周期收益，亦不能把Store优先等待改成Cache背压当作问题消失。
-
-面积专项只取消LQ 8×32位结果数据的复位，控制复位与原响应/SQ转发覆盖优先级保留。**实测未省面积**（+10.424700 μm²、+0.030005%），但六项完整日志持平、Fmax+1.048412%、评分+0.987800%，保存为评分最优实验版；最高IPC与第25轮并列。相对正式生产，几何IPC+1.415615%、评分+5.002001%，仍未达到长期IPC门槛。
-
-局部测试台关键字、sv2v端口打平及黄金struct层次访问失败均保留，仅修正测试台桥接。两候选未组合、未替换生产、未同步软件。后续实验可从评分最优版验证连续Load分组供给，但新的未测假设不计入本轮收益。
-
-来源：[rsort瓶颈](../../sync/BEST-RSORT-BOTTLENECK-20261103.md)、[第26轮测量](../../sync/ROUND26-RSORT-20261103.md)、[仲裁退化复核](../../sync/ROUND26-SHARE-REGRESSION-20261103.md)、[完成证书](../../sync/evidence/round26-completion-20261103-r01/completion.json)。
-
-### 11 月 3 日：第27轮三Load分组供给与地址载荷专项
-
-本轮从第26轮LQ结果载荷实验版独立派生：仲裁信用扩大为一次Store接受后最多三个普通Load，零信用仍Store优先；面积候选只取消LQ 8×32位地址数据的复位，原分配/地址身份与恢复边界不变。两者均完成局部native/converted及负向控制、原六项完整日志/九字段退休序列、全新整核综合/ABC/STA及独立叶实例面积复算。
-
-| 版本 | 面积 μm² | Fmax MHz | 六项几何IPC | 评分 |
-|---|---:|---:|---:|---:|
-| 三Load有界突发 | 34655.607367 | 304.761905 | 0.953794290234 | 2.100063965662e-7 |
-| LQ地址载荷去复位 | 34642.106287 | 316.244595 | 0.953361761030 | 2.176934924387e-7 |
-
-三Load版相对本轮实验父版本：面积−0.281377%、Fmax−3.482143%、几何IPC+0.045369%、评分−2.760418%，按各自Fmax估算IPC×Fmax−3.438354%（非墙钟实测）。六项周期`9594/18909/3990/6185/174049/168513`；rsort少75拍、qsort少1266拍，但towers多59拍（IPC−0.953921%）。满足推进的IPC/面积/频率条件，保留为IPC最高实验版，不隐去频率及评分代价。
-
-地址专项六项完整日志与父版本持平，实测省111.289140 μm²（−0.320225%）、Fmax+0.154416%、评分+0.798950%，成为评分最高实验版。两个冠军分开保留，均未达到长期IPC目标，也均未采用生产或同步软件。不能把一个的IPC与另一个的PPA拼成“组合结果”。
-
-收口首次误指向旧第26轮报告，保护断言在覆盖前阻止写入；接续只修正新报告路径，并认证复用已经发布的精确最优索引，不重跑仿真或综合、不改旧报告及已审计输入。后续若组合两项，须另建源码、独立验证并实测整核PPA；仍不自动替换生产。
-
-来源：[第27轮测量](../../sync/ROUND27-RSORT-20261103.md)、[完成证书](../../sync/evidence/round27-completion-20261103-r01/completion.json)。
-
-#### 第27轮组合补验：相同IPC下改善物理代价
-
-两项独立审计完成后，另建组合源码进行原六项native/converted、局部三Load契约与负向控制、全新整核综合/ABC/STA及独立叶实例面积复算。组合面积 **34519.663447 μm²**、Fmax **306.311696 MHz**、几何IPC **0.953794290234**、评分 **2.127400942691e-7**；六项完整日志与三Load父版本逐字节一致。相对三Load父版本面积−0.392271%、Fmax+0.508525%、评分+1.301721%，IPC持平；相对地址专项评分最优版仍下降2.275400%，没有宣称两个方向同时最优。
-
-初始保留器在IPC并列时按枚举顺序留下三Load父版本。随后另建保留器，只在实测IPC完全相等时优先较高实测评分，因此最新最高IPC代表为物理代价更好的组合版，评分冠军仍为地址专项。旧索引、旧保留器及全部测量不改，不改变门槛或采用许可。该补验不是新完整优化轮次，正式生产和两软件仍不变。
-
-来源：[组合补验](../../sync/ROUND27-COMBINATION-20261103.md)、[并列选择凭据](../../sync/evidence/best-results-retained-20261103-r04/tie-resolution.json)。
-
-### 2026-11-03：采用评分最优生产版；全部综合暂停（优先于以下历史）
-
-用户要求“暂停所有综合任务，将评分最优应用于生产即可”，已采用`round27-lq-address-area-20261103-r01`。面积34642.106287 μm²、Fmax316.244595 MHz、六项几何IPC0.953361761030、评分2.176934924387e-07；相对上一生产IPC+1.415615%、面积-0.104184%、Fmax-0.154416%、评分+5.840915%。IPC×Fmax估算+1.259013%（非墙钟实测）。
-采用奇字位置双取指（跨8字节对齐对、不跨I$行、最早控制指令截断）及LQ结果/地址载荷去复位；valid/就绪/身份控制仍复位。不是三Load仲裁组合版，不含第28轮年龄门禁或SQ地址候选；Store位置表仍4项、Store地址/数据RS仍2项、Branch RS仍4项。不改预测/训练算法或表，不恢复被否决字捕获或Store地址通知。
-44项RTL及公共SRAM与已审计候选逐字节认证，复用该版本已审计PPA，本次不启动任何综合/ABC/STA。两软件只同步fetch2包几何与恢复时控制截断（模板适配位于BPU.cpp的fetchGroup，不改predict/训练）；保留无效载荷初始化的表示差异，不声称完整状态等价。
-两软件全新Release/断言四构建原六项答案/退休数/init+core+drain及外部副本退休PC/周期匹配；课程周期9607/18947/3995/6126/175315/168588。未另做生产路径RTL模型重建；采用资格来自精确同源候选native/converted完整日志和局部契约。
-所有综合已暂停；未经用户重新授权，不恢复第28轮或启动新优化综合。第28轮面积任务在dff-map中止，checkpoint/失败与既有产物保留，整轮不标完成。面积/频率门槛通过，长期IPC>1.0985仍未达到；旧黄金/镜像/Slave/既有code、三树HEAD及Git索引保持。
-正式指针`sync/evidence/current-production.json`；证书`sync/evidence/score-best-production-adoption-20261103-r01/adoption.json`；软件说明`docs/hardware-baseline-score-best.md`。以下历史数字保留原归属。
-
-### 2026-11-03：正式采用前端恢复冻结解耦版（优先于以下历史）
-
-用户在知悉评分和频率代价后要求“应用到生产”，采用`frontend-recovery-decouple-ppa-20261103-r01`。面积34685.510947 μm²、Fmax313.917842 MHz、六项几何IPC0.955133800420、评分2.171584154117e-07；相对上一生产IPC+0.185873%、面积+0.125295%、Fmax-0.735745%、评分-0.245794%。IPC×Fmax估算-0.551240%（非墙钟实测）。本版是已审计IPC最高版，不是评分最优版；评分最优旧生产仍完整保留。
-恢复期间继续禁止未知／控制包的新预测请求，按实际返回指令鉴权安全非控制响应，并允许安全FQ→IQ推进；后端分配／派发／写回／退休仍冻结。两软件同步同一门控语义，保留旧快照/Input逐字段写目标和模板Register单写／统一sync纪律。不改BPU预测／训练算法或表、队列容量、存储协议、Slave；不恢复已否决回填字捕获或Store地址通知，不带入第28轮候选。
-44项RTL及公共SRAM与已审计候选精确同源，复用其整核综合／ABC／STA，本次采用不重跑综合，也未另建生产路径RTL模型。模型资格来自`frontend-recovery-decouple-screen-20261103-r01`的native／converted及局部定向／负向验证；测量归属独立PPA目录，不冒称新生产路径重建或完整状态等价。
-两软件全新Release／断言四构建原六项答案／退休数／init+core+drain及外部观察副本退休PC／周期匹配；课程周期9570/18946/3995/6126/174053/168587。旧黄金、镜像、Slave、既有code、三树HEAD／Git索引保持，专用当前生产检查器验收，不套旧黄金周期。
-面积<36000和Fmax>300通过，长期几何IPC>1.0985仍未达到。本次是已测候选的采用，不是新优化轮次。综合／ABC／STA保持暂停；此前单候选综合授权已完成，不恢复第28轮或自动继续优化。
-正式指针`sync/evidence/current-production.json`；采用证书`sync/evidence/frontend-decouple-production-adoption-20261103-r01/adoption.json`；软件说明`docs/hardware-baseline-frontend-decouple.md`。以下数字均保留各自历史归属。
-
-### 2026-11-03：正式采用空IQ整组旁路版（优先于以下历史）
-
-用户在知悉面积／频率代价后要求“采用生产”，已采用`iq-whole-group-ppa-20261103-r01`。面积34819.996867 μm²、Fmax310.303030 MHz、六项几何IPC0.981946949077、评分2.379472345843e-07；相对上一生产IPC+2.807266%、面积+0.387729%、Fmax-1.151515%、评分+9.573112%。IPC×Fmax估算+1.623425%（不是墙钟实测）。本版为已审计评分及IPC最高候选，旧生产和旧评分最优版继续保留。
-旧IQ为空时展示旧FQ译码整组，候选展示不依赖后端ready；仅全部有效lane都能分配时授权全部RAT／PRF／ROB／RS／LSQ目标并跳过IQ写入，否则分配数零、整组入IQ。IQ非空保持原连续前缀；按实际有效条数，不要求凑满四条。两软件同步同一门控与单次消费语义，主树只读旧快照/Input逐字段写目标，模板Register单写／统一sync保持；无模块下一状态复制。
-保留前端恢复冻结解耦、安全响应鉴权及后端恢复冻结；不改BPU算法／表、访存、容量、执行／写回／退休宽度。不是部分整组旁路，不带入已否决DCache miss接续、接受沿回填字捕获、Store地址通知或第28轮候选。
-44项RTL及公共SRAM与已审计候选逐字节认证，复用已完成整核综合／ABC／STA，不重跑综合，也未另建生产路径RTL模型。模型资格来自`iq-whole-group-screen-20261103-r01`的native／converted、局部合同及三个负向控制；PPA归属独立测量目录，不冒称完整状态等价。
-两软件全新Release／断言四构建原六项答案／退休数／init+core+drain及外部观察副本退休PC／周期匹配；课程周期9090/18228/3994/6029/163977/168557。旧黄金、镜像、Slave、既有code及三树HEAD／Git索引保持；使用当前生产专用检查器，不套历史黄金周期。
-面积<36000与Fmax>300通过，长期几何IPC>1.0985仍未达到。此次为已测候选采用，不是新优化轮次。单候选PPA授权已完成，综合／ABC／STA继续暂停，不恢复第28轮、不自动继续优化。
-正式指针`sync/evidence/current-production.json`；证书`sync/evidence/iq-whole-group-production-adoption-20261103-r01/adoption.json`；软件说明`docs/hardware-baseline-iq-whole-group.md`。以下数字均保留各自历史归属。
-
-### 2026-11-03：RS信用旁路补齐PPA与独立审计完成，未采用
-
-用户“开始综合”所授权的单候选`rs-credit-reuse-ppa-20261103-r01`已完成全新整核综合／ABC／STA、六阶段checkpoint及独立Liberty逐叶面积、约束、时序和评分核验。精确复用`rs-credit-reuse-screen-20261103-r02`的44项RTL、公共SRAM及原六项native／converted资格，不继承旧checkpoint，不声称重跑模型。仅补开Store地址RS实际离站信用复用，其余非MUL／DIV池保持已开，MUL／DIV及所有写回数据旁路开关不变。
-
-| 指标 | 本候选 | 相对当前生产 |
-|---|---:|---:|
-| 面积 | 34724.060467 μm² | −0.275521% |
-| Fmax | 302.064897 MHz | −2.654867% |
-| 六项几何IPC | 0.983613617806 | +0.169731% |
-| 评分 | 2.344970490776e-07 | −1.449979% |
-
-原六项周期9090/18228/3994/5968/163977/168556，towers少61拍、rsort少1拍，其余不变。按各自Fmax估算IPC×Fmax为−2.489642%，不是墙钟实测。面积<36000、Fmax>300通过，长期几何IPC>1.0985仍未达；候选是已审计最高IPC，当前整组IQ旁路生产仍为评分最高，不自动采用。
-生产RTL、两软件、镜像／Slave／旧黄金／既有code和三树HEAD／索引保持。本次仅既有候选PPA补测，没有新增面积专项，不标完整新优化轮次。单候选综合授权已完成，所有综合恢复暂停，不恢复第28轮或继续其他候选；缓存清理另按上节明确授权执行，本候选及资格目录保留。
-说明`../../sync/RS-CREDIT-REUSE-PPA-20261103.md`；正式完成证书`../../sync/evidence/rs-credit-reuse-ppa-20261103-r01/finalization.json`；最优指标索引`../../sync/evidence/best-results-retained-20261103-r10/retention.json`。最优索引不构成生产采用许可，历史源码可用性受上节清理授权约束。
-
-### 2026-11-03：历史实验缓存、源码副本与仿真模型清理完成
-
-用户先要求删除综合产物缓存，随后明确范围为“除了本次综合任务以外的，然后不保留源码和仿真模型，但是做process.md的记录”。本次一次性清理覆盖工作区`.cpu2026-synthesis/`内的旧实验，不沿用“保留最近三个”的数量豁免；删除旧综合网表／checkpoint／工具中间产物、实验源码副本、仿真模型及构建缓存。实际生产RTL、两软件工作树、课程镜像、Slave、旧黄金、既有code及Git数据库／索引不在删除范围；历史指标摘要、审计证书与退休trace保留。
-本次`rs-credit-reuse-ppa-20261103-r01`及对应筛选资格`rs-credit-reuse-screen-20261103-r02`保留，其综合、ABC、STA与独立审计现已正常完成，未被清理中断或重启。原先审计仍需读取的历史候选依赖先延后，清理程序在收到当前服务完整退出事件后接续处理，不轮询、不停止当前任务；工具链和本次新建临时文件不删。清理严格限定F盘实验根，逐文件写入路径／大小／SHA256删除清单后才unlink；不批量修改旧manifest或伪装成原始数据仍在。
-清理后，下面历史“源码／模型／网表继续保留”的文字只代表原实验完成时的状态，不再表示现在可用；旧测量与当时的审计结论保留，但已删文件不能重新逐字节验证，也不自动恢复。若以后继续优化，须从实际生产代码及当时仍可用的资产建立新的可复核输入，不能把历史指标或哈希当成原始数据仍存在。
-执行入口`sync/clear_experiment_cache.py`；本次已正常完成。共删除**91,163个文件、41,319,993,256字节（文件逻辑大小，约41.32 GB）**；完成时F盘可用47,417,081,856字节，前后可用空间增量不能全部归因于清理，期间本次综合仍产生新文件。两阶段SHA256 intent／deleted清单逐项配对重数通过，62个删除路径抽样均不存在；当前PPA和筛选资格各44项RTL仍在。此复核不是对所有残余文件的穷举扫描。
-授权、逐文件SHA256清单、分阶段统计及完成收据：`.cpu2026-synthesis/historical-cache-clear-20261103-r01/`中的`authorization.json`、`immediate-completion.json`、`after-current-task-completion.json`、`completion.json`与`verification.json`。生产、指标摘要、审计证书与退休trace未纳入删除。当前资格／PPA目录、实际工具链和本次新建临时文件作为明确例外保留；源文件已清掉的历史索引只保留当时认证的指标，不再冒称其源码／模型仍可逐字节复核。
-
-### 2026-11-03：正式采用非MUL／DIV全RS信用旁路版（优先于以下历史）
-
-用户在知悉频率／评分代价后要求“采纳到生产”，已采用`rs-credit-reuse-ppa-20261103-r01`。面积34724.060467 μm²、Fmax302.064897 MHz、六项几何IPC0.983613617806、评分2.344970490776e-07；相对上一生产IPC+0.169731%、面积-0.275521%、Fmax-2.654867%、评分-1.449979%。IPC×Fmax估算-2.489642%（不是墙钟实测）。本版是已审计最高IPC候选，不是评分最优版；旧评分最优指标与审计记录保留，历史源码／仿真模型／网表缓存按用户清理授权处理，不承诺仍完整存在。
-仅Store地址RS补开实际离站信用同拍复用；整数／Branch／Load／Store数据RS原已开启并保持，MUL／DIV仍不复用。共享AGU必须实际选中并接受旧Store地址指令才能返还SA信用，不能把Load获胜或仅有ready候选算作SA离站。新分配写入优先于旧释放，不允许新项同拍派发；不增加写回当拍数据旁路，Store地址RS仍只看旧就绪。
-两软件默认四宽同步同一实际AGU离站信用；仅主树StaticArbiter与模板CPU功能接线变化，两个RS文件只更新注释。主树只读拍初快照/Input逐字段写目标，模板Register单写／统一sync保持；无模块下一状态复制。不改容量、执行／写回／退休宽度、BPU算法／表、存储协议或Slave，不恢复已否决Store地址通知Load数据、回填字捕获、DCache miss接续或第28轮方案。原整组IQ旁路、前端恢复安全鉴权与后端冻结保持。
-44项RTL及公共SRAM与已审计候选逐字节认证，复用已完成的整核综合／ABC／STA，本次不重跑综合，也不声称另建生产路径RTL模型。模型资格来自`rs-credit-reuse-screen-20261103-r02`的native／converted、七池列表oracle、共享AGU及三个有效负向；PPA归属独立测量目录，不冒称完整状态／全输入等价。
-两软件全新Release／断言四构建原六项答案／退休数／init+core+drain和外部观察副本退休PC／周期匹配；课程周期9090/18228/3994/5968/163977/168556。采用阶段与缓存清理互斥；旧黄金、镜像、Slave、既有code和三树HEAD／Git索引保持；当前验收使用专用生产检查器，不套历史黄金周期。
-面积<36000和Fmax>300通过，长期几何IPC>1.0985未达。此次是已测候选采用，不算新优化轮次。所有综合／ABC／STA继续暂停，不恢复第28轮或自动继续优化；历史指标索引只重绑定新生产，不伪称已删历史源码／模型仍可复核。
-正式指针`sync/evidence/current-production.json`；证书`sync/evidence/rs-credit-reuse-production-adoption-20261103-r01/adoption.json`；软件说明`docs/hardware-baseline-rs-credit-reuse.md`。以下数字保留各自历史归属。
-
-### 2026-11-03：频率关键路径诊断与PRF并行分配排名筛选通过，未综合／未采用
-
-用户要求“开始优化频率的关键路径，不要降低ipc”。从当前RS信用旁路生产建立独立候选，不恢复已清理历史源码，不改生产或两软件。当前整核综合／ABC／STA继续暂停；本次先做诊断与正确性／IPC筛选，不宣称新面积或频率，也不自动采用。
-
-现存PPA的`design.json`、`mapped.v`、`generic.json`、`critical_paths.json`已对已完成独立审计中的哈希认证。以匿名cell全数排序及类型逐项匹配，确认STA起点`_635495_/QN`是`u_axi_data.writeHeadOwnerInner[0]`（别名`writeHeadSlotInner[0]`）；最差五条均终止于PRF第26行SRAM的写数据位10～14，首条到达3.210 ns，当前生产Fmax302.064897 MHz。原始generic网表存在AXI写响应→DCache填充资格→Load返回／ROB鉴权→共享CDB→整数RS的既有写回旁路／实际离站信用→整组重命名接受→PRF串行分配排名及写优先级的组合依赖。**generic最长门数依赖路径不是STA中间门的逐门归因，也未证明整条可敏化，不能把其门数当作时序实测。**诊断入口`sync/record_current_frequency_path.py`；证据`.cpu2026-synthesis/current-frequency-path-20261103-r01/diagnosis.json`。
-
-首个最小候选只改隔离副本的`rv32_prf_lanes.sv`：每lane以原始valid前缀人口计数直接取得目的寄存器rank，独立比较旧free credit，不再等待较老lane的接受计数；free-head按独立常数步数候选选择，保留非二次幂回绕函数。保持所有接口、容量、流水级、写优先级、未ready载荷、上一沿写旁路以及RS信用／WB旁路语义，不取消同拍复用。局部native／converted完整PRF公共端口、1／2／4宽全部稀疏mask×低信用96项独立oracle通过，另检查全部64个PRF值（含未ready）、reset／freeze／recovery／tag复用／WB冲突优先级；包含自身的错误rank、忽略free credit、丢失free-head推进三个实际源码负向均检出。
-
-`prf-parallel-rank-screen-20261103-r01`因常数head候选数组跨元素连续赋值触发Verilator `UNOPTFLAT`门禁而停止；失败、原始候选和日志保留，没有压制告警。r02将每个常数步数候选独立从旧free-head计算，候选已改；r02接续脚本因Python `log`变量遮蔽，在首次测试前停止，其预备源码和记录保留。r03只修启动入口，44项候选RTL与r02逐字节相同，重新完整验证。
-
-原六项全新native／converted答案、退休数、九字段退休和完整日志均与当前生产逐字节相同，周期**9090/18228/3994/5968/163977/168556**，几何IPC **0.983613617806（完全持平）**。独立重数审计、源改写复现、44项源码及保护输入完整性、三树HEAD／Git索引保持核验通过。当前生产、两软件、镜像／Slave／旧黄金／既有code及正式指针均未改变。
-
-未启动综合／ABC／STA，无候选面积、Fmax、评分或IPC×Fmax结论，不拼接旧PPA，不算完整优化轮，不自动采用。继续保持综合暂停，待用户重新授权该候选测量。入口`sync/run_prf_parallel_rank_screen_r03.py`；审计`sync/audit_prf_parallel_rank_screen.py`；说明`sync/PRF-PARALLEL-RANK-SCREEN-20261103.md`；源码、模型、原始trace、失败和审计证据位于`.cpu2026-synthesis/prf-parallel-rank-screen-20261103-r03/`，最终状态为其中`finalization.json`。
-
-### 2026-11-03：PRF并行分配排名PPA与独立审计完成，频率退化／未采用
-
-用户在得知原六项native／converted完整日志、周期与IPC持平后要求“开始综合”，本次仅授权`prf-parallel-rank-ppa-20261103-r01`一次全新整核综合／ABC／STA及独立Liberty逐叶面积、约束、时序和评分审计。入口`sync/measure_and_finalize_prf_parallel_rank_ppa.py`；精确复用`prf-parallel-rank-screen-20261103-r03`的44项RTL、公共SRAM与已验证converted输入，不热修改候选，不重复声称新建资格模型；全新elaborate和六阶段checkpoint，不继承历史checkpoint。同五份ASAP7库、248项SRAM实例、2ns目标及INVx1／5fF约束，进程工作与临时文件均在F盘，独立unrestricted用户服务运行。
-
-已完成全新整核综合／ABC／STA、六阶段checkpoint与独立Liberty逐叶面积、约束、时序和评分审计。结果如下：
-
-| 指标 | 当前生产 | 并行排名候选 | 变化 |
-|---|---:|---:|---:|
-| 面积 μm² | 34724.060467 | 34697.714407 | −0.075873% |
-| Fmax MHz | 302.064897 | 280.317547 | −7.199562% |
-| 六项几何IPC | 0.983613617806 | 0.983613617806 | 0 |
-| 评分 | 2.344970490776e-07 | 2.179448842261e-07 | −7.058581% |
-
-原六项周期9090/18228/3994/5968/163977/168556及完整日志均保持。面积<36000通过，但Fmax>300不通过，长期IPC>1.0985仍未达；本次未实现频率优化，建议不采用。按各自Fmax估算IPC×Fmax下降7.199562%，不是墙钟实测。源码中的并行排名不保证映射后的整核关键路径更短，不将此次回退归因于未经认证的具体中间门。
-
-任务输出`.cpu2026-synthesis/prf-parallel-rank-ppa-20261103-r01/`；最终证书`sync/evidence/prf-parallel-rank-ppa-20261103-r01/finalization.json`；说明`sync/PRF-PARALLEL-RANK-PPA-20261103.md`。生产／两软件／镜像／Slave／旧黄金／既有code／正式指针与三树HEAD／索引保持，未采用；无额外面积专项，不标完整优化轮。测量和最终审计全程持清理共享锁。最优指标索引r12只追加本次认证指标，不读取或伪称恢复已清理历史源码／模型；各最优指标归属未变。单候选授权已完成，全部综合继续暂停，不恢复第28轮或自动继续其他候选。筛选阶段记录中的“未综合”保留其当时归属。
-
-### 2026-11-03：用户明确否决PRF并行分配排名候选，不采用
-
-用户在获知Fmax280.317547 MHz（−7.199562%）、面积34697.714407 μm²（−0.075873%）、IPC持平和评分−7.058581%后明确要求“不采用”。拒绝`prf-parallel-rank-ppa-20261103-r01`及对应`prf-parallel-rank-screen-20261103-r03`，不将本候选替换生产，不自动继续该方案、其他优化或综合。当前RS信用旁路生产、两软件及正式指针保持，生产输入／软件桥接与三树HEAD／Git索引核验不变；测量和审计证据保留。
-
-否决记录`sync/evidence/prf-parallel-rank-rejected-20261103-r01/decision.json`。最优指标索引r13仅追加否决决定，测量行与champions逐项沿用r12；PPA和筛选两根均加入`rejected_roots`，排名不是采用许可。此前PPA完成证书、报告、指标和哈希均不回写。未新测量／新建模型／启动综合，全部综合继续暂停。以下“建议不采用”保留测量完成时的历史归属，此节用户明确决定优先。
-
-### 2026-11-03：继续研究其他频率路径，ROB Load身份校验隔离筛选（执行中）
-
-用户要求“继续探究其他优化关键路径频率的方法”。此新请求授权其他路径的分析与隔离筛选，不撤销PRF并行排名的明确否决，不授权新综合或采用。生产仍为RS信用旁路版；既有原六项IPC不得下降，面积<36000及Fmax>300仍记录为后续PPA门槛。
-
-本次比较ROB晚到Load存活查询、DCache回填鉴权与LSU返回转发优先级三处源码组合依赖；后两者只做分析，未实现／测试，不将generic依赖描述为STA中间门逐门定位。说明`sync/FREQUENCY-ALTERNATIVES-20261103.md`。先选择最小ROB方向：独立Load查询由“选出stored tag后比较”改为各行并行valid／完整身份校验后归约，不新增级或接口，不依赖stored tag低位天然等于row；所有ROB状态写入和其他输出源码保持，不改PRF、RS信用或其他模块。
-
-隔离输出`.cpu2026-synthesis/rob-load-identity-screen-20261103-r02/`；入口`sync/run_rob_load_identity_screen_r02.py`；审计入口`sync/audit_rob_load_identity_screen.py`。计划局部native／converted单行状态／query穷举、多行随机、实际ROB队列oracle及三个源码负向，再验证原六项全新native／converted完整日志、答案、九字段退休、周期严格等同生产。r01因候选局部变量matches为SV保留字而解析失败，失败保留；r02仅改名rowMatch，不改逻辑。结果未出不提前声称通过，未综合／ABC／STA，无候选面积／频率，不自动继续其他候选或采用。
-
-### 2026-11-03：用户条件授权ROB Load身份候选在IPC不变后综合（执行中）
-
-用户明确要求“确认ipc不变后综合”。已建立仅针对此ROB候选的条件接续任务：单次pidfd进程退出事件等待`rob-load-identity-screen-20261103-r02`完成，不轮询、不停止／重启筛选；先通过`sync/audit_rob_load_identity_screen.py`独立审计，再逐项认证原六项native／converted完整日志、答案、九字段退休、周期及IPC严格等同生产，条件满足后才创建测量根并执行一次全新整核综合／ABC／STA。失败即止，不以几何IPC相等代替逐项无回退，不提前认定当前筛选通过。
-
-入口`sync/qualify_and_measure_rob_load_identity_ppa.py`；条件授权及资格门收据`sync/evidence/rob-load-identity-conditional-ppa-20261103-r01/`；实际测量输出`.cpu2026-synthesis/rob-load-identity-ppa-20261103-r01/`，证据`sync/evidence/rob-load-identity-ppa-20261103-r01/`。使用相同五份ASAP7库、248项SRAM、2ns目标、INVx1／5fF约束，全新elaborate／六阶段checkpoint；不继承历史checkpoint，不声称重跑已复用的RTL资格模型。整段任务持清理共享锁，工作和实际临时文件均在F盘。
-
-此授权不含生产采用、恢复已否决PRF并行排名或其他候选；生产／两软件／镜像／Slave／旧黄金／既有code／正式指针及三树HEAD／索引保持。无额外面积专项，不标完整优化轮；授权完成后所有综合恢复暂停。尚无候选面积／频率结论，下方筛选阶段“未综合”不回写。
-
-<a id="history-2026-11-04"></a>
-
-### 2026-11-04：重启后继续同一ROB Load身份候选综合（已完成，见上）
-
-用户要求“继续综合”。已核验原六项native／converted完整日志及逐项周期／IPC完全等同生产，独立筛选审计通过，条件资格门收据已生成。服务器重启后旧条件服务inactive、MainPID0且没有运行中的综合进程；旧测量`.cpu2026-synthesis/rob-load-identity-ppa-20261103-r01/`只到RTL展开，`synthesis/opt/`仅有elaborate.log和elaborate.ys，尚无已提交阶段checkpoint，未完成PPA。
-
-原尝试及其输入／日志全部保留不覆盖；重新认证旧输入和筛选证书后，在新根`.cpu2026-synthesis/rob-load-identity-ppa-20261104-r01/`从elaborate重新开始同一候选的整核综合／ABC／STA与独立审计。不是checkpoint恢复，不改变或重新筛选候选RTL；44项源码、公共SRAM及converted输入精确复用已通过的r02资格。入口`sync/continue_rob_load_identity_ppa_20261104.py`；同五份ASAP7库、248 SRAM、2ns、INVx1／5fF约束，F盘独立unrestricted服务，全程持清理共享锁。
-
-中断归属单独记录于新根`interruption-provenance.json`；完成证据`sync/evidence/rob-load-identity-ppa-20261104-r01/`。原条件收据保留历史归属，不伪称旧测量已完成。生产／两软件／正式指针／镜像／Slave／旧黄金／既有code及三树HEAD／索引保持，不恢复已否决PRF排名、不启动其他候选、不授权采用、不标完整优化轮；本次完成后综合继续暂停。结果未出，不宣称面积／频率收益。
-
-### 2026-11-04：ROB Load身份校验整核PPA与独立审计完成，未采用
-
-同一候选`rob-load-identity-ppa-20261104-r01`已完成全新elaborate、六阶段checkpoint、整核综合／ABC／STA及独立Liberty逐叶面积、约束、时序和评分审计，无历史checkpoint继承。使用同五份ASAP7库、248项SRAM、2ns目标、INVx1／5fF约束；理想时钟、无寄生估计。精确复用`rob-load-identity-screen-20261103-r02`的44项RTL、公共SRAM、已验证converted输入和原六项资格，不声称新建RTL资格模型。
-
-| 指标 | 当前生产 | ROB Load身份候选 | 变化 |
-|---|---:|---:|---:|
-| 面积 μm² | 34724.060467 | 34629.246727 | −0.273049% |
-| Fmax MHz | 302.064897 | 318.308984 | +5.377681% |
-| 六项几何IPC | 0.983613617806 | 0.983613617806 | 0 |
-| 评分 | 2.344970490776e-07 | 2.484625496498e-07 | +5.955512% |
-
-原六项答案、退休、native／converted完整日志均等同生产，周期9090/18228/3994/5968/163977/168556。面积<36000与Fmax>300通过，长期几何IPC>1.0985仍未达。按各自Fmax的IPC×Fmax估算+5.377681%，不是墙钟实测；只确认整核测量改善，不扩张为未经逐门认证的具体STA归因。
-
-只改ROB独立Load身份valid归约，全部状态写入和其他输出源码保持，无新流水级；已否决PRF排名不带入，PRF、RS信用及其他模块保持生产。服务器重启前旧20261103测量仅部分elaborate，原样保留不标完成；本次在独立新根从头测量，中断归属见`interruption-provenance.json`。
-
-生产RTL、两软件、正式指针、镜像／Slave／旧黄金／既有code及三树HEAD／Git索引均保持，未采用、不提交／推送。无额外面积专项，不算完整新优化轮。r14指标索引中本候选为已审计评分最优、最高IPC并列中评分优胜者，长期全部门槛无达标者；历史指标按旧认证保留，不声称恢复或重新认证已清理历史源码／模型，排名不构成采用许可。
-
-本次授权完成，所有综合继续暂停，不自动继续新候选或采用。证书`sync/evidence/rob-load-identity-ppa-20261104-r01/finalization.json`；说明`sync/ROB-LOAD-IDENTITY-PPA-20261104.md`；指标`sync/evidence/best-results-retained-20261103-r14/retention.json`。以下阶段记录保留历史归属。
-
-### 2026-11-04：正式采用ROB Load身份行并行校验版（优先于以下历史）
-
-用户明确要求“可以，采用”，已采用`rob-load-identity-ppa-20261104-r01`。面积34629.246727 μm²、Fmax318.308984 MHz、六项几何IPC0.983613617806、评分2.484625496498e-07；相对上一生产IPC+0.000000%、面积-0.273049%、Fmax+5.377681%、评分+5.955512%。IPC×Fmax估算+5.377681%（不是墙钟实测）。本版为已审计评分最优、最高IPC并列中评分优胜者；排名不自动授权后续采用。
-仅`rv32_rob_lanes.sv`独立Load lookup valid改为各行并行完整身份检查后归约；仍检查stored tag低位与常数row、query slot及高位epoch，非split输出全零。ROB全部状态写入和其他输出保持，无新流水级／接口／容量／执行宽度变化，不带入已否决PRF排名方案，不改PRF、RS信用、写回旁路、BPU、访存协议或Slave。整组IQ旁路、非MUL／DIV真实离站信用、前端恢复安全鉴权和后端冻结均保持。
-44项RTL与公共SRAM同已审计候选逐字节认证；复用已有整核综合／ABC／STA，本次采用不重跑PPA。模型资格来自`rob-load-identity-screen-20261103-r02`的native／converted组合切片、实际ROB队列oracle、三个源码负向及原六项完整日志，测量根单独归属20261104；不声称另建生产路径RTL资格模型或完整状态／全输入形式等价。旧20261103中断展开记录保留，不冒称已完成或checkpoint续算。
-此为RTL组合拓扑等价改写，两软件全部126项构建输入保持，无需改算法。两软件全新Release／断言四构建原六项答案／退休数／init+core+drain及外部观察副本退休PC／周期匹配；课程周期9090/18228/3994/5968/163977/168556。主树旧快照/Input纪律与模板Register单写／统一sync保持，不恢复生产观察探针。旧黄金、镜像、Slave、既有code及三树HEAD／Git索引保持。
-面积<36000与Fmax>300通过，长期几何IPC>1.0985仍未达到。本次是既有已测候选采用，不算新优化轮；全部综合／ABC／STA继续暂停，不自动继续新候选。历史指标与否决记录保留，不伪称已清理历史源码／模型重新可用。
-正式指针`sync/evidence/current-production.json`；证书`sync/evidence/rob-load-identity-production-adoption-20261104-r01/adoption.json`；软件说明`docs/hardware-baseline-rob-load-identity.md`。以下记录保留各自历史归属。
-
-### 2026-11-04：夜间LQ／SQ释放及ROB退休信用旁路筛选（首批完成，接续见上）
-
-用户要求先尝试LQ／SQ释放信用旁路，再尝试ROB退休信用旁路，今晚进一步优化。已建立有限顺序：LQ独立、SQ独立、LSQ组合，随后ROB独立；只有LSQ组合及ROB独立均正确且原六项逐项IPC不下降才测试最终组合。所有候选独立从当前已采用ROB Load身份行并行校验版复制44项RTL，生产和两软件先保持。工作根`.cpu2026-synthesis/release-credit-night-20261104-r01/`；入口`sync/run_release_credit_night.py`；独立审计`sync/audit_release_credit_night.py`。审计服务通过单次pidfd退出事件接续，不轮询，工作与临时文件都在F盘，持清理共享锁保护。
-
-LSQ只改默认四宽：LQ实际ROB退休完整tag匹配返还旧槽，重复tag不重复计数、旧epoch不匹配；SQ只按旧队首Store实际下游接受返还一份信用，ready或仅退休不算释放。旧Store请求／转发及Load owner仍读旧态，新分配控制最终写入覆盖旧退休／响应／转发，保留真实新分配＋匹配地址事件，旧地址不能污染新槽；新项不许同拍发访存。ROB只用实际连续退休握手，沿用新分配高于旧完成／退休的写优先级，不改PRF回收或提交顺序。冻结／flush不授权分配，无新级／容量／执行宽度／BPU／访存协议变更。
-
-计划先局部native／converted实际LSU／ROB队列oracle及源码负向，再原六项全新native／converted答案、退休数和九字段架构退休序列等同生产，候选两模型完整日志一致。逐项记录周期／IPC，退化项不推进，不将所有等待事件加总为节省拍数。失败完整保留，独立后续候选可继续，但失败项不进入组合。
-
-此阶段只做正确性／IPC筛选，不启动综合／ABC／STA、不自动采用、不拼接旧PPA，无候选面积／Fmax／评分，不标完整优化轮。说明`sync/RELEASE-CREDIT-NIGHT-20261104.md`；最终以工作根`completion.json`、`finalization.json`及`sync/evidence/release-credit-night-20261104-r01/`为准，执行中不提前认定通过。
-
-### 2026-11-04：夜间信用筛选首批结果与SQ容量断言接续（已完成，见上）
-
-第一批`release-credit-night-20261104-r01`已完成，独立审计通过并如实保留两项局部失败。LQ释放信用原六项周期9090/18227/3993/5968/163976/168555，相对生产0/−1/−1/0/−1/−1，几何IPC0.983665635992（+0.005288%），逐项不退化。ROB退休信用原六项完全持平9090/18228/3994/5968/163977/168556，几何IPC0.983613617806。局部native／converted实际模块队列oracle、有效源码负向、原六项答案／退休数／九字段退休及两前端完整日志一致通过；独立raw重数、源码复现、保护输入和HEAD／索引核验通过。证据`sync/evidence/release-credit-night-20261104-r01/finalization.json`，仅证明筛选，不是PPA。
-
-SQ和LSQ组合首轮停在局部真实模块的原“Store allocation exceeds old SQ capacity”断言：它仍要求旧使用量＋新分配≤容量，未扣同拍真实出队。失败和原始候选完整保留，不标正确或形成组合。r02将断言改为旧使用量＋新分配−实际旧队首Store下游接受≤容量，保留断言并限制四宽／SQ复用开关，不能把ready或仅退休当作释放；经预检，`SYNTHESIS`范围内功能RTL与失败候选逐字节相同，未通过改变功能掩盖失败。
-
-接续只重做SQ独立、LSQ组合，资格均满足后测试LSQ＋ROB组合；已审计LQ与ROB独立资格按哈希复用。入口`sync/resume_release_credit_night_r02.py`，工作根`.cpu2026-synthesis/release-credit-night-20261104-r02/`；独立审计`sync/audit_release_credit_night_r02.py`单次pidfd退出事件接续，不轮询。最终看r02 `completion.json`／`finalization.json`。生产／两软件／正式指针保持，无新综合／ABC／STA、面积／Fmax／评分或采用结论。
-
-### 2026-11-04：夜间释放／退休信用筛选与独立审计完成，未综合／未采用
-
-指定有限序列已完成并独立审计。所有实际启动候选均局部native／converted真实模块队列oracle、有效源码负向及原六项全新native／converted答案、指令数和九字段架构退休序列等同生产，两模型完整日志逐字节一致。独立raw退休／周期重数、源改写复现、保护输入与三树HEAD／索引保持核验通过。
-
-| 候选 | 六项周期变化（median／multiply／vvadd／towers／qsort／rsort） | 几何IPC | 相对生产 | 逐项不退化 |
-|---|---|---:|---:|---|
-| LQ释放 | 0／−1／−1／0／−1／−1 | 0.983665635992 | +0.005288% | 是 |
-| SQ释放 | 0／0／0／+1／0／−5 | 0.983591014278 | −0.002298% | 否 |
-| LQ＋SQ | 0／−1／−1／+1／−1／−6 | 0.983643031298 | +0.002990% | 否 |
-| ROB退休 | 0／0／0／0／0／0 | 0.983613617806 | 0 | 是 |
-
-SQ及LSQ组合均有towers多1拍，不满足此次逐项IPC不下降要求，故LSQ＋ROB组合未启动。最高无退化候选为LQ，但仅四项各少1拍，不能将局部信用／等待事件数当作整核节省。上述几何IPC变化与单项变化分别披露，不把LSQ几何提升说成六项都无退化。
-
-首轮SQ／LSQ失败为局部真实模块仍启用旧容量断言、未扣同拍实际出队；r02仅修容量断言为减去真实旧Store下游接受，继续保留溢出门禁，SYNTHESIS内功能RTL逐字节相同，失败及原证书不回写。r01 LQ／ROB已审计资格在r02按哈希认证复用，新SQ／LSQ重新完整验证和审计。
-
-最终证据`sync/evidence/release-credit-night-20261104-r02/finalization.json`；完整证书和逐候选记录在`.cpu2026-synthesis/release-credit-night-20261104-r02/`及r01原根，说明`sync/RELEASE-CREDIT-NIGHT-20261104.md`。生产／两软件／正式指针／镜像／Slave／旧黄金／既有code和三树HEAD／Git索引保持。未综合／ABC／STA，无候选面积／频率／评分或IPC×Fmax，不拼接生产PPA、不自动采用，不算完整优化轮。本次有限序列结束，不自动扩大其他实验或恢复综合。以下执行阶段记录保留历史归属。
-
-### 2026-11-04：其他六种旁路逐项筛选启动，生产／综合保持
-
-用户在询问其他旁路机会后要求“都尝试一下，逐项尝试”。本次有限顺序为Store地址RS WB数据旁路、空FQ直通、DCache请求槽释放、LSU运输owner释放、PRF退休回收、Store数据RS扩大WB来源，每项独立从当前ROB Load身份生产复制44项RTL，不先混合改动。入口`sync/run_additional_bypass_sequence.py`；工作根`.cpu2026-synthesis/additional-bypass-sequence-20261104-r01/`；独立审计`sync/audit_additional_bypass_sequence.py`单次pidfd退出事件接续，不轮询。F盘独立服务和实际临时文件，持清理共享锁。
-
-先整核native lint检查组合环／锁存，再局部真实模块native／converted独立oracle和有效源码负向，通过后才新建原六项native／converted模型，答案／退休数及九字段架构退休序列匹配生产，两模型完整日志逐字节一致。每项披露周期／IPC，单项退化不推进；有反馈环或其他失败则保留原始诊断，继续后续独立候选，不屏蔽告警。工具报告依赖环不是完整逻辑可敏化证明，也不是所有安全实现均不可能的结论。
-
-空FQ直通限制在旧FQ和IQ都空，ready在此模式独立于valid／后端ready，新包整组分配或整组存IQ，不重复入FQ。DCache请求槽按真实旧释放且保持新分配写优先，不恢复已否决miss接续或字捕获。owner信用只来自真实live旧owner返回，取消不回收，满owner／同tag复用／旧取消响应和背压专项验证。PRF先旧free FIFO再普通退休批次，不复用恢复回收信用，不改已有值／ready及WB写优先级、不恢复被否决并行排名。Store地址／数据RS全CDB来源可能因共享Load反馈形成组合环，本轮会实际检查，不先假定可用。
-
-生产／两软件／正式指针／镜像／Slave／旧黄金／既有code及三树HEAD／索引保持。不综合／ABC／STA，无候选面积／Fmax／评分，不把IPC变化当作频率收益、不拼接生产PPA、不自动采用、不算完整优化轮。说明`sync/ADDITIONAL-BYPASS-SCREENING-20261104.md`；最终看新工作根`completion.json`／`finalization.json`，执行中不提前认定通过。
-
-### 2026-11-04：六旁路首轮已审计，夹具／FQ接口修正后新根接续
-
-首轮`additional-bypass-sequence-20261104-r01`六项均已实际尝试并独立审计。Store地址RS WB数据旁路通过实际RS native／converted独立队列oracle及两个有效源码负向；全新原六项native／converted答案、退休数和九字段架构退休序列匹配生产，两模型完整日志逐字节相同，独立raw退休／周期重数、源改写复现、保护及HEAD／索引核验通过。周期9089/18228/3994/5910/163976/168528，相对生产−1/0/0/−58/−1/−28；几何IPC0.985262268387（+0.167612%），各项不退化。没有综合，不能据此推断频率或评分。
-
-其余首次尝试如实保留失败／阻塞：空FQ接ready门控的返回valid，形成ready→responseAccept→decodeCount→ready工具依赖环；Store数据RS全CDB扩源出现`chooseResponseResultInner`反馈，停止全开实现、不跑IPC、不屏蔽告警，也不证明所有安全扩源方法均不可能。DCache局部夹具过早假设backing返回时刻；owner正向多发已释放ID响应违反已有接口断言；PRF局部读地址任务数组接线未实际送入DUT，r02诊断显示外部地址32而读ready仍取P0。以上原始日志／模型／生成C++和r01证书保留。
-
-FQ接续改宽接口proposal独立于ready，真实上下文仍按responseAccept出队，旧标量路径保持；r03整核lint无环，随后oracle条件函数非纯分支求值触发，r04将reference改纯函数并独立校验选中上下文。DCache改夹具为等待真实响应，r03实际native／converted满槽替换及630请求回归通过，第二负向被启用的RTL容量断言检出但入口期待旧文字，故仍停下、不标完整通过；r04接受真实断言诊断。owner移除正向非法重复响应但保持协议安全断言，r03实际native／converted满owner及原owner回归通过，后停在负向anchor不唯一，r04精确限定Load容量语句。PRF固定地址改genvar连续驱动，不改读路径，r03实际native／converted全部值／ready及两个负向通过；这些局部诊断没有原六项性能资格，不冒称整项完成。
-
-经逐字节预检，DCache／owner／PRF功能RTL始终与r01一致，修的只是夹具／负向入口；FQ只增加其必要proposal／握手接线分离，不带入其他候选。r04新根`.cpu2026-synthesis/additional-bypass-sequence-20261104-r04/`只重做FQ、DCache、owner、PRF四项完整局部＋原六项native／converted筛选，按哈希复用已审计SA成功及SV阻塞，不回写旧证书。入口`sync/resume_additional_bypass_sequence_r04.py`；独立审计`sync/audit_additional_bypass_sequence_r04.py`单次pidfd退出事件接续，不轮询。
-
-生产／两软件／正式指针／镜像／Slave／旧黄金／既有code和三树HEAD／索引保持；无新综合／ABC／STA、面积／Fmax／评分或采用许可，不将IPC变化当频率收益、不算完整优化轮。最终以r04 `finalization.json`为准，执行中不提前认定四项通过。首轮证据`sync/evidence/additional-bypass-sequence-20261104-r01/finalization.json`；说明`sync/ADDITIONAL-BYPASS-SCREENING-20261104.md`。
-
-### 2026-11-04：六旁路原六项筛选结束，最终独立审计接续中（已完成，见上）
-
-`additional-bypass-sequence-20261104-r04`原六项筛选执行结束，按哈希复用r01已审计Store地址RS成功及Store数据扩源阻塞，重新完成FQ／DCache／owner／PRF局部native／converted实际模块独立oracle、两个有效源码负向及原六项全新native／converted答案／退休数／九字段退休匹配生产，两模型完整日志逐字节一致。最终独立raw重数、源复现和保护审计正在pidfd事件后接续，不提前声称r04最终审计通过。
-
-| 独立候选 | 六项周期变化（median／multiply／vvadd／towers／qsort／rsort） | 几何IPC | 相对生产 | 逐项不退化 |
-|---|---|---:|---:|---|
-| Store地址RS WB | −1／0／0／−58／−1／−28 | 0.985262268387 | +0.167612% | 是 |
-| 空FQ直通 | −484／−677／−9／−57／−8257／−24 | 1.009560796304 | +2.637944% | 是 |
-| DCache请求槽信用 | 0／0／0／+1／0／−5 | 0.983591014278 | −0.002298% | 否 |
-| LSU运输owner信用 | 0／0／0／0／0／0 | 0.983613617806 | 0 | 是 |
-| PRF退休回收信用 | 0／0／0／0／0／0 | 0.983613617806 | 0 | 是 |
-| Store数据全CDB扩源 | 未跑：chooseResponseResultInner工具依赖环阻塞 | — | — | — |
-
-空FQ周期8606/17551/3985/5911/155720/168532，六项全部改善，为本批最高无退化IPC者，仍未达长期几何IPC>1.0985目标。DCache虽正确但towers多1拍，故不推进。owner／PRF持平，不将局部满资源替换数当作整核节省拍数，亦不证明所有工作负载无收益。各项独立，未测试SA＋FQ组合，不能把两者收益直接相加。
-
-生产／两软件／正式指针／镜像／Slave／旧黄金／既有code和三树HEAD／索引保持；未综合／ABC／STA、未组合、未采用，无新面积／Fmax／评分及IPC×Fmax结论，不算完整优化轮。最终看`.cpu2026-synthesis/additional-bypass-sequence-20261104-r04/finalization.json`，说明`sync/ADDITIONAL-BYPASS-SCREENING-20261104.md`。以下接续过程保留历史归属。
-
-### 2026-11-04：六旁路筛选及最终独立审计完成，未综合／未采用
-
-`additional-bypass-sequence-20261104-r04`最终独立审计已完成。五个可测候选的实际模块native／converted独立oracle／两个有效源码负向及原六项全新native／converted答案、指令数、九字段架构退休匹配生产，两模型完整日志逐字节一致；独立raw退休／周期重数、源改写复现、保护输入和三树HEAD／Git索引核验通过。按哈希复用r01已审计Store地址RS成功及Store数据全CDB扩源阻塞，r01／r02／r03失败与生成C++保留，旧证书不回写。
-
-最终结果：空FQ直通周期8606/17551/3985/5911/155720/168532，六项全改善，几何IPC1.009560796304（+2.637944%），本批最高无退化IPC；Store地址RS WB旁路周期9089/18228/3994/5910/163976/168528，几何IPC0.985262268387（+0.167612%），各项无退化。DCache请求槽信用周期9090/18228/3994/5969/163977/168551，几何IPC0.983591014278（−0.002298%），towers多1拍不推进；LSU owner、PRF退休回收均生产周期及IPC完全持平0.983613617806。Store数据全CDB扩源仍为工具依赖环阻塞，未测IPC，不计功能正确；不冒称所有扩源设计均不可能。
-
-空FQ仅旧FQ／旧IQ均空时新包直通，整组分配或整组IQ回退，宽接口proposal与ready分离，真实上下文按实际接受出队，旧接口保持。DCache／owner／PRF功能RTL与首轮逐字节相同，修正的是夹具／负向入口，容量／协议断言一直开启。未组合SA＋FQ，不相加独立收益；长期IPC>1.0985仍未达，面积／频率未测，不能把IPC收益当作Fmax或评分收益。
-
-最终证据`sync/evidence/additional-bypass-sequence-20261104-r04/finalization.json`；完整证书／原始日志与每候选审计在`.cpu2026-synthesis/additional-bypass-sequence-20261104-r04/`及引用r01根；说明`sync/ADDITIONAL-BYPASS-SCREENING-20261104.md`。发布后收口核验确认生产／两软件／正式指针／镜像／Slave／旧黄金／既有code及三树HEAD／索引保持，无组合／综合／ABC／STA／采用，无新PPA，不算完整优化轮。本次有限序列完成，不自动启动其他候选或恢复综合。以下阶段文字保留历史归属。
-
-### 2026-11-04：空FQ直通＋Store地址RS WB组合筛选启动，未综合／采用
-
-用户在六项独立结果确认后要求“尝试二者组合”。只授权空FQ直通与Store地址RS WB数据旁路的单个组合正确性／IPC筛选，不授权综合或采用。已核验两个组件独立证书、输入哈希和逐项无退化资格，从当前ROB Load身份生产复制44项RTL；组合queue／frontend与已审计FQ逐字节一致，core与已审计SA逐字节一致，其余41项及公共SRAM保持，预检精确三文件并集通过。不带入LQ／SQ／ROB／owner／PRF信用或已否决方案，不改BPU算法／表、存储协议、容量或执行／写回／退休宽度。
-
-组合不是独立正确性的自动继承：先整核native环／锁存检查，再在组合快照上重跑实际FQ＋rename planner及Store RS两组native／converted独立oracle与四个有效源码负向；通过后全新原六项native／converted答案、退休数、九字段架构退休匹配生产，组合两模型完整日志逐字节一致。逐项对比生产周期9090/18228/3994/5968/163977/168556、FQ单独8606/17551/3985/5911/155720/168532及SA单独9089/18228/3994/5910/163976/168528，不能把独立收益相加当作实测。
-
-入口`sync/run_fq_sa_combined_experiment.py`；工作根`.cpu2026-synthesis/fq-sa-combined-screen-20261104-r01/`，候选在`candidate/`；独立审计`sync/audit_fq_sa_combined_screen.py`单次pidfd退出事件后接续，不轮询，核验raw日志重数、源复现／组件精确并集、四负向和三组对比。F盘独立服务和实际临时文件，持清理共享锁。最终以工作根`completion.json`／`finalization.json`及`sync/evidence/fq-sa-combined-screen-20261104-r01/`为准，执行中不提前认定通过或有收益。
-
-生产／两软件／正式指针／镜像／Slave／旧黄金／既有code和三树HEAD／索引保持。没有综合／ABC／STA、面积／Fmax／评分或IPC×Fmax结论，不自动采用、不算完整优化轮，不扩大其他组合。说明`sync/FQ-SA-COMBINED-SCREEN-20261104.md`。下面独立六项的“不自动组合”仍归属其结束阶段；本组合由此次明确新请求授权。
-
-### 2026-11-04：空FQ＋SA WB组合IPC筛选通过，独立审计接续中（已完成，见上）
-
-单组合`fq-sa-combined-screen-20261104-r01`执行通过：组合整核环／锁存检查、组合快照上重跑实际FQ＋planner与Store RS两组native／converted独立oracle及四个有效源码负向、全新原六项native／converted答案／退休数／九字段架构退休匹配生产，两模型完整日志逐字节一致。
-
-组合周期8605/17550/3985/5864/155719/168501，相对生产−485/−678/−9/−104/−8258/−55，六项全改善。几何IPC1.010966177065，相对生产+2.780824%；相对空FQ单独−1/−1/0/−47/−1/−31，几何IPC+0.139207%，逐项无退化；相对SA单独−484/−678/−9/−46/−8257/−27，几何IPC+2.608839%，逐项无退化。三组对比均为原六项实测，非叠加独立收益。长期IPC>1.0985仍未达。
-
-最终独立raw重数、源三文件精确并集、四负向、组件对比和保护核验仍在pidfd事件后接续，不提前声称审计完成。生产／两软件／正式指针保持，未综合／ABC／STA／采用，无新面积／Fmax／评分及IPC×Fmax结论，不算完整优化轮。完整数据见`sync/FQ-SA-COMBINED-SCREEN-20261104.md`；最终以`.cpu2026-synthesis/fq-sa-combined-screen-20261104-r01/finalization.json`为准。
-
-### 2026-11-04：空FQ＋SA WB单组合筛选及独立审计完成，未综合／未采用
-
-`fq-sa-combined-screen-20261104-r01`最终独立审计及收口核验通过。组合整核native环／锁存检查、组合快照上重跑实际FQ＋planner与Store RS两组native／converted独立oracle及四个有效源码负向、全新原六项native／converted答案／退休数／九字段架构退休匹配生产，两模型完整日志逐字节一致；独立raw退休／周期重数、源三文件精确并集、三组对比、保护输入与三树HEAD／索引保持核验通过。
-
-最终组合周期8605/17550/3985/5864/155719/168501，几何IPC1.010966177065（相对生产+2.780824%），六项全部改善。对空FQ单独周期−1/−1/0/−47/−1/−31，IPC+0.139207%；对SA单独周期−484/−678/−9/−46/−8257/−27，IPC+2.608839%；三个基准逐项无退化，非叠加独立收益。长期IPC>1.0985仍未达。
-
-精确复用已审计FQ的queue／frontend两项及SA的core一项，其余41项RTL与公共SRAM保持，不带入其他释放信用或已否决方案。最终证据`sync/evidence/fq-sa-combined-screen-20261104-r01/finalization.json`；完整证书／每候选审计与模型日志在`.cpu2026-synthesis/fq-sa-combined-screen-20261104-r01/`；说明`sync/FQ-SA-COMBINED-SCREEN-20261104.md`。
-
-生产／两软件／正式指针／镜像／Slave／旧黄金／既有code及三树HEAD／Git索引保持，未综合／ABC／STA／采用，无新面积／Fmax／评分或IPC×Fmax结论，不拼接生产PPA，不算完整优化轮。单组合授权完成，不自动采用、恢复综合或扩大其他实验。以下阶段记录保留历史归属。
-
-### 2026-11-04：用户授权采用空FQ＋SA组合并开始全新综合，尚未正式发布
-
-用户最新要求“采纳，并开始综合”。只对已审计单组合`fq-sa-combined-screen-20261104-r01/candidate`启动一次全新整核综合／ABC／STA及独立审计；精确复制44项RTL、公共SRAM、converted输入和原六项日志，无旧checkpoint继承，不热改运行中快照。同五ASAP7库、248 SRAM宏、2ns目标及INVx1／5fF约束。入口`sync/measure_fq_sa_combined_ppa.py`；根`.cpu2026-synthesis/fq-sa-combined-ppa-20261104-r01/`；独立审计`sync/audit_fq_sa_combined_ppa.py`，最终看对应证据根`finalization.json`。没有扩大其他候选／组合或恢复第28轮，也无额外面积专项，不算完整优化轮。
-
-采用已获用户授权，但正式发布仍须新面积<36000、Fmax>300和软件资格通过，任何失败停止发布，不把用户授权或综合启动当采用完成。独立暂存两软件只同步空FQ原始返回上下文／单次消费和Store地址RS授权WB，主树只读comb旧快照／Input逐字段写目标，模板Register单写／统一sync保持；共13项构建输入变化、113项保持，不复制模块next-state，不恢复观察探针。将跑全新Release／断言四构建原六项答案／退休数／init+core+drain和外部副本退休PC／周期匹配RTL组合。
-
-首轮软件暂存r01首次主树构建缺ICache完整类型include而失败，未标通过，原日志保留；r02仅补include，新根`.cpu2026-synthesis/fq-sa-combined-production-adoption-20261104-r02/`重跑四构建，入口`sync/validate_fq_sa_combined_software_r02.py`。综合RTL和既有资格保持。采用入口`sync/adopt_fq_sa_combined_after_qualification.py`用单次pidfd事件等两个服务退出，通过新PPA及软件证书／门槛后才备份、复制三项RTL／13项软件、原子发布正式指针并做发布后回归。
-
-当前生产及两软件、正式指针尚为ROB Load身份版，镜像／Slave／旧黄金／既有code和三树HEAD／索引保持，未提交／推送。没有提前面积／Fmax／评分或采用成功结论，不拼接旧PPA。最终采用看`sync/evidence/fq-sa-combined-production-adoption-20261104-r02/finalization.json`；说明`sync/FQ-SA-COMBINED-PPA-ADOPTION-20261104.md`。本次单候选工作结束后综合恢复暂停。
-
-### 2026-11-04：空FQ＋SA组合两软件四构建及退休资格完成，新PPA仍执行
-
-r02隔离软件资格已完成，收口核验输入／二进制／报告哈希通过。主树及模板全新Release／断言四构建原六项答案、退休数、init+core+drain均等同组合RTL课程周期8605/17550/3985/5864/155719/168501；两个外部观察副本各374104条退休PC／周期逐条匹配。主树旧快照/Input写纪律及模板Register单写／统一sync保持，无生产观察探针。13项构建输入变化、113项保持，原r01缺ICache include构建失败保留，不重标通过。
-
-资格证书`.cpu2026-synthesis/fq-sa-combined-production-adoption-20261104-r02/validation-complete.json`、`software/validation-r01/summary.json`、`software/retirement-r01/summary.json`。当前生产RTL／两软件／正式指针及三树HEAD／索引核验保持，新整核综合／ABC／STA仍为`fq-sa-combined-ppa-20261104-r01`同一授权任务。采用服务已通过单次pidfd事件等待PPA完整退出并成功审计，之后核验新面积<36000及Fmax>300才发布；软件通过不等于PPA或采用完成，不热改／重启综合，不扩大其他候选。
-
-### 2026-11-04：正式采用空FQ＋Store地址RS WB组合（优先于以下历史）
-
-用户要求“采纳，并开始综合”，已在全新PPA及两软件资格通过后采用`fq-sa-combined-ppa-20261104-r01`。面积34706.754007 μm²、Fmax307.969925 MHz、原六项几何IPC1.010966177065、评分2.670710512892e-07。相对上一生产IPC+2.780824%、面积+0.223820%、Fmax-3.248120%、评分+7.489459%。IPC×Fmax估算-0.557621%（非墙钟实测）。排名不自动授权其他候选。
-仅旧FQ／IQ均空时返回包直通译码，整组分配或整组进入IQ；宽前端proposal独立ready，真实上下文按实际接受出队，旧路径保持。旧Store地址RS使用已授权CDB值派发，真正获共享AGU接受才返还信用，新分配不得同拍派发。三项RTL变化，不加其他释放信用、已否决PRF排名／Store地址通知／回填字捕获／miss接续，不改BPU算法／表、容量、执行宽度、访存协议或Slave。
-44项RTL及公共SRAM与已审计组合精确同源；本次同源全新整核综合／ABC／STA已完成并独立Liberty逐叶面积、约束、六阶段checkpoint及评分审计，不拼接旧PPA。资格来自`fq-sa-combined-screen-20261104-r01`局部native／converted两组oracle、四源码负向和原六项完整日志；不声称完整状态／全输入形式等价或另建生产路径RTL模型。
-两软件同步空FQ单次消费与SA旁路，共13项构建输入变化、113项保持；主树只读旧快照/Input逐字段写目标，模板Register单写／统一sync保持。全新Release／断言四构建原六项答案／退休数／init+core+drain及外部副本退休PC／周期匹配。课程周期8605/17550/3985/5864/155719/168501。旧黄金、镜像、Slave、既有code及三树HEAD／索引保持。
-面积<36000及Fmax>300通过，长期几何IPC>1.0985仍未达。此次为已筛选组合的PPA及采用，没有额外面积专项，不算完整新优化轮。单候选综合授权已结束，全部综合／ABC／STA恢复暂停，不自动启动其他实验。
-正式指针`sync/evidence/current-production.json`；证书`sync/evidence/fq-sa-combined-production-adoption-20261104-r02/adoption.json`；软件说明`docs/hardware-baseline-fq-sa-combined.md`。以下记录保留历史归属。
-
-### 2026-11-04：FQ＋SA组合重启后归档修复、正式替换与发布后复验完成
-
-正式采用与发布后收口均完成，生产指针已切换为`fq-sa-combined-ppa-20261104-r01`，SHA256 `cae9211354a5724188eb0e4a74ae9872eb89751517a963248d5893c69698fc66`。已备份并替换三项RTL、两软件13项源码，其余41项RTL及113项软件构建输入保持；发布后Release／断言六项双树复验匹配8605/17550/3985/5864/155719/168501。44项RTL、126项软件与同源资格、PPA原始产物及备份／三树HEAD／索引核验通过。镜像／Slave／旧黄金／既有code保持，未提交／推送。
-
-本次全新综合／ABC／STA在重启前已完成；首份PPA审计之后，旧最优保留入口访问用户此前清理的历史RTL，`retention.log`报`invalid RTL entry`，采用门禁正确停止。重启后核验确认新输入、六阶段checkpoint、网表、STA及软件资格完整，仅旧job记录了真实归档失败状态；保留原失败与r01审计，不重跑已完成综合／ABC／STA／软件四构建。`audit_fq_sa_combined_ppa_r02.py`只读重新审计同一次测量、写新r02证书，并用cleanup-aware helper只追加历史认证指标，不假称旧源码／模型恢复；新PPA最终证书通过后才备份、复制、原子发布及复验。修复归属`sync/evidence/fq-sa-combined-ppa-20261104-r01/archival-recovery-provenance.json`。
-
-最终面积34706.754007 μm²、Fmax307.969925 MHz、几何IPC1.010966177065、评分2.670710512892e-7；相对旧生产面积+0.223820%、Fmax−3.248120%、IPC+2.780824%、评分+7.489459%。IPC×Fmax估算−0.557621%，不是墙钟实测。面积<36000与Fmax>300通过，长期几何IPC>1.0985仍未达。r16追加指标、r17生产重绑定，本组合为已审计最高IPC／最高评分者；排名不自动授权后续采用。r17通用helper历史“评分退化”标志与本次正向评分变化不符，另以`production-decision-clarification.json`追加实际正向变化及本次用户授权归属，原证书不回写。
-
-采用最终证书`sync/evidence/fq-sa-combined-production-adoption-20261104-r02/finalization.json`及`post-publication-verification.json`；说明`sync/FQ-SA-COMBINED-PPA-ADOPTION-20261104.md`。模型资格精确复用已审计组合native／converted，不声称另重建生产路径RTL模型或完整状态／全输入形式等价。全部综合／ABC／STA已恢复暂停，本次单候选采用结束，不启动其他候选／组合／清理；没有额外面积专项，不算完整优化轮。
-
-### 2026-11-04：I$扩容1／2／4 KiB隔离正确性与IPC筛选启动
-
-用户要求“帮我尝试扩容I$，看看有没有用”。当前FQ＋SA组合正式生产I$为1 KiB＝16行×64字节直接映射；本次顺序新测1 KiB真实计数基线、独立2 KiB（32行）和独立4 KiB（64行）。每个候选从当前生产复制44项RTL，只在student_top的实际u_icache实例增加SETS参数，其他43项保持；同步单1RW公共SRAM实现、64字节行、相联度、请求深度、包几何、BPU、AXI／Slave和服务延迟不变。无预取、关联度／缓存协议／执行宽度扩展，不混入其他候选。
-
-先整核native组合环／锁存检查，再实际ICache＋公共SRAM native／converted全部行、高index位及tag边界、双词及行末、预译码控制、backpressure、flush／freeze／reset端口oracle与两个实际源码负向，通过后分别全新native／converted原六项答案、退休数和九字段架构退休匹配生产，同容量完整日志逐字节一致。1 KiB计数基线需保持当前生产周期8605/17550/3985/5864/155719/168501。外部驱动增加逐拍I$实际握手计数，不修改RTL、sim.cpp、生产探针或Slave；独立重数周期和行请求／fill等，投机取指包含在内，不把重复miss都说成容量冲突、也不以事件数代替整核节省。
-
-入口`sync/run_icache_capacity_sequence.py`；根`.cpu2026-synthesis/icache-capacity-screen-20261104-r01/`，三个独立子目录`baseline-1k`／`icache-2k`／`icache-4k`；审计`sync/audit_icache_capacity_sequence.py`单次pidfd退出事件接续，不轮询。F盘输出／临时文件，持清理共享锁。最终看工作根`completion.json`／`finalization.json`和`sync/evidence/icache-capacity-screen-20261104-r01/`；说明`sync/ICACHE-CAPACITY-SCREEN-20261104.md`。
-
-当前生产／两软件／正式指针／镜像／Slave／旧黄金／既有code和三树HEAD／索引保持；全部综合／ABC／STA仍暂停，不自动采用。没有候选面积／Fmax／评分，不将数据位数增长冒称整核面积实测，不拼接生产PPA，不算完整优化轮，执行中不提前认定扩容有效。
-
-### 2026-11-04：I$扩容筛选结束：2／4 KiB同收益，独立审计接续中
-
-1／2／4 KiB三项局部native／converted实际ICache＋公共SRAM端口oracle、两个有效源码负向及原六项全新native／converted答案、退休数、九字段架构退休匹配均通过，同容量完整日志及计数相同；1 KiB计数基线周期严格等于当前生产。最终独立raw重数、源参数／保护／HEAD索引审计接续中，不提前认定其完成。
-
-2 KiB与4 KiB周期完全相同8605/17550/3985/5818/155719/168501，仅towers比生产5864少46拍，其余五项不变，无单项退化；几何IPC1.012294009574，相对生产+0.131343%。实际取指行请求由13/19/8/54/29/48变为13/19/8/51/29/48，总计171→168，仅towers少3次。towers接受包tag命中率98.627002%→98.702620%，投机接受包3933→3931；其余五项接受包tag命中率原为99.6749%～99.9784%。计数包含投机，不当退休miss率或每次固定节省拍数。
-
-对本批六项，2 KiB已取得4 KiB的全部容量收益，4 KiB无额外实测收益；不证明所有程序更大I$都无用。没有综合／ABC／STA或面积／频率／评分，不能判断PPA值得，不自动采用或扩大容量实验。生产I$仍1 KiB，生产／两软件／正式指针及镜像／Slave／旧黄金／既有code和三树HEAD／索引保持。最终看`.cpu2026-synthesis/icache-capacity-screen-20261104-r01/finalization.json`；说明`sync/ICACHE-CAPACITY-SCREEN-20261104.md`。
-
-### 2026-11-04：I$最终审计通过，用户决定不扩容
-
-1／2／4 KiB有限筛选及最终独立审计已完成通过，证书`sync/evidence/icache-capacity-screen-20261104-r01/finalization.json`。收口只读核验三项audit哈希、认证输入、保护输入、正式生产指针和三树HEAD／索引保持，未重复构建或实验。2／4 KiB均仅towers少46拍，几何IPC+0.131343%，4 KiB无额外收益；没有综合／ABC／STA或新面积／Fmax／评分。
-
-用户最终明确“那I$不扩容”。生产保留1 KiB（16行×64字节），不采用本批2／4 KiB候选，不启动扩容综合或后续容量实验。两软件及正式指针保持，筛选结果与审计证据保留，所有综合继续暂停。说明`sync/ICACHE-CAPACITY-SCREEN-20261104.md`；以下接续中记录保留阶段历史归属。
-
-### 2026-11-04：按用户要求开始D$容量8／16／32 KiB隔离筛选
-
-用户“尝试扩容D$”。当前FQ＋SA生产D$为128组×2路×32字节＝8 KiB，本次顺序新测8 KiB计数基线、独立16 KiB（256组）、独立32 KiB（512组）。每项从同一生产复制44项RTL，扩容只改dmem_backend实际cache实例SETS参数，其他43项RTL和公共SRAM实现保持。两路相联、32字节行、PLRU、8总请求信用、4 MSHR、Store位置4项、合并、写回／早字返回、LSU及AXI／Slave和访存延迟保持；I$按用户决定仍为1 KiB。不扩其他队列或执行宽度、不混入已否决旁路。
-
-先整核环／锁存检查，再实际DCache＋SRAM＋行控制器native／converted端口字节oracle，覆盖全部组两路、高index／tag边界、暖一拍命中、跨word mask、全部驻留行脏淘汰实际地址／整行payload、旧脏数据读回、随机并发和reset语义，两个有效RTL负向分别丢高set位及脏victim高index位。通过后各容量全新native／converted原六项答案／退休数／九字段架构退休匹配生产，同容量完整日志和计数一致；8 KiB基线严格匹配生产周期。外部驱动只读CPU及行接口握手，独立raw周期／退休／请求计数审计，不将含投机／合并的行请求率说成精确miss率、不以请求数代替节省拍数。
-
-入口`sync/run_dcache_capacity_sequence.py`；根`.cpu2026-synthesis/dcache-capacity-screen-20261104-r01/`；审计`sync/audit_dcache_capacity_sequence.py`单次pidfd事件接续，不轮询。F盘输出／临时文件及清理共享锁保持；说明`sync/DCACHE-CAPACITY-SCREEN-20261104.md`。最终看根及`sync/evidence/dcache-capacity-screen-20261104-r01/finalization.json`，执行中不提前认定正确或收益。
-
-生产／两软件／正式指针／镜像／Slave／旧黄金／既有code和三树HEAD／索引保持，所有综合／ABC／STA仍暂停，不自动采用。不测PPA、无新面积／Fmax／评分，不拼接生产PPA、不算完整优化轮；此有限筛选不授权其他实验。
-
-### 2026-11-04：D$首轮基线通过，16／32 KiB工具循环展开限制后r02接续
-
-r01有限序列已完成并独立审计；8 KiB新观察基线局部native／converted、两个有效负向及原六项全新模型／退休／计数通过，周期8605/17550/3985/5864/155719/168501严格匹配生产。实际行读152/53/152/13/663/4896，脏行写0/0/0/0/266/3037（课程结束未人为flush）。16／32 KiB在首个native-lint因原逐组valid／PLRU非阻塞赋值循环触发五条BLKLOOPINIT；无UNOPTFLAT／LATCH，没有扩容IPC资格，不把工具限制称为功能失败或无收益结论。r01证书`sync/evidence/dcache-capacity-screen-20261104-r01/finalization.json`明确all_attempts_correct=false，原日志／输入不回写。
-
-r02只提高Verilator unroll-stmts 100000→1000000，保留unroll-count1024及全部检查，不改RTL／非阻塞赋值／生产builder。新构建包装`sync/build_dcache_capacity_verilate.py`仅对本实验生效。入口`sync/resume_dcache_capacity_sequence_r02.py`在新根`.cpu2026-synthesis/dcache-capacity-screen-20261104-r02/`复用已审计8 KiB资格、只重试16／32 KiB；两候选44项RTL必须逐字节等于r01。审计`sync/audit_dcache_capacity_sequence_r02.py`单次pidfd退出接续，重核raw计数、源同一性和保护输入，最终以r02 finalization.json为准。
-
-生产／两软件／正式指针、I$1 KiB和Git HEAD／索引保持，所有综合继续暂停；尚不提前认定扩容正确或有收益，无新面积／频率／评分，不自动采用或扩展其他实验。
-
-### 2026-11-04：D$容量筛选完成，最终独立审计接续中
-
-r02的16／32 KiB两候选局部native／converted实际模块字节oracle、两个有效RTL负向、原六项全新native／converted答案／退休数／九字段架构退休匹配均通过，同容量完整日志和计数一致。44项RTL逐字节等于各自r01，只提高工具展开预算。8 KiB复用r01已审计基线。
-
-16 KiB周期8605/17550/3985/5864/153691/123434，几何IPC1.067120429364（相对生产+5.554513%）；32 KiB周期8605/17550/3985/5864/153694/119945，几何IPC1.072228789166（+6.059808%）。两者相对生产六项均不退化：qsort分别−2028／−2025拍，rsort分别−45067／−48556拍，其他四项不变。32 KiB相比16 KiB的rsort再少3489拍、qsort多3拍，不宣称更大容量逐项都更好。长期几何IPC>1.0985两者仍未达。
-
-实际行读8 KiB152/53/152/13/663/4896，16 KiB152/53/152/13/519/1152，32 KiB152/53/152/13/516/803；实际脏行写分别0/0/0/0/266/3037、0/0/0/0/6/505、全零。零脏行写仅是课程内观察，Store请求数保持，结束未人为flush，不能当作所有脏数据已持久化；Load含投机，不当作退休miss率或固定节省拍数。
-
-有限筛选已结束，最终独立审计接续中，不提前标其完成。无综合／ABC／STA、无新面积／Fmax／评分，不能判断容量是否满足PPA门槛或更值得。生产D$8 KiB／I$1 KiB、两软件及正式指针保持，全部综合暂停，不自动采用或扩展实验。最终以`sync/evidence/dcache-capacity-screen-20261104-r02/finalization.json`为准，说明`sync/DCACHE-CAPACITY-SCREEN-20261104.md`。
-
-### 2026-11-04：D$容量筛选及最终独立审计完成，生产保持8 KiB
-
-最终r02独立审计已完成通过，证书`sync/evidence/dcache-capacity-screen-20261104-r02/finalization.json`，三项correct均为true。独立raw退休／周期／实际D$端口计数重数、源参数复现、同容量native／converted完整日志和有效负向资格、保护输入及三树HEAD／索引核验通过。收口只读再次核验三项audit哈希、认证输入／保护输入及当前生产指针SHA256 `cae9211354a5724188eb0e4a74ae9872eb89751517a963248d5893c69698fc66`保持，未重跑已完成的构建或实验。
-
-16 KiB几何IPC1.067120429364（+5.554513%），32 KiB1.072228789166（+6.059808%），均相对8 KiB生产六项不退化；32 KiB相对16 KiB的rsort少3489拍而qsort多3拍。扩容在本批IPC有收益，但没有候选面积／Fmax／评分，不能认定哪个容量满足PPA门槛或更划算，长期几何IPC目标仍未达。原失败及r01审计不回写；r02仅提高工具循环展开预算，两扩容候选44项RTL与r01逐字节一致，8 KiB原资格按哈希复用并重核。
-
-生产仍D$8 KiB／I$1 KiB，两软件／正式指针保持。没有综合／ABC／STA或采用，不拼接旧PPA，不算完整优化轮。此有限序列完成，不自动继续容量／组合／其他实验，不恢复综合；所有综合仍暂停。说明`sync/DCACHE-CAPACITY-SCREEN-20261104.md`；以下接续中记录保留阶段归属。
-
-### 2026-11-04：16 KiB D$单候选综合及旧综合工作集／编译缓存清理启动
-
-用户要求“尝试16kib的综合”，仅对已审计16 KiB候选一次全新整核综合／ABC／STA及独立审计，不授权32 KiB或生产采用。入口`sync/measure_dcache16_ppa.py`，根`.cpu2026-synthesis/dcache16-ppa-20261104-r01/`，精确复制`dcache-capacity-screen-20261104-r02/dcache-16k`44项RTL／公共SRAM／已验证converted与原六项日志资格；不重跑筛选、不热改原快照。几何IPC1.067120429364（+5.554513%），课程周期8605/17550/3985/5864/153691/123434。新测量从elaborate开始，同五库／248宏／2ns／INVx1及5fF，没有checkpoint继承；独立Liberty逐叶面积、实际D$256组数据／tag宏几何及其他SRAM形状、STA／约束／六阶段checkpoint和评分审计。指标只追加认证记录，不访问已清理历史原始网表／源码。
-
-用户同时要求“清除除了当前综合和应用到生产的综合以外的所有综合产物”“与综合编译缓存”。本次覆盖旧保留最近三次规则，仅清F盘实验根旧synthesis工作集网表／checkpoint／生成包装和综合编译文件、早于当前启动且无主的ABC临时缓存；保留指标／约束摘要capsule和审计证书，不回写旧manifest，不删RTL／软件源码、仿真模型／trace、镜像／Slave／工具链／Git。保护当前16 KiB综合和当前正式生产`fq-sa-combined-ppa-20261104-r01`及二者资格与认证输入，动态排除活动路径和当前新临时目录。
-
-清理入口`sync/clear_old_synthesis_products_20261104.py`、收据`.cpu2026-synthesis/synthesis-products-clear-20261104-r01/`；独立mutex＋retention共享锁，在严格排除当前与生产树后同时清旧树，不停／重启／修改本次综合，常规独占清理延后。逐文件路径／字节数／SHA256意图先持久化再unlink，全量意图／执行配对及不存在检查，并重核当前PPA认证输入／生产原始PPA。删除后仅保留历史认证指标，不宣称旧网表仍可重审。
-
-两任务执行中，不提前认定完成；PPA最终看`sync/evidence/dcache16-ppa-20261104-r01/finalization.json`。生产D$8 KiB／I$1 KiB、两软件及正式指针保持。没有额外面积专项，不算完整优化轮；此次单候选结束后所有综合恢复暂停。说明`sync/DCACHE16-PPA-20261104.md`。
-
-### 2026-11-04：旧综合产物与编译缓存清理完成，当前16 KiB及生产PPA保留
-
-用户追加授权的定界清理已完成：删除50文件、2369238271逻辑字节（约2.21 GiB），完成时F盘可用16857563136字节。实际有残余待删大产物的两树为`rob-load-identity-ppa-20261103-r01/synthesis`（中断记录2文件）和`rob-load-identity-ppa-20261104-r01/synthesis`（48文件）；其他旧synthesis此前已清至指标／约束capsule，两个早于本次的ABC临时目录无残余文件，未伪报额外缓存删除量。
-
-收据`.cpu2026-synthesis/synthesis-products-clear-20261104-r01/completion.json`，独立核验`verification.json`。逐文件SHA256意图先持久化再unlink，全量意图／执行配对及50路径全部不存在通过；复扫84个符合范围的旧synthesis／ABC树，无非capsule产物残余。当前`dcache16-ppa-20261104-r01`认证输入和保护清单、现正式生产`fq-sa-combined-ppa-20261104-r01`原始PPA哈希、三树HEAD／索引完整。当前综合未停止／重启／修改，生产／两软件／I$保持。
-
-RTL／软件源码、仿真模型／退休trace、镜像／Slave／工具链／Git、指标摘要和审计证书未纳入删除；原manifest不回写，旧根追加清理标志，不声称旧已删网表仍可重新审计。该次清理结束，不自动继续清理。16 KiB综合仍执行中，无提前PPA结论；最终看`sync/evidence/dcache16-ppa-20261104-r01/finalization.json`。说明`sync/DCACHE16-PPA-20261104.md`。
-
-### 2026-11-04：按用户追加要求清理旧仿真编译缓存（已完成，以下保留执行阶段）
-
-用户查看目录空间后要求“帮我把旧仿真编译缓存删除”。新增授权仅清F盘`.cpu2026-synthesis/`内旧Verilator生成C++／头／对象／库／预编译头／ELF模型、旧sim／probe-*和旧CMake软件模拟器对象缓存，覆盖此前旧仿真模型保留要求；RTL／转换Verilog／夹具源码、trace／日志、指标／审计／manifest、镜像／Slave／工具链／Git及实际生产源码不删，既有code可执行文件保持。
-
-保留当前16 KiB综合、16 KiB已验证模型及8 KiB基线、当前正式生产FQ＋SA综合及资格模型和最新软件采用构建；当前PPA及资格全部认证输入逐路径保护，其他活动实验根动态排除。不停止／重启／修改本次综合，也不启动新综合或采用。独立清理mutex与retention共享锁在定界排除后并行运行。
-
-入口`sync/clear_old_simulation_cache_20261104.py`，收据`.cpu2026-synthesis/simulation-cache-clear-20261104-r01/`。逐批路径／SHA256／字节数意图先fsync持久化，再核验文件身份并unlink；全量意图／执行配对、所有删除路径不存在、残余缓存重扫及当前认证输入／生产原始PPA／三树HEAD索引复验。只读预检目录扫描超过120秒返回超时，没有执行删除；正式清理后台服务不带该前台超时，执行中不提前认定完成。最终以completion.json为准。
-
-历史原manifest和认证结论保持，不将删除后的旧生成模型描述为仍可运行；后续若需重执行须重新编译。说明`sync/SIMULATION-CACHE-CLEAR-20261104.md`。
-
-### 2026-11-04：旧仿真编译缓存清理完成，释放约24.09 GiB
-
-后台清理正常完成：删除18066个生成编译文件、25846338431逻辑字节／25871749120分配字节（约24.09 GiB）；完成时F盘可用43241811968字节（约40.27 GiB），同期当前综合可能继续写入，不把可用空间变化全归因清理。`du -x -sh`复测实验目录约20 GiB，仍保留日志／trace、源码／输入／记录、当前和生产综合及受保护模型。
-
-收据`.cpu2026-synthesis/simulation-cache-clear-20261104-r01/completion.json`；全量意图／执行journal配对和18066路径全部不存在、符合此次范围的残余重扫、当前PPA／资格／软件认证输入、生产原始PPA与三树HEAD／索引检查通过。收口再次认证两journal SHA256、正式生产指针和protected清单完整。当前16 KiB综合未停止／重启／修改，当前及正式生产资格模型、必要8 KiB基线和最新生产软件构建保持。
-
-RTL／转换Verilog／夹具源码、trace／日志、指标／审计／manifest、镜像／Slave／工具链／Git及既有code未纳入删除。旧生成模型已删后须重新编译才能执行，不回写历史证书或宣称旧模型仍直接可用。本次清理结束，不继续删除剩余trace／日志或保护模型，不扩展综合／采用授权。说明`sync/SIMULATION-CACHE-CLEAR-20261104.md`。
-
-### 2026-11-04：16 KiB D$综合／ABC／STA及独立审计完成，面积超限未采用
-
-唯一授权任务`dcache16-ppa-20261104-r01`已完整完成全新elaborate、六阶段checkpoint、ABC映射和STA，独立Liberty逐叶面积、约束／时序／评分及真实SRAM几何审计通过。面积38112.641969 μm²，相对生产+9.813329%；Fmax314.399754 MHz（+2.087811%），六项几何IPC1.067120429364（+5.554513%），评分2.806711828927e-7（+5.092327%）。IPC×Fmax吞吐估算+7.758292%，不是墙钟实测。**面积<36000失败，超出2112.641969 μm²**；Fmax>300通过，长期IPC>1.0985仍未达。评分改善不能覆盖面积硬约束，不自动采用。
-
-精确复用已审计16 KiB候选44项RTL／公共SRAM／converted和原六项资格，不重新构建已完成模型，不继承历史checkpoint或拼接生产PPA。实际D$256组×2路×32字节、数据64个256×8／tag2个256×20宏及其他SRAM形状保持独立检查通过；原六周期8605/17550/3985/5864/153691/123434，同源native／converted答案／退休／完整日志资格保持。没有新面积专项，不算完整新优化轮。
-
-最终证书`sync/evidence/dcache16-ppa-20261104-r01/finalization.json`；结果报告`sync/DCACHE16-PPA-RESULTS-20261104.md`，说明`sync/DCACHE16-PPA-20261104.md`。最终收口只读再次核验新PPA原始产物及认证输入／保护清单、正式生产指针和三树HEAD／索引保持。cleanup-aware指标索引r18追加新认证指标，旧已清理源码／模型／网表不重新认证，不冒称可恢复重审。生产D$8 KiB／I$1 KiB、两软件／正式指针均未改，未采用／提交／推送。
-
-当前单候选综合授权已结束，所有综合／ABC／STA恢复暂停，不启动32 KiB或新候选／面积专项／采用／清理。此前两次定界清理均已完成，当前／生产原始PPA及必要资格模型保留；旧已删产物不可伪称仍可执行或重新审计。以下为各阶段历史。
-
-### 2026-11-04：减面积模块离线排查完成，未实现／未综合
-
-按用户“查找可以减少面积的模块”只读分析当前生产及16 KiB候选现存认证网表／Liberty／源码。驱动`sync/analyze_area_opportunities_20261104.py`、结果`.cpu2026-synthesis/area-opportunities-20261104-r01/analysis.json`、说明`sync/AREA-OPPORTUNITIES-20261104.md`。两份design／report／converted哈希对原审计，宏几何由认证report核对，逐单元Liberty面积合计容差匹配；无新Yosys／ABC／STA或RTL模型构建。
-
-16 KiB面积增长3405.887962 μm²，其中D$ SRAM增2956.124122（86.794520%），非SRAM增449.763840（组合305.713440／时序144.050400）；其他SRAM几何不变。要保16 KiB并过严格<36000须压缩超过2112.641969，约逻辑面积6.675921%。仅消除扩容控制增量不够。展平ABC门无source属性，不能得到当前精确完整模块组合面积；只报告可归属时序和实际SRAM，854.562960时序留作未唯一归属，不强行摊分。
-
-建议优先ROB载荷／写入与存储结构、RS载荷／宽mux、PRF多路读与上一拍写转发，次选FQ/IQ payload banking及D$请求／MSHR／victim。ROB1401.837840、RS763.467120、PRF278.857080、FQ/IQ575.268480和D$1044.219600均仅是成功归属的时序面积，不是模块总面积或节省估计。全部17458带reset/set FF若不现实地全部一换一普通FF，单元差也仅1527.225840；实际控制／预测计数器不能这么改，此数不是完整优化收益上限（不含组合门变化）。
-
-必须保持原容量／执行宽度／信用与WB旁路、完整tag安全、freeze/flush及多读写周期；SRAM化不能忽略同步读／最近写转发成本，载荷去复位需审查失效端口可观察合同。已实现的ROB分组写、PRF全局仲裁和FIFO/D$载荷去复位不重复算新方案，已否决方案不恢复；不改BPU算法／表。所有方向尚无实现、资格或PPA收益，不承诺可省2113。生产D$8 KiB／I$1 KiB、两软件／指针及HEAD／索引保持，全部综合继续暂停，不自动实现／组合／采用。
-
-### 2026-11-04：8 KiB D$加4条寄存器全相联树PLRU victim cache筛选与条件综合启动
-
-用户要求在8 KiB基础尝试4 cacheline全相联PLRU victim cache、寄存器实现，随后明确“如果有ipc加成，进行综合”。本次只授权单候选先正确性／IPC，独立审计通过且原六项逐项不退化、几何IPC严格提高后一次全新整核综合／ABC／STA；不授权采用、其他候选或新清理。保持主D$128组×2路×32字节、I$1 KiB、8信用／4 MSHR、早字与LSU/AXI/Slave合同；隔离快照只改DCache及backend两项，其余42项RTL／公共SRAM保持，不恢复已否决方案。
-
-VC为4×32字节数据寄存器＋完整line tag／valid／dirty／3位树PLRU和交换身份簿记，不是精确LRU，128字节非全部面积成本。主miss实际分配时查VC；hit则预留VC行到内部整行fill、换进主D$并将旧主victim存该VC槽，dirty随行。miss则有效主victim插VC，最低无效优先／PLRU排除预留行，只有脏VC淘汰才以原MSHR写回真实line／payload；复用原四个MSHR victim payload，不额外复制四行data buffer。物理fill优先，内部fill绝不ack物理总线；运输owner仍按原完整fill生命周期释放，reset不假设flush脏数据。
-
-局部真实DCache＋公共SRAM＋行控制器native／converted端口字节oracle，独立两路主cache＋4条树PLRU模型检查读写流量、dirty swap／淘汰、完整地址、数据mask／高tag、reset，另8槽／4MSHR饱和、独立背压／900随机及早字owner／后到同字Load测试。禁hit、丢dirty、坏payload、错PLRU四个有效源码负向；原安全／组合环／锁存检查不关。之后全新原六项native／converted答案／退休数／九字段退休匹配当前生产、同容量完整日志一致。外部D/V事件观察及独立raw计数不等同退休miss率或固定节省拍数。
-
-筛选`sync/run_dcache_victim4_experiment.py`，根`.cpu2026-synthesis/dcache-victim4-screen-20261104-r01/`，审计`sync/audit_dcache_victim4_screen.py`单次pidfd事件接续。条件服务`sync/qualify_and_measure_dcache_victim4_ppa.py`单次pidfd等审计完整退出，核验原六项、正向几何IPC、认证输入和指针才启PPA；失败／无收益只写门禁未通过、不创建PPA根。条件收据`sync/evidence/dcache-victim4-conditional-ppa-20261104-r01/`。通过后新测量`dcache-victim4-ppa-20261104-r01`精确复制同源44项RTL／SRAM／converted及日志资格，从elaborate新跑，同五库／248原SRAM／2ns／INVx1与5fF，独立逐叶面积、约束／六checkpoint／STA／评分和cleanup-aware指标归档。单候选结束全部综合恢复暂停。
-
-生产／两软件／正式指针／镜像／Slave／旧黄金／既有code和三树HEAD／索引保持，不自动采用。当前执行中，不提前认定资格或收益，不拼接旧PPA，不算含独立面积专项的完整优化轮。说明`sync/DCACHE-VICTIM4-20261104.md`。
-
-### 2026-11-04：Victim4局部资格通过，观察器别名消除失败后r02原RTL接续
-
-r01整核环／锁存、实际DCache＋SRAM＋行控制器局部native／converted字节及树PLRU端口oracle、四个实际源码负向全部通过，native整核模型成功构建；外部观察驱动生成因头文件不存在`vcAccessFireInner`停止。该wire是功能开启下`allocateMissInner>=0`的别名，Verilator已消去；不是已观测的DUT错误，但整核六项IPC尚未执行，不能标候选完整通过。r01失败／局部资格／模型及审计保留，条件门`qualification-gate.json`passed=false，正确未创建PPA根或启动综合。
-
-r02只修外部observer，读取保留的32位allocateMissInner，以有符号>=0还原原分配事件；不改RTL或加观察端口，原candidate／logic／bench保持，44项RTL与r01逐字节相同。按哈希认证旧local／四负向证据和整个native模型，纳入新pins并原地只读复用，不重复局部测试或native构建；仅新链接observer、converted整核构建以及两模型原六项完整执行。旧证书／输入／失败不回写。
-
-入口`sync/resume_dcache_victim4_experiment_r02.py`，工作根`.cpu2026-synthesis/dcache-victim4-screen-20261104-r02/`，独立审计`sync/audit_dcache_victim4_screen_r02.py`核验复用链、源复现、全部新raw退休／周期／计数及保护输入。条件`sync/qualify_and_measure_dcache_victim4_ppa_r02.py`单次pidfd等待r02审计完整退出，以同一“有IPC加成再综合”授权严格门禁，收据`sync/evidence/dcache-victim4-conditional-ppa-20261104-r02/`；通过后只测`dcache-victim4-ppa-20261104-r02`一次新PPA，r01没有综合。不提前认定IPC收益，生产／两软件／正式指针保持，未采用。说明`sync/DCACHE-VICTIM4-20261104.md`。
-
-### 2026-11-04：Victim4 native六项有小收益，第二个观察别名问题后r03仅补转换六项
-
-r02完成native原六项答案／退休数／九字段匹配：周期8605/17550/3985/5864/155646/167232，qsort−73、rsort−1269，其余四项不变，native几何IPC1.012319842491（+0.133898%）。VC hit0/0/0/0/14/118，实际行读152/53/152/13/649/4780、脏行写0/0/0/0/260/2928，包含投机／时序影响，不将流量差等同VC hit或固定省拍数。converted整核构建也成功，但该模型优化消去了`vcReadMissInner`别名，外部观察器再次停止，converted六项未跑，尚不是双模型完整资格；r02失败／审计及门禁不通过收据保留，正确未启动PPA。
-
-r03只修observer，用有符号allocateMiss>=0、实际vcAllocHit以及allocation&&!hit还原同一事件，预检同时通过两份实际头文件全部所需字段。原RTL／逻辑／bench不改，44项RTL及full-converted输入逐字节同源。按哈希复用r01局部两模型／四负向／native构建、r02 native六项完整日志和converted构建，不重复这些已完成工作；只链接converted新observer及补跑converted原六项，随后独立重新raw重数、比对两模型完整日志及复用证据链。
-
-入口`sync/resume_dcache_victim4_experiment_r03.py`，根`.cpu2026-synthesis/dcache-victim4-screen-20261104-r03/`，审计`sync/audit_dcache_victim4_screen_r03.py`。条件`sync/qualify_and_measure_dcache_victim4_ppa_r03.py`单次pidfd等审计，门禁`sync/evidence/dcache-victim4-conditional-ppa-20261104-r03/`；同一条件授权通过后只测`dcache-victim4-ppa-20261104-r03`一次新PPA。r01／r02均未综合；不提前认定最终IPC资格。生产／两软件／指针保持，不自动采用。说明`sync/DCACHE-VICTIM4-20261104.md`。
-
-### 2026-11-04：Victim4双模型筛选及独立审计通过，正向IPC门禁后启动唯一PPA
-
-r03筛选及独立审计已通过，证书`sync/evidence/dcache-victim4-screen-20261104-r03/finalization.json`。局部native／converted字节／PLRU oracle和四有效RTL负向、整核两构建及native原六按哈希复用，r03只补转换observer及原六项；native／converted答案／退休数／九字段架构退休匹配生产、完整日志及所有D/V计数相同，独立raw周期／退休／事件重数、源复现与复用链／保护输入核验通过。两次observer别名失败及旧门禁证书保留，不改候选RTL、不重复完成工作。
-
-最终周期8605/17550/3985/5864/155646/167232，相对生产qsort−73、rsort−1269，其余四项不变，六项无退化；几何IPC1.012319842491（+0.133898%）。VC hit0/0/0/0/14/118；实际行读152/53/152/13/649/4780（生产末两项663/4896）、脏行写0/0/0/0/260/2928（生产末两项266/3037）。计数含投机与时序变化，不等同退休miss或固定节省拍数，长期几何IPC>1.0985仍未达到。
-
-用户“有ipc加成，进行综合”条件已满足，`sync/evidence/dcache-victim4-conditional-ppa-20261104-r03/qualification-gate.json`passed=true；条件服务在单次pidfd观察审计完整退出后核验输入／指针，已启动本候选唯一一次新整核综合／ABC／STA，根`.cpu2026-synthesis/dcache-victim4-ppa-20261104-r03/`，job状态fresh-full-core-synthesis-ABC-STA，从elaborate新测。精确复制已验证44项RTL／公共SRAM／converted及原六日志资格；r01／r02均未综合，不继承历史checkpoint，不重复筛选构建。当前没有候选面积／Fmax／评分，不提前认定收益或面积达标。
-
-生产8 KiB D$无VC／I$1 KiB、两软件／正式指针保持，未获采用授权；最终以`sync/evidence/dcache-victim4-ppa-20261104-r03/finalization.json`为准。仍只本单候选综合，结束后全部综合暂停，不启动其他候选／采用／清理，无独立面积专项，不算完整新优化轮。说明`sync/DCACHE-VICTIM4-20261104.md`。
-
-### 2026-11-04：Victim4综合／ABC／STA及独立审计完成，频率失败未采用
-
-唯一授权PPA `dcache-victim4-ppa-20261104-r03`已从elaborate全新完成整核综合、六阶段checkpoint、ABC与STA，独立Liberty逐叶面积／真实SRAM几何／约束／时序／评分审计和最终核验均通过。面积35615.175487 μm²（相对生产+2.617420%）、Fmax293.157744 MHz（−4.809619%）、六项几何IPC1.012319842491（+0.133898%）、评分2.427181157597e-7（−9.118523%）。IPC×Fmax吞吐估算−4.682161%，不是墙钟实测。
-
-面积严格<36000通过、余量384.824513 μm²；Fmax>300失败、距300约6.842256 MHz，长期IPC>1.0985仍未达。当前实现IPC收益小而面积／频率及评分代价明显，建议不采用；此建议不等同用户已否决，不自动删候选或继续新实验。
-
-主D$保持128组×2路×32字节，VC为4条寄存器全相联树PLRU，248个原SRAM宏和形状完全等于生产。精确复用44项RTL／公共SRAM／converted及原六native／converted完整日志资格，不重跑已完成筛选、不继承旧checkpoint或拼接PPA。两次观察器别名失败及证书保留，r01／r02未综合，r03一次新PPA。最终只读再次核验原始产物／认证输入／保护清单、正式指针和三树HEAD／索引保持。
-
-证书`sync/evidence/dcache-victim4-ppa-20261104-r03/finalization.json`；报告`sync/DCACHE-VICTIM4-PPA-RESULTS-20261104.md`；说明`sync/DCACHE-VICTIM4-20261104.md`。cleanup-aware指标索引r19仅追加新认证指标，不访问或假称历史已删源码／模型／网表被恢复重审，排名不授权采用。生产仍D$8 KiB无VC／I$1 KiB，两软件／正式指针保持，未采用／提交／推送。
-
-本次条件综合授权已结束，所有综合／ABC／STA恢复暂停，不自动启动其他候选、采用或清理。没有独立面积专项，不算完整新优化轮。以下为筛选及执行历史。
-
-### 2026-11-04：用户明确不采用Victim4，追加否决决定
-
-用户获知Victim4面积35615.175487 μm²、Fmax293.157744 MHz、几何IPC+0.133898%及评分−9.118523%后明确“不采用”。已追加`sync/evidence/dcache-victim4-rejected-20261104-r01/decision.json`，记录禁止自动采用该候选，不以排名改变用户决定；r20只追加否决与rejected_roots，r19历史指标／排名及原筛选／PPA证书不回写。
-
-本次没有新综合、仿真、采用或删除；保留测量／审计／失败证据，生产仍原FQ＋SA组合8 KiB D$无VC／I$1 KiB，两软件／正式指针／三树HEAD索引保持。所有综合继续暂停，不继续此方案或自动启动其他实验／清理。说明`sync/DCACHE-VICTIM4-20261104.md`；以下“不建议／尚无否决”保留决策前归属。
-
-### 11 月 4 日：PRF／ROB面积结构四项隔离筛选（执行中）
-
-用户根据当前diagnose层次报告要求按顺序开始实验：PRF上一拍转发优先级共享、PRF读译码重组、ROB载荷复位分离、ROB单行SRAM载荷＋4组共享最近写记录。四项各自从当前生产工作树快照出发，不组合，不改变容量、宽度、访存或BPU，不恢复已否决PRF排名。
-
-旧实验工作根已清空，不能复用旧模型；此次新建native／converted基线及原六项九字段退休日志，随后每项做环／锁存检查、局部双模型公开端口差分与独立数据／队列oracle、两个有效源码负向，再新建原六项双模型并重数raw日志。当前frontend用户格式与等宽截取修复独立记差异，不回写工作树。生产／两软件／正式指针和三树HEAD／索引保持。
-
-四项局部源码／夹具lint预检通过，不当作运行时正确性或IPC资格。服务启动首次因本机不支持MemoryOOMGroup属性被拒，尚未启动实验；移除该属性，使用已有OOMPolicy=kill及资源检查器接续，失败单独保留。新工作根`.cpu2026-synthesis/rename-area-sequence-20261104-r01/`，说明`sync/RENAME-AREA-SCREENING-20261104.md`；最终看`sync/evidence/rename-area-sequence-20261104-r01/finalization.json`。
-
-本次只筛选，综合／ABC／STA继续暂停，无新面积／Fmax／评分，不自动采用，也不计作完整优化轮。执行中不提前宣称通过或面积收益。
-
-#### PRF／ROB四项筛选最终收口
-
-四项全部局部native／converted公开端口差分＋独立oracle、各两个有效RTL负向和原六项全新双模型完成。四项周期均`8605/17550/3985/5864/155719/168501`，几何IPC均 **1.010966177065**，逐项与本次新基线持平；答案／退休数／九字段架构退休匹配，native／converted完整日志一致。PRF各局部模型12843次检查，ROB各局部模型2136拍含取消项历史replay和工作后reset。
-
-原r01服务在全测量结束后的审计前缀比较中失败：read-decode新增两行解释注释未排除。原失败脚本、inputs和job保持，新增r02只读审计仅修源码边界，另核全部步骤日志哈希、负向原因与答案；未改RTL／模型／测量，未重跑构建、仿真或综合。最终证书`sync/evidence/rename-area-sequence-20261104-r02/finalization.json`通过，工作根保留r01归属。保护输入／正式指针及三树HEAD／Git索引核验通过。
-
-这是面积结构的正确性／IPC筛选，不是面积实测：无新面积／频率／评分，不能据此认定省面积或排名。生产和两软件不改，全部综合／ABC／STA继续暂停；本有限序列结束，不自动组合／采用／继续其他实验。
-
-#### PRF／ROB四项逐项整核PPA获授权（执行中）
-
-用户进一步要求“开始逐项综合”，仅授权上述四项按原序各一次新整核opt综合／ABC／STA，不授权组合或采用。新根`.cpu2026-synthesis/rename-area-ppa-sequence-20261104-r01/`精确复制r02筛选已认证44项RTL、converted和IPC资格；不重跑仿真，各自从elaborate开始、六checkpoint、无历史checkpoint继承。同AppImage／五库／2ns／INVx1与5fF、原理想时钟无寄生口径；前三项248原宏，ROB SRAM项另外32个1×129宏亦全额计价。
-
-逐项独立Liberty逐叶面积／宏形状／约束／阶段／STA／原六raw退休与评分审计，通过后追加cleanup-aware指标，历史否决和指标不回写；生产对比仅据保留认证记录，不恢复已删原始网表。四项结束全部综合恢复暂停，生产和两软件不改，不自动组合／采用／清理。入口和说明见`sync/RENAME-AREA-PPA-20261104.md`；最终以同名证据根finalization.json为准，执行中不提前认定面积收益。
-
-#### PRF／ROB四项独立PPA完成，未采用
-
-四项各自全新elaborate、六阶段checkpoint、整核opt展平、ABC和STA及独立逐叶Liberty面积／实际宏／约束／raw退休／评分审计全部通过。同源复用此前已认证native／converted资格，IPC均1.010966177065、六周期均`8605/17550/3985/5864/155719/168501`；本次未重复仿真，无旧checkpoint或旧PPA拼接。
-
-| 独立候选 | 面积 μm² | Fmax MHz | 评分 | 相对生产面积 | 频率 | 评分 |
-|---|---:|---:|---:|---:|---:|---:|
-| PRF上一拍转发共享 | 34683.207307 | 307.322929 | 2.668719718965e-7 | −0.067845% | −0.210084% | −0.074542% |
-| PRF读译码 | 34754.824267 | 308.526665 | 2.668142463234e-7 | +0.138504% | +0.180777% | −0.096156% |
-| ROB载荷复位分离 | 34238.371507 | 313.341493 | 2.792146575072e-7 | −1.349543% | +1.744186% | +4.546957% |
-| ROB单行SRAM载荷 | 33700.451751 | 268.414155 | 2.468769102511e-7 | −2.899442% | −12.844037% | −7.561337% |
-
-第三项同时省468.382500 μm²并提频，面积／频率通过，是本次推荐者；第四项更省面积但频率失败，不建议采用。原248宏及新增32个1×129宏（第四项280例）均全额计价，转发／initialized和控制开销已包含。r21–r24追加已审计指标并保留历史否决，r24面积／频率合格评分冠军为第三项；长期IPC目标仍未达。历史生产比较依据既有认证记录，不声称已删原始网表恢复。
-
-最终证书`sync/evidence/rename-area-ppa-sequence-20261104-r01/finalization.json`，报告`sync/RENAME-AREA-PPA-RESULTS-20261104.md`。生产／两软件／正式指针与三树HEAD／Git索引保持，未采用、组合或提交推送。该有限授权结束，全部综合／ABC／STA恢复暂停，不自动继续候选、采用或清理，不计作完整新优化轮。
-
-### 2026-11-04：正式采用ROB载荷复位分离（优先于以下历史）
-
-用户要求“采纳ROB 复位分离”，仅采用已审计`rename-area-ppa-sequence-20261104-r01/rob-payload-reset`。面积34238.371507 μm²（-1.349543%），Fmax313.341493 MHz（+1.744186%），六项几何IPC1.010966177065（不变），评分2.792146575072e-07（+4.546957%）。IPC×Fmax估算+1.744186%，非墙钟实测。
-仅替换`rv32_rob_lanes.sv`：载荷raw不复位，每行initialized复位并屏蔽未初始化读出；valid／ready／完整tag控制复位及写优先级保持。initialized不跟随valid清除，保留取消项replay和失效端口载荷。不带PRF或ROB SRAM候选，不改容量／宽度／BPU／访存协议。现有frontend格式及等宽截取修复原样保留并记录旧指针差异。
-44项RTL／公共SRAM与已审计候选同源，复用该候选已完成整核综合／ABC／STA及native／converted局部与原六资格；本次不新综合、不声称另建生产路径RTL模型或全状态形式等价。两软件126项构建输入不变，无需改算法；全新Release／断言四构建原六答案／退休／init+core+drain及外部副本各374104条退休PC／周期匹配。周期8605/17550/3985/5864/155719/168501。旧黄金／镜像／Slave／既有code和三树HEAD／索引保持。
-面积<36000及Fmax>300通过，长期IPC>1.0985未达。面积／频率合格候选中评分最优，不是无面积限制的最高IPC或最高评分者；历史排名／否决保持。采用证书`sync/evidence/rob-payload-reset-production-adoption-20261104-r01/adoption.json`；正式指针`sync/evidence/current-production.json`；软件说明`docs/hardware-baseline-rob-payload-reset.md`。
-全部综合／ABC／STA继续暂停，未提交／推送；不自动继续新实验／组合／清理，不算完整新优化轮。
-
-<a id="history-2026-11-05"></a>
-
-### 11 月 5～6 日：从ROB复位分离到LSU通知提前计算
-
-11月4日面积结构筛选后，用户明确采用ROB载荷复位分离，生产随后沿Load下一行预取、安全Load让行、标准RAS分类、SQ完成事件旁路及LSU通知资格提前计算逐项演进。下表各行为**分别已认证并获采用的版本**，不是把独立候选收益相加，也不是为旧筛选补写PPA。
-
-| 采用版本 | 面积 μm² | Fmax估计 MHz | 原六项几何IPC | 评分 |
-|---|---:|---:|---:|---:|
-| ROB载荷复位分离 | 34238.371507 | 313.341493 | 1.010966177065 | 2.792146575072e-7 |
-| Load触发下一行预取 | 34417.443067 | 307.138572 | 1.035819497011 | 2.984787940536e-7 |
-| SQ≤4／owner=0安全Load让行 | 34506.745567 | 314.399754 | 1.043690365779 | 3.133003593523e-7 |
-| 标准同link JALR只push | 34614.841687 | 313.437404 | 1.059446088949 | 3.295653702718e-7 |
-| 旧SQ完成事件旁路 | 34465.105087 | 306.770521 | 1.063329023912 | 3.301604769298e-7 |
-| LSU通知资格提前计算 | 34699.405687 | 316.146959 | 1.063329023912 | 3.356723806268e-7 |
-
-#### 先观察再改动：RAS分类与median的Store完成链
-
-- **towers RAS观察**：在SQ4／owner0生产5849拍／5278条退休的同源双模型上，仅外部观察得真实函数返回68次，其中34次实际使用RAS且34次全对；投机／架构峰值深度均1，容量为8。该结果不支持先扩RAS。随后修正标准RISC-V同link规则：`pop = rs1Link && rd != rs1`、`push = rdLink`，同link仅push，异link才pop后push；不改变RAS容量或恢复节奏。新原六`8021/16993/3953/5477/146370/161853`，towers少372拍，multiply少413拍，qsort多1拍；几何IPC+1.509617%，但Fmax−0.306091%，采用时披露了频率代价。
-- **median完成链观察**：标准RAS生产median为8021拍／6961条退休，互斥无退休分类中队首Store未ready共816拍；其中320拍旧SQ地址／数据已齐但ROB仍未ready，另248拍数据已齐而地址在当沿真实到达。这些是旧执行流的观察拍数，不能直接相加当作可省周期。候选只把旧有效未提交SQ的完整身份真实事件纳入完成bitmap，仍由ROB寄存ready、下一拍读旧ready退休，不提前实际Store接受，不恢复已否决的Store地址→Load数据通知。
-- **SQ事件旁路实测**：原六变为`7676/16908/3984/5509/147475/162806`，median少345拍（IPC+4.494528%），整体几何IPC+0.366506%；vvadd／towers／qsort／rsort分别多31／32／1105／953拍。PPA面积−0.432579%、Fmax−2.127022%、评分+0.180573%；IPC×Fmax估算−1.768312%，没有把局部省拍包装成整体吞吐必增。
-
-来源：[towers RAS画像](../../sync/TOWERS-RAS-PROFILE-20261106.md)、[median机会与完成链](../../sync/MEDIAN-OPPORTUNITIES-20261106.md)、[SQ完成事件筛选](../../sync/STORE-COMPLETION-EVENTS-RESULTS-20261106.md)。各版本的正式采用记录见本文件前部，不将旧观察数当成当前四取指的重新画像。
-
-#### 未进入生产的独立候选：全核仲裁与ROB普通查询
-
-全核仲裁有限九项均从当时SQ4／owner0生产独立筛选：AGU Load／Store年龄窗4偏向、共享CDB两种偏向、AXI AR I∶D／D∶I各2∶1、Cache查询Load让行一次、需求miss发送Load／Store优先一次。两模型局部消费者oracle、18个有效RTL负向与每候选原六374104条九字段退休审计通过，但收益不支持任意叠加：
-
-| 独立策略 | 相对当时基线几何IPC | 截至本次更新的结论 |
-|---|---:|---|
-| AGU Load年龄窗4偏向 | −0.657787% | 未采用／未综合 |
-| AGU Store年龄窗4偏向 | −0.796057% | 未采用／未综合 |
-| 共享CDB两偏向、需求miss发送两偏向 | 均持平 | 原六实际争用有限，不等于全输入无收益证明 |
-| AXI AR I∶D=2∶1 | +0.142158% | 有限集合中最高；未采用／未综合，rsort仍多1拍 |
-| AXI AR D∶I=2∶1 | −0.000633% | 未采用／未综合 |
-| Cache合法查询Load让行一次 | +0.053741% | 未采用／未综合，含单项退化 |
-
-SQ完成旁路采用后，又尝试ROB**普通**查询逐行并行身份校验；它不同于此前已采用的独立Load lookup身份校验。原六周期／完整双模型日志持平，但新整核PPA为面积34454.520007 μm²、Fmax303.587311 MHz、评分3.269353492373e-7：面积仅−0.030712%，Fmax−1.037652%、评分−0.976836%。因此没有采用；用户未明确否决，不能把“建议不采用”改记成用户拒绝，更不能由源码并行性宣称提频成功。
-
-来源：[全核仲裁九项汇总](../../sync/CORE-ARBITRATION-RESULTS-20261106-r02.md)、[ROB普通查询PPA](../../sync/ROB-REGISTERED-IDENTITY-PPA-RESULTS-20261106.md)。这些版本没有与后续RAS、LSU通知或跨16B四取指组合。
-
-#### LSU通知资格提前计算：同周期下改善频率
-
-最终选择LSU返回通知优先级组合拓扑：旧LQ×SQ常数行先算同START同WIDTH／ROB年龄及年轻未知地址或同word屏障，晚到SV／返回身份仅选择一个资格位。保留原notify函数、全部SQ／LQ状态写入、完整转发载荷、SQ完成旁路和owner取消；不改变事件语义、流水级或软件算法。
-
-每模型619252组任意旧态检查、真实LSU差分与六个有效RTL负向，以及新原六双模型完整日志／九字段退休通过。原六周期完全保持`7676/16908/3984/5509/147475/162806`，几何IPC仍为1.063329023912。一次新整核PPA实测面积+0.679820%、Fmax+3.056499%、评分+1.669462%；两软件126项构建输入无需改变，仍做全新Release／断言四构建及外部退休PC／周期资格后采用。这成为11月7日四取指实验的**精确当前生产双取指基线**，不是更早四取指的历史配置。
-
-来源：[LSU通知筛选](../../sync/LSU-NOTIFY-PRECOMPUTE-RESULTS-20261106.md)、[新PPA](../../sync/LSU-NOTIFY-PRECOMPUTE-PPA-RESULTS-20261106.md)、[采用证书](../../sync/evidence/lsu-notify-precompute-production-adoption-20261106-r01/adoption.json)。历史PPA报告的“未采用”归属测量阶段，随后明确授权的采用以证书为准。
-
-### 2026-11-05：前端两层部分接受筛选通过，原六IPC持平，用户不采用
-
-用户要求尝试空IQ及空FQ新包直通的部分接受，隔离`partial-frontend-bypass-screen-20261105-r01`只改queue／rename-plan：上游整包单次握手、资源允许的连续前缀分配、剩余后缀压紧入IQ。没有软件、容量、宽度、BPU或访存协议变更。FW2／FW4实际队列＋planner独立oracle在两种来源分别覆盖真前缀，四个有效RTL负向、真实RAT／PRF状态及恢复／freeze／flush／容量native／converted通过；新整核两模型原六项答案／退休／九字段架构退休匹配已采用同源基线，两模型完整日志一致。独立源复现／raw退休与周期重数／保护／三树HEAD索引审计通过。
-
-原六周期8605/17550/3985/5864/155719/168501全不变，几何IPC1.010966177065（+0%）。未综合／ABC／STA，无新面积／频率／评分，不拼接生产PPA。筛选证书`sync/evidence/partial-frontend-bypass-screen-20261105-r01/finalization.json`。已启动外部只读统计用于区分未触发与触发但无省拍，仅链接现成模型，不改RTL，不作PPA或采用授权。
-
-用户获知结果后明确“那不应用了”：追加`sync/evidence/partial-frontend-bypass-rejected-20261105-r01/decision.json`，不采用、不自动继续此方案或其他实验／综合／清理。原筛选证书不回写，候选源码／模型／trace／证据保留。生产继续ROB载荷复位分离、前端两层仍整组接受；44项RTL／SRAM、两软件126项构建输入、正式指针及三树HEAD／索引保持。全部综合继续暂停，未提交／推送，不算完整优化轮。说明`sync/PARTIAL-FRONTEND-BYPASS-20261105.md`。
-
-### 2026-11-05：最老可发出Load隔离筛选完成，整体IPC微降，未采用／综合
-
-用户授权“尝试一下，虽然这个可能会增加组合逻辑”，只筛选一个独立`lsu-eligible-load-screen-20261105-r01`。从当前ROB载荷复位分离生产复制44项RTL，只改`rv32_lsu.sv`：对每个旧Load先用旧SQ判断未知地址或字节重叠阻塞，再由原年龄树选择最老合格候选。保留旧Load匹配AGU当拍地址、最终原SQ准入门、Store优先级、SQ转发／通知、Load结果仲裁和全部状态写入，不猜测访存依赖，不新增容量／级数／端口，不带已否决前端部分接受。
-
-局部native／converted独立公开端口数学字节区间／非环绕年龄oracle各9014次检查，覆盖149次跳过阻塞旧项、未知Store、匹配AGU／错误身份、字节／半字／字和跨word、背压／halt／flush／tag回绕／工作后reset。四个源码负向均实际构建成功并检出；原真实LSU owner／取消／同tag复用／退休／posted Store回归两模型通过。新整核无组合环／锁存，双模型原六答案／374104条退休／九字段架构退休匹配同源生产基线，两模型完整日志一致，独立raw／源码复现／保护和三树HEAD索引审计通过。
-
-周期8605/17550/3985/5864/155708/168514，相对生产0/0/0/0/−11/+13。qsort IPC+0.007064505%、rsort−0.007714493%，其他不变；几何IPC1.0109650809515047，相对−0.000108422327%，基本持平但非正收益，未改善最弱median。不据微小周期变化伪称已证明Cache／BPU等因果。建议不推进，不替用户追加明确否决；未综合／ABC／STA，无新面积／频率／评分，组合逻辑实际代价未知。
-
-证书`sync/evidence/lsu-eligible-load-screen-20261105-r01/finalization.json`，说明`sync/LSU-ELIGIBLE-LOAD-20261105.md`。筛选授权已完成，不自动采用、扩展实验／组合、综合或清理；生产44项RTL／公共SRAM、两软件126项、正式指针及三树HEAD／索引保持。综合继续暂停，未提交／推送，不算完整优化轮。
-
-### 2026-11-05：用户明确否决最老可发出Load，其他候选仅建议
-
-用户“不采纳，其他候选优化有什么”明确不采用`lsu-eligible-load-screen-20261105-r01`。追加决定`sync/evidence/lsu-eligible-load-rejected-20261105-r01/decision.json`，原筛选／审计完成证书不回写，候选源码／模型／trace／证据保留。不得自动恢复／采用或继续此方案；用户询问其他候选只授权分析建议，不授权实施、组合、综合或清理。生产仍ROB载荷复位分离、Load仍用原选择规则，两软件／正式指针／三树HEAD索引保持；综合继续暂停，未提交／推送。以下“不替用户否决”保留决策前归属。
-
-### 2026-11-05：仅Store数据RS容量4项筛选完成，几何IPC−1.461943%，未采用／综合
-
-用户授权SV容量2→4、SA仍2、Store数据消费最多2条／拍的独立筛选。候选仅pkg／core分离STORE_VALUE_ISSUE_WIDTH=2，所有数据消费数组／循环／RS发射／LSU输入保持两条，容量及分配信用4；两ALU同拍旁路、三CDB普通唤醒、实际离站信用及其他42项RTL／SRAM保持，不带已否决前端或Load选择候选。
-
-首轮`sv-capacity4-screen-20261105-r01`局部真实RS运行到末尾覆盖检查失败，未跑IPC；r02仅补双操作数同时由ALU0／1到达的定向激励，不删除检查，44项RTL逐字节保持，原失败快照／脚本／日志保留。r02局部列表oracle native／converted各4125拍、容量退回2／误扩消费4／共享CDB误开同拍三个有效RTL负向、真实RS→两通道LSU公开端口集成通过；新整核两模型原六答案／374104条退休／九字段架构退休匹配生产，完整日志一致，无环／锁存。独立raw周期／退休／答案、源码范围／夹具／负向／保护和三树HEAD索引审计通过。
-
-周期8605/17550/4380/5832/155722/168384，相对生产0/0/+395/−32/+3/−117。vvadd IPC−9.018264840%，towers+0.548696845%，qsort−0.001926510%，rsort+0.069484036%，其余不变；六项几何IPC0.9961864233581463，−1.461943440020%。四项真实SV占用达到4，扩容实际生效但目标vvadd明显退化，不将旧SV背压直接当作加槽必有收益，不伪称已定位Cache／请求序等具体因果。建议不推进，不替用户明确否决。
-
-最终证书`sync/evidence/sv-capacity4-screen-20261105-r02/finalization.json`，说明`sync/SV-CAPACITY4-20261105.md`。无综合／ABC／STA、新面积／Fmax／评分或吞吐估算，不算完整优化轮。筛选授权结束，不自动采用、继续候选／组合／综合／清理；生产44项RTL／SRAM、两软件126项输入、正式指针和三树HEAD索引保持，全部综合继续暂停，未提交／推送。
-
-### 2026-11-05：用户明确否决仅Store数据RS4项，生产保持2项
-
-用户获知仅SV4／SA2／消费2候选原六几何IPC−1.461943440%和vvadd−9.018264840%后明确“不采纳”。追加决定`sync/evidence/sv-capacity4-rejected-20261105-r01/decision.json`，否决`sv-capacity4-screen-20261105-r02`及r01同源尝试。原筛选／审计完成证书不回写，源码／模型／trace及r01失败证据保留，不自动恢复、采用或继续该方案，不启动其他实验／综合／清理。生产仍ROB载荷复位分离、SV容量2项；两软件／正式指针／三树HEAD索引保持，综合继续暂停，未提交／推送。以下“不替用户否决”保留决策前归属。
-
-### 2026-11-05：Load预取研究先查Slave容量，原六从机均未满（未实现／综合）
-
-用户“研究基于load的预取”后追加先看从机容量／是否满，执行只读生产观察和固定流下一行时机分析，不实现预取。现存同源native／converted模型仅外部新链接驱动，原六所有答案／周期8605/17550/3985/5864/155719/168501及C/L/W/R/P完整日志逐字节保持，新增五队列step前后记录两模型相同。独立raw队列峰值／满周期／valid背压／服务守恒和跨拍连续性通过。
-
-Slave的AR／AW／W／R／B各16项，原六五队列满周期全部0，所有通道valid&&!ready和R/B容量引起服务阻塞也全0。AR／AW／W峰值均1，R均11，B为1/1/1/1/8/11。全观测读服务占用率（含取指）16.271502/3.379110/33.007028/12.485076/3.637987/23.548961%，最长连续40/48/48/40/48/48拍。真实从机可每拍同时服务1读字＋1写字，不是共用单服务口；一条D$32字节行仍占8个读传输。4MSHR峰值2/2/2/1/2/4，仅rsort满48拍；8项D$请求槽满0/0/116/162/284/33292拍，满状态不直接等同被阻塞的新需求或省拍数。AXIData8描述符均未满。证书`sync/evidence/slave-capacity-profile-20261105-r01/finalization.json`。
-
-复用固定C/L/W流的Load首次源行→下一行提示，在目标首次需求和取行之前的候选数100/37/112/0/289/510；vvadd的112个候选提前量32/69/111拍。独立直接raw首访／分类／提前量审计通过，证书`sync/evidence/load-nextline-opportunities-20261105-r01/finalization.json`。全程去重只是离线分析便利，没有有限预测器／额外流量／污染／排队反馈模型，不是预取IPC或命中率实测。当前从机没有容量背压瓶颈，支持研究限流预取，但不能保证加入后不抢带宽／信用。
-
-仅形成Load触发下一行、最多1条预取在途、需求留信用等研究建议。现有MSHR依赖真实request owner及2bit ID，必须先设计预取类型／无架构返回／Store陈旧数据防护／Tag端口及普通RAM边界；按PC步长还需可靠PC通道。说明`sync/LOAD-PREFETCH-RESEARCH-20261105.md`。两软件Slave仅只读源码核对，没有新两软件观察模型，不冒称本次三端重新逐拍。无新RTL模型／候选实现／综合／ABC／STA或PPA；生产／两软件126项／Slave／指针和三树HEAD索引保持，综合继续暂停。研究结束不自动实现／实验／采用／综合或清理，未提交／推送，不算完整轮。
-
-### 2026-11-05：Load触发下一行预取筛选通过，几何IPC+2.458373%，未综合／采用
-
-用户“尝试load-based预取”授权一个隔离正确性／IPC候选。只改DCache和backend，实际接受普通RAM Load触发下一条32字节行，4项源行去重／单pending目标，最多一个显式typed内部预取，共享原8请求／4MSHR／2bit ID，无LSU假请求或新数据buffer。入槽请求占用≤6／MSHR≤2，miss分配前≥3则放弃；需求Tag和待发送miss优先。未占MSHR预取遇同set Store或同行miss可丢弃；占用MSHR后保留真实victim／脏写回／set锁及回填所有权，所有CPU返回路径排除预取，退出接受后停止新预取。
-
-r01整核预检通过，局部夹具将响应valid与ready写在同组合块而触发UNOPTFLAT，运行前停止。r02仅把ready等式拆成连续赋值，不关闭诊断，44项RTL逐字节同r01，旧失败／脚本／模型保留。r02局部真实Cache／SRAM／行控制器双模型字节／不可变owner oracle、整行及寄存早字两环境和三个有效RTL负向通过；全新整核native／converted原六答案／374104条退休／九字段架构退休匹配生产，完整日志逐字节一致。独立raw周期／退休／答案、源码／夹具／负向／真实预取读握手及保护／正式指针／三树HEAD索引核验通过。
-
-周期8025/17410/3971/5874/153886/159600，相对生产−580/−140/−14/+10/−1833/−8901。逐项IPC+7.227414/+0.804136/+0.352556/−0.170242/+1.191141/+5.577068%；六项几何IPC1.0358194970105774（+2.458373040548%），最弱median改善，towers小幅退化，不能称逐项无退化，长期IPC>1.0985仍未达。实际预取行读102/37/41/3/298/748，总行读154/55/153/16/797/4958（相对原总读+2/+2/+1/+3/+134/+62），脏写0/0/0/0/268/3026。入槽可命中驻留行，预取读是总读子集；含投机，不推导精确命中率、固定节省拍数或未测污染因果。
-
-证书`sync/evidence/load-prefetch-screen-20261105-r02/finalization.json`及同目录`post-completion-verification.json`，说明`sync/LOAD-PREFETCH-SCREEN-20261105.md`。无综合／ABC／STA、新面积／频率／评分，不拼接生产PPA，不算完整优化轮。授权已结束，不自动采用、追加候选／组合／综合／清理；生产44项RTL／SRAM、两软件126项、Slave和正式指针保持，综合继续暂停，未提交／推送。
-
-### 2026-11-05：用户授权Load预取候选一次全新整核PPA（历史执行阶段）
-
-用户“开始综合”仅授权已审计`load-prefetch-screen-20261105-r02`同源候选一次新整核opt综合／ABC／STA及独立审计，不授权采用或其他候选／组合／清理。入口`sync/run_load_prefetch_ppa_20261105.py`，审计`sync/audit_load_prefetch_ppa_20261105.py`；工作根`.cpu2026-synthesis/load-prefetch-ppa-20261105-r01/`，服务`cpu2026-load-prefetch-ppa-20261105-r01`，说明`sync/LOAD-PREFETCH-PPA-20261105.md`。
-
-复用已审计44项RTL／SRAM／converted与原六双模型完整日志及IPC，不重复仿真资格，不改候选／生产／两软件／Slave。周期8025/17410/3971/5874/153886/159600，几何IPC1.0358194970105774（+2.458373040548%，towers+10拍）。从elaborate新测、六阶段checkpoint，无旧checkpoint继承；同AppImage三工具／五库／248原宏／2ns／INVx1／5fF与理想时钟无寄生口径。独立Liberty逐叶面积／宏形状／约束／工具／checkpoint／raw退休及评分审核，收口保护指针／输入／三树HEAD索引；cleanup-aware指标追加不访问已删历史原始产物，继承全部否决决定。当前无新面积／Fmax／评分结论，最终看`sync/evidence/load-prefetch-ppa-20261105-r01/finalization.json`。单项结束全部综合恢复暂停，不自动采用、追加实验／组合／综合或清理；未提交／推送，无额外面积专项，不算完整新优化轮。
-
-### 2026-11-05：Load预取整核PPA完成，面积／频率通过，尚未采用
-
-`load-prefetch-ppa-20261105-r01`完成用户授权的唯一一次全新整核opt综合／ABC／STA，独立Liberty逐叶面积／248原SRAM宏形状数量／工具／库／约束／六checkpoint／raw退休和评分审核通过。面积34417.44306697736 μm²（相对生产+0.5230142443%），Fmax307.13857228554286 MHz（−1.9796040792%），六项几何IPC1.0358194970105774（+2.4583730405%），评分2.9847879405359694e-07（+6.8994001670%）。IPC×Fmax估算+0.4301029084%，非墙钟实测。面积<36000及Fmax>300通过，长期IPC>1.0985仍未达。原六周期8025/17410/3971/5874/153886/159600，towers+10拍，其余五项改善，不能称逐项无退化。
-
-44项RTL／公共SRAM／converted和原六双模型完整日志精确复用已审计r02，不重复已完成仿真，从elaborate新测无checkpoint继承，不拼接旧PPA。原248宏形状不变。r26追加认证指标并继承全部历史否决，不伪称已删原始产物恢复。收口再次核原始PPA产物、认证输入、保护／生产指针和三树HEAD索引通过。证书`sync/evidence/load-prefetch-ppa-20261105-r01/finalization.json`与同目录`post-completion-verification.json`，报告`sync/LOAD-PREFETCH-PPA-RESULTS-20261105.md`，说明`sync/LOAD-PREFETCH-PPA-20261105.md`。
-
-单候选授权结束，全部综合／ABC／STA恢复暂停。生产RTL、两软件126项、Slave／正式指针保持，未采用／提交／推送；不自动启动新实验／组合／综合、采用或清理。无额外面积专项，不算完整新优化轮。以下保留执行阶段归属。
-
-### 2026-11-05：正式采用Load触发下一行预取（优先于以下历史）
-
-用户明确“采纳”，采用已审计`load-prefetch-ppa-20261105-r01`。面积34417.443067 μm²（+0.523014%），Fmax307.138572 MHz（-1.979604%），六项几何IPC1.035819497011（+2.458373%），评分2.984787940536e-07（+6.899400%）。IPC×Fmax估算+0.430103%，不是墙钟实测。面积<36000及Fmax>300通过，长期IPC>1.0985未达；towers+10拍，其他五项改善。
-仅DCache＋backend两项RTL采用r02同源候选：真实接受普通RAM Load触发下一条32字节行，4项最近源行／单pending目标，最多一个typed内部预取，共享8请求／4MSHR／2bit ID。需求优先、入槽占用≤6／MSHR≤2；未占MSHR冲突可丢弃，已占MSHR保留脏victim／写回／回填所有权。全部CPU返回排除预取类型，不占LSU身份；退出接受后停止新预取。不改容量／宽度／BPU或Slave，不带已否决方案。
-两软件10项构建输入同步，116项保持：DCache预取和CPU／MemArbiter原始proposal-valid接线；实际接受事件仍单独门控。主树只读旧快照/Input逐字段写目标，模板Register单写／统一sync保持，无模块下一状态复制或生产观察探针。全新Release／断言四构建原六答案／退休／init+core+drain匹配，两外部副本各374104条退休PC／周期匹配RTL；周期8025/17410/3971/5874/153886/159600。r01两软件rsort均少5拍被门禁拦住；外部状态见证定位满Cache时raw-valid被旧接受门控隐藏，r02仅修软件映射，旧失败／诊断保留，RTL／PPA不变。限定原六资格，不是完整状态或全输入形式等价。
-44项RTL／公共SRAM及converted精确同源认证，复用已审计整核综合／ABC／STA和native／converted筛选，本次不新综合，也不冒称另建生产路径RTL模型。旧黄金／镜像／Slave／既有code和三树HEAD索引保持，历史证书不回写。采用证书`sync/evidence/load-prefetch-production-adoption-20261105-r02/adoption.json`，正式指针`sync/evidence/current-production.json`；软件说明`docs/hardware-baseline-load-prefetch.md`。
-全部综合继续暂停，未提交／推送；不自动继续实验／组合／综合或清理，无额外面积专项，不算完整新优化轮。
-
-<a id="history-2026-11-06"></a>
-
-### 2026-11-06：正式采用SQ≤4／owner=0安全Load让行仲裁（优先于以下历史）
-
-用户“采用SQ <=4 且owner = 0的并进行综合”，在新整核PPA及两软件资格通过后采用`lsu-sq4-owner0-ppa-20261106-r02`。面积34506.745567 μm²（+0.259469%），Fmax314.399754 MHz（+2.364139%），六项几何IPC1.043690365779（+0.759869%），评分3.133003593523e-07（+4.965701%）。IPC×Fmax估算+3.141972%，不是墙钟实测。面积<36000及Fmax>300通过，长期IPC>1.0985未达；rsort+2262拍，其他五项改善。
-仅LSU＋core两RTL：旧态全部已分配SQ≤4且LSU运输owner=0时，原最老合法Load可越过全部字节不重叠的已提交／同拍真实退休普通RAM Store一次，随后强制真实Store接受；债务跨flush保持、两处SQ只认真实Store grant，恢复冻结／冲刷／退出不新增让行。不改Cache／Slave／容量／执行宽度／原转发，保留既有Load下一行预取。
-两软件9项构建输入同步、117项保持；运输owner计数包括取消后的真实返回，Cache新增纯功能终结事件查询而非改变Cache算法或生产观察探针。主树旧快照/Input逐字段写目标，模板Register单写／统一sync，raw proposal-valid与实际接受分离保持。r01新增顶层标量被原纪律检查拒绝，r02模板SQ计数混用epoch尾指针与物理头槽导致周期漂移，两次失败保留；r03用旧有效行计数，未放宽检查。全新Release／断言四构建原六答案／374104条退休／init+core+drain及两外部副本退休PC周期匹配RTL；周期8022/17406/3953/5849/146369/161862。限定原六资格，不是完整状态／全输入形式等价。
-44项RTL／公共SRAM／converted与已审计sq4-owner0精确同源，本次从elaborate全新六checkpoint／整核opt／ABC／STA及独立Liberty逐叶面积／248原宏形状／工具库约束／raw退休评分审计完成，不拼接旧PPA；原r01在ABC因服务器重启中断，五个checkpoint与失败产物保留；r02从elaborate全新重测，无checkpoint继承。r02完成后首审因来源标签变量遮蔽失败，旧失败保留；r03依据原五checkpoint路径与哈希重绑定来源，完整重审同一PPA，不重跑综合／ABC／STA。采用阶段复用r02新PPA与r03审计和已通过的软件r03资格，不重复软件构建，也不冒称另建生产路径RTL模型。备份／旧黄金／镜像／Slave／既有code及三树HEAD索引保持，旧证书不回写。采用证书`sync/evidence/lsu-sq4-owner0-production-adoption-20261106-r03/adoption.json`；正式指针`sync/evidence/current-production.json`；软件说明`docs/hardware-baseline-lsu-sq4-owner0.md`。
-单候选授权已完成，全部综合／ABC／STA恢复暂停，未提交／推送；不自动继续实验／组合／综合或清理，无额外面积专项，不算完整新优化轮。
-
-### 2026-11-06：正式采用标准同link JALR只push修正（优先于以下历史）
-
-用户“替换生产并综合”，在本次新整核PPA独立审计、面积<36000及Fmax>300和两软件资格通过后采用`ras-same-link-ppa-20261106-r01`。面积34614.841687 μm²（+0.313261%），Fmax313.437404 MHz（-0.306091%），六项几何IPC1.059446088949（+1.509617%），评分3.295653702718e-07（+5.191507%）。IPC×Fmax估算+1.198905%，非墙钟实测；长期IPC>1.0985仍未达。
-仅四RTL frontend／core／rename-plan／RAS分类：JALR pop=rs1Link && rd!=rs1、push=rdLink，x1/x5同link只push，异link保留pop后push。同步投机／BTB类型／标量双宽四宽ROB／真实退休／原始指令恢复，RAS容量8、满空与恢复节奏不变；不组合总线2∶1，不改SQ4／owner0仲裁、Cache／Slave／容量／宽度。
-两软件各CPU／StaticArbiter共4项构建输入同步、122项保持，decoded hint沿既有退休／恢复路径；主树旧快照/Input逐字段写目标、模板Register单写／统一sync保持。精确复用r04已审计全新Release／断言四构建原六答案／退休／init+core+drain及两外部副本各374104条退休PC／周期资格，不重复构建、不冒称另建生产路径RTL模型。周期8021/16993/3953/5477/146370/161853；towers少372拍、multiply少413拍，qsort多1拍。局部双模型24576组合、真实RAS／SRAM及七有效RTL负向通过；原三夹具失败证据保持，限定原六资格而非全状态／全输入形式等价。
-44RTL／公共SRAM／converted精确同源，本次从elaborate全新六checkpoint／整核opt／ABC／STA，独立Liberty逐叶面积／248原宏形状／工具库约束／raw退休评分审计通过，不拼接旧PPA。发布前备份四RTL／四软件／文档／旧指针；旧黄金／镜像／Slave／已有code和三树HEAD索引保持，旧证书不回写。证书`sync/evidence/ras-same-link-production-adoption-20261106-r01/adoption.json`，正式指针`sync/evidence/current-production.json`；软件说明`docs/hardware-baseline-ras-same-link.md`。
-单候选授权已完成，全部综合／ABC／STA恢复暂停，未提交／推送。不自动继续实验、组合、综合或清理，无额外面积专项，不算完整新优化轮。
-
-### 2026-11-06：正式采用旧SQ完成事件旁路（优先于以下历史）
-
-用户“采纳当前的SQ完成旁路”后明确“综合”，在本次新整核PPA独立审计、面积<36000／Fmax>300及两软件资格通过后采用`store-completion-events-ppa-20261106-r01`。面积34465.105087 μm²（-0.432579%），Fmax306.770521 MHz（-2.127022%），六项几何IPC1.063329023912（+0.366506%），评分3.301604769298e-07（+0.180573%）。IPC×Fmax估算-1.768312%，非墙钟实测；长期IPC>1.0985仍未达。
-仅一LSU完成bitmap：旧有效未提交SQ完整身份的真实地址／数据／非P0匹配WB可通知ROB寄存ready，退休仍读旧ready。SQ／LQ全部状态写入、实际Store退休／访存接受、Store→Load转发、owner／取消、SQ4-owner0仲裁、Cache预取、标准RAS、容量宽度和Slave保持，不恢复已否决地址→Load数据通知，不含三取指。
-两软件各SQ组合查询／头文件与CPU接线共6项构建输入同步、120项保持，主树旧快照/Input逐字段写目标，模板Register单写／统一sync保持。只在完成锥读取完整WB，旧SV／LQ转发锥仍只读early-ALU；旧SV owner保存软件数据依赖身份，对应RTL SQ dataTag，不创建模块next-state或生产观察探针。全新Release／断言四构建原六答案／退休／init+core+drain与两外部副本各374104条退休PC／周期匹配。周期7676/16908/3984/5509/147475/162806，相对标准RAS−345/−85/+31/+32/+1105/+953，median IPC+4.494528%，整体+0.366506%，四项回退已披露。限定原六资格，不是全状态／全输入形式等价。
-44RTL／公共SRAM／converted与已审计r02精确同源，本次从elaborate全新六checkpoint／整核opt／ABC／STA及独立逐叶面积／248原宏／工具约束／raw退休评分审计，不拼接旧PPA。复用筛选完整双模型资格，不冒称另建生产路径RTL模型。软件r01只因验证入口未导出路径ImportError停止，未构建；r02仅修导入，六源保持，原失败保留。发布前备份一RTL／六软件／文档／旧指针；旧黄金／镜像／Slave／既有code及三树HEAD索引保持，旧证书不回写。采用证书`sync/evidence/store-completion-events-production-adoption-20261106-r02/adoption.json`，正式指针`sync/evidence/current-production.json`；软件说明`docs/hardware-baseline-store-completion.md`。
-单候选授权完成，全部综合／ABC／STA恢复暂停，未提交／推送。不自动继续实验、组合、综合或清理，无额外面积专项，不算完整新优化轮。
-
-### 2026-11-06：正式采用LSU通知资格提前计算（优先于以下历史）
-
-用户明确“采用”，在已审计整核PPA及本次两软件资格通过后发布`lsu-notify-precompute-ppa-20261106-r01`。面积34699.405687 μm²（+0.679820%），Fmax316.146959 MHz（+3.056499%），六项几何IPC1.063329023912（不变），评分3.356723806268e-07（+1.669462%）。面积增234.300600 μm²，面积<36000／Fmax>300通过，长期IPC>1.0985仍未达。IPC×Fmax估算+3.056499%，非墙钟实测；同理想时钟无寄生STA估计，不是后布局频率。
-只替换`rtl/memory/rv32_lsu.sv`的返回通知优先级组合拓扑：旧LQ×SQ常数行先计算同START同WIDTH／年龄及年轻未知地址或同word屏障，晚到SV／返回身份仅选一位。notify函数／完整事件身份与flush、Load地址事件最终覆盖、全部SQ／LQ状态写入／完整转发／SQ完成旁路／owner取消／SQ4-owner0仲裁／Load预取／标准RAS及容量宽度和Slave保持。不组合ROB候选，不恢复已否决方案。
-两软件126项构建输入全部保持，无需算法改写；主树旧快照/Input逐字段写目标、模板Register单写／统一sync纪律不变，不恢复生产观察探针。全新Release／断言四构建原六答案／退休／init+core+drain及两外部副本各374104条退休PC／周期匹配。周期7676/16908/3984/5509/147475/162806全部保持，独立软件raw审计通过；限定原六资格，不是全状态／全输入形式等价。
-44RTL／公共SRAM／converted与已测候选精确同源，复用其已审计整核综合／ABC／STA及native／converted局部619252组任意旧态／真实LSU差分／六有效负向和原六完整日志，本次无新综合或生产路径RTL模型重建。发布前备份一RTL／文档／旧指针，旧黄金／镜像／Slave／既有code和三树HEAD索引保持，旧证书不回写。采用证书`sync/evidence/lsu-notify-precompute-production-adoption-20261106-r01/adoption.json`，正式指针`sync/evidence/current-production.json`；软件说明`docs/hardware-baseline-lsu-notify-precompute.md`。
-单候选授权完成，全部综合／ABC／STA继续暂停，未提交／推送。不自动继续实验、组合、综合或清理，无额外面积专项，不算完整新优化轮。
-
-<a id="history-2026-11-07"></a>
-
-### 11 月 7 日：跨16B四取指的三方案对照、PPA与生产采用
-
-#### 1. 先隔离边界收益，不混用旧四取指数据
-
-用户要求“能否和当前的双取指一样尝试可以跨16字节对齐边界”。以刚采用的LSU通知提前计算双取指为基线，新建同源16B受限四取指`aligned4`控制及跨16B候选`cross16`，不恢复或套用10月29日的旧四取指PPA。
-
-两种四取指均只先将pkg默认FETCH2→4，沿既有128位数据路径、两请求包槽和派生8条在途指令信用；decode／rename／commit仍4，双ALU／三CDB、FQ8／IQ8／ROB32／PRF64／checkpoint64、I$1KiB／64B行、单真实SRAM端口和全部LSU／AXI／Slave合同保持。因此双取指→四取指比较包含宽度及原派生行为，而两种四取指之间才隔离了**16B包边界**的影响。
-
-`cross16`额外只改frontend包上限、ICache相对lane控制hint和严格边界断言：最多4条且不跨64B行，最早branch／JAL／JALR即截断，不论预测是否taken；cold miss单条、单预测口、逐条PC／CID保持。I$原已有任意word起点的128位滑动数据选择，不新增端口／buffer／流水级。四取指保留原保守恢复冻结，不额外合入双取指专属安全恢复运输。
-
-#### 2. 双模型原六对照：主要改善multiply，仍披露qsort回退
-
-下表均为相同课程计时口径，周期越少越好；逐项IPC变化按同一退休数计算。
-
-| 原六测试 | 双取指基线周期 | 16B受限四取指 | 跨16B四取指 | 相对双取指拍差 | 相对双取指IPC |
-|---|---:|---:|---:|---:|---:|
-| median | 7676 | 7471 | 7620 | −56 | +0.734908% |
-| multiply | 16908 | 17415 | 12379 | −4529 | +36.586154% |
-| vvadd | 3984 | 3982 | 3740 | −244 | +6.524064% |
-| towers | 5509 | 5507 | 5477 | −32 | +0.584261% |
-| qsort | 147475 | 149619 | 148089 | +614 | −0.414616% |
-| rsort | 162806 | 159792 | 159739 | −3067 | +1.920007% |
-| **六项几何IPC** | **1.063329023912** | **1.063797503283** | **1.137201912621** | — | **+6.947322%** |
-
-仅改成受限四取指的整体收益为+0.044058%；解除16B限制后，相对受限控制提高6.900224%。但median相对受限四取指多149拍，qsort相对双取指仍多614拍。包变宽本身不保证每例更快，不把投机取指包数或事件差当作固定节省拍数，也不据此推断具体退化因果。当前原六最低IPC为median约0.913517，其次qsort约0.944702；整体达标不等于每个测试IPC都超过1.0985。
-
-正式资格包含：真实frontend／FQ／IQ／decoder／checkpoint对16起始字×16控制掩码×taken／not-taken／cold的768包oracle，真实ICache／公共SRAM的275项完整128位数据／hint／回填旁路／身份／背压冻结／flush／reset检查，以及六个有效RTL负向。两种四取指各自新建native／converted整核模型，原六答案和374104条九字段架构退休匹配生产，同变体两模型完整日志逐字节一致；独立源码逆变换、接受包宽／跨16B且不跨64B、raw重数及保护审计通过。正式筛选约13分18.707秒完成。
-
-来源：[三方案筛选报告](../../sync/FETCH4-CROSS16-RESULTS-20261107.md)、[筛选设计](../../sync/FETCH4-CROSS16-SCREEN-20261107.md)、[筛选最终证书](../../sync/evidence/fetch4-cross16-screen-20261107-r01/finalization.json)。
-
-#### 3. 用户另行授权一次新整核PPA，三项目标通过
-
-用户“进行综合”后，仅对`cross16`做一次全新整核opt综合／ABC／STA，不综合`aligned4`控制。精确复用筛选44RTL／公共SRAM／converted与原六完整双模型资格，从elaborate全新六checkpoint，无旧checkpoint继承或PPA拼接，也未重复仿真。
-
-| 版本 | 面积 μm² | Fmax估计 MHz | 原六项几何IPC | 评分 |
-|---|---:|---:|---:|---:|
-| 上一双取指生产 | 34699.405687 | 316.146959 | 1.063329023912 | 3.356723806268e-7 |
-| 跨16B四取指 | 34947.061567 | 319.301528 | 1.137201912621 | 4.372501753378e-7 |
-| **相对变化** | **+0.713718%** | **+0.997817%** | **+6.947322%** | **+30.260993%** |
-
-面积增加247.655880 μm²，但仍满足严格<36000；Fmax>300、几何IPC>1.0985也通过。IPC×Fmax估算+8.014461%，不当墙钟实测。采用同AppImage／五库／248原SRAM宏、2ns目标、INVx1／5fF及理想时钟无寄生口径，独立Liberty逐叶面积／宏形状／工具库约束／六checkpoint／raw退休评分审计通过；约49分37.676秒完成。先以r37追加认证指标，未据排名自动采用。
-
-来源：[PPA结果](../../sync/FETCH4-CROSS16-PPA-RESULTS-20261107.md)、[PPA最终证书](../../sync/evidence/fetch4-cross16-ppa-20261107-r01/finalization.json)、[PPA收口复验](../../sync/evidence/fetch4-cross16-ppa-20261107-r01/post-completion-verification.json)。
-
-#### 4. “采纳生产”：两软件资格后再原子发布
-
-用户另行明确“采纳生产”，才启动生产替换和两软件同步。RTL仅复制已测pkg／frontend／ICache三文件；两软件仅修改两个默认宽度头及主树CPU／模板`BPU::fetchGroup`中的取包上限，共4项构建输入变化、122项保持。模板BPU改的是包几何，不是预测或训练算法；主树clock后缀和模板全部状态writer保持，旧快照/Input逐字段写目标、Register单写及统一sync纪律不变，不恢复生产观察探针。
-
-新建Release／断言四构建，原六答案、退休数与`init+core+drain`逐项匹配RTL；再仅在两个外部软件副本记录各374104条退休PC／周期，与RTL逐条匹配。独立raw／源码范围审计通过后，先备份三RTL／四软件／文档／旧指针，再复制精确源码、原子发布正式指针，随后两模式原六及44RTL／公共SRAM／126软件／备份保护／三树HEAD索引复验通过；约6分30.996秒完成。采用复用已认证PPA及RTL资格，没有重新综合，也不声称另建生产路径RTL模型或任意输入完整状态等价。
-
-最终[生产指针](../../sync/evidence/current-production.json)为`current-production-adopted-fetch4-cross16`，r38只重绑定新生产并保留历史否决。目前该版本是r38认证集合中的全门槛评分最优、已审计评分最高及几何IPC最高者，不是对所有架构或参数的全局最优证明。旧黄金／镜像／Slave／既有code保持，未提交／推送，全部综合恢复暂停；此次有限筛选／PPA／采用不算附带独立面积专项的完整新优化轮，不自动扩搜、组合或清理。
-
-来源：[采用过程](../../sync/FETCH4-CROSS16-ADOPTION-20261107.md)、[采用证书](../../sync/evidence/fetch4-cross16-production-adoption-20261107-r01/adoption.json)、[采用最终收口](../../sync/evidence/fetch4-cross16-production-adoption-20261107-r01/finalization.json)、[采用后复验](../../sync/evidence/fetch4-cross16-production-adoption-20261107-r01/post-completion-verification.json)、[当前认证指标索引r38](../../sync/evidence/best-results-retained-20261103-r38/retention.json)。
-
-### 2026-11-07：正式采用跨16B四取指（优先于以下历史）
-
-用户“采纳生产”，在已审计`fetch4-cross16-ppa-20261107-r01`及两软件资格通过后正式发布。面积34947.061567 μm²（+0.713718%），Fmax估计319.301528 MHz（+0.997817%），六项几何IPC1.137201912621（+6.947322%），评分4.372501753378e-07（+30.260993%）。面积<36000、Fmax>300、IPC>1.0985三项均通过；IPC×Fmax估算+8.014461%，非墙钟实测，频率为同理想时钟／无寄生STA估计、非后布局结果。
-默认fetch/decode/rename/commit为4/4/4/4，双ALU／三CDB保持。只替换pkg／frontend／ICache三RTL：任意字位置连续最多4条、允许跨16B但不跨64B行、最早CFI截断、cold单条、单预测及逐条PC／CID不变。两请求包槽／派生8条指令信用，FQ8／IQ8／ROB32／PRF64／checkpoint64／I$1KiB保持，四取指仍采用保守恢复冻结，不加入双取指专属恢复扩展；LSU已采用通知提前计算／SQ完成旁路／SQ4-owner0仲裁／Load预取／标准RAS、Cache／AXI／Slave及其他容量执行宽度保持。
-两软件默认宽度头与取包几何共4项构建输入变化、122项保持。主树只读旧快照/Input逐字段写目标，模板Register单写／统一sync保持；所有状态writer／预测及训练不改，无模块next-state复制或生产观察探针。全新Release／断言四构建原六答案／退休／init+core+drain及两外部副本各374104条退休PC／周期匹配。周期7620/12379/3740/5477/148089/159739；qsort相对双取指多614拍，其他五项改善。限定原六资格，不是全状态／全输入形式等价。
-44RTL／公共SRAM／converted与已审计候选精确同源，复用本次已认证全新整核综合／ABC／STA及native／converted筛选，不重新综合或冒称另建生产路径RTL模型。发布前备份三RTL／四软件／文档／旧指针，旧黄金／镜像／Slave／既有code及三树HEAD索引保持；历史证书不回写。采用证书`sync/evidence/fetch4-cross16-production-adoption-20261107-r01/adoption.json`，正式指针`sync/evidence/current-production.json`；软件说明`docs/hardware-baseline-fetch4-cross16.md`。
-单候选授权完成，全部综合／ABC／STA继续暂停，未提交／推送；不自动继续实验、组合、综合或清理，无额外面积专项，不算完整新优化轮。
-
-### 2026-11-07：独立ROB／PRF、I$相联度与参数敏感度资格完成（无综合）
-
-用户要求补齐ROB／PRF独立配置、I$相联度并验证，明确不综合。ROB支持至少16项的2幂，PRF至少32+ROB且允许48／80／96等非2幂；checkpoint按活跃身份预算派生64／128。I$支持1／2／4路，默认1 KiB保持。默认四宽ROB32／PRF64六项周期7620／12379／3740／5477／148089／159739不变。
-
-原8配置96次加敏感度6配置72次，合计14个有限配置168次原六native／sv2v；每配置每模型374104条九字段架构退休匹配，同配置双模型周期一致。另完成18组I$局部双模型／四有效负向、6组ROB／PRF双模型／7无效配置拒绝及checkpoint全行／CID回绕。旧冻结时I$读数据丢失仅修原请求组的SRAM使能／地址，未新增数据副本；checkpoint旧固定容量断言改为参数预算校验，全部状态方程保持。
-
-固定条件下分配宽度1→2几何IPC+25.255892%，2→4再+1.518489%且vvadd回退；固定PRF96，ROB16→32 +1.333233%、32→64 +2.761857%，但前一段vvadd−17.085561%。固定ROB时额外PRF48→96或64→96逐项持平；I$1→2 KiB或等容量1→2路都只towers少43拍，几何+0.131453%，4 KiB／4路无额外收益。不混用不同控制组绝对IPC，不称全参数全局最优。
-
-r01～r08的入口、夹具、checkpoint上限、观察端口及转换工具失败按原记录保留；r09只补剩余资格，精确复用78次已认证运行，不重复原模型。敏感度首审白名单漏列两个已知夹具binary，r02只读重审，不改结果／重跑。来源：[参数化说明](parameterized-configuration.md)、[敏感度分析及vvadd后续画像](参数敏感度分析.md)。资格数据沿用当时完成记录，本次未重跑；历史模型／工件不保证仍可执行或重审。无新面积／Fmax／PPA，不自动采用或同步非默认软件配置。
-
-### 2026-11-07：正式采用ROB16／PRF48，随后完成严格warning清理
-
-用户指定采用四取指ROB16／PRF48，宽度4/4/4/4、双ALU／三CDB、checkpoint64、恢复每拍4槽、I$1 KiB／D$8 KiB保持。六项周期8341／13119／3101／5531／162354／162410，几何IPC1.122239838632，相对旧32/64−1.315692%；只有vvadd改善20.606256%，其余五项回退，用户知悉后明确选择。
-
-该次采用不综合，面积／Fmax／评分当时未测，不套用旧32/64的34947.061567／319.301528。默认预处理token精确桥接原显式配置，复用双模型资格；仅重链接外部观察器补退休时间戳，剔新增P行后原日志保持。两软件只默认容量头2输入变化／124保持，保用户PRF显式转换修复；全新Release／断言四构建与两外部副本各374104条退休PC／周期匹配。r01依赖检查失败保持，r02资格后正式发布。来源：[采用证书](../../sync/evidence/rob16-prf48-production-adoption-20261107-r02/adoption.json)。
-
-随后按用户要求处理原313条warning，修改31RTL及公共`scripts/ram/sram_fakeram.sv`，不恢复旧默认。显式索引／计数扩展、命名及局部未使用标注；SRAM临时掩码合并移入自动函数，原单次NBA及读时序保持。不加全局屏蔽，不放宽位宽／环／锁存／范围检查。14配置严格lint及实际默认两版Verilator零警告；默认原六native／sv2v输出周期保持，九形状SRAM7925项、AXI6202次公开输出差分及三个有效负向通过。r02并发默认变化阻止应用，r03重基准后才写回，旧失败保留；有限回归不自动复认证原168次或旧PPA。来源：[warning清理](warning-cleanup.md)、`.cpu2026-synthesis/warning-cleanup-20261107-r03/post-application-verification.json`。
-
-### 2026-11-07：新频率目标、DCache读地址PPA与正式采用
-
-用户确认硬件树最新综合，并授权频率实测；新策略为面积严格<36000、原六几何IPC严格>1.1，最大化`Fmax²×IPC/Area`（MHz／μm²），旧评分记录不回写。最新同源基线为31858.280399 μm²／304.038005 MHz／IPC1.122239838632／目标3.256260184775；ABC BUFx2／1fF，STA5fF／2ns，不与历史INVx1／5fF基线混用。
-
-候选只改DCache读地址mux，按排队查询候选存在性提前选地址，原实际授权、fill／Store覆盖及全部writer保持。2048组布尔授权、局部每模型9501次公开输出／有效SRAM端口差分和字节owner oracle、两个有效负向、新原六双模型输出／周期资格通过。首次整核缺父目录、首次STA漏`timing.tcl`均保留；STA接续绑定同一mapped网表，仅补STA，不重复综合／ABC。
-
-最终面积31764.108179 μm²（−0.295597%）、Fmax317.617866 MHz（+4.466501%）、IPC持平、目标3.564173709178（+9.456048%），232宏／逐叶Liberty／工具约束独立审计通过。新最差终点为DCache way0/bank0地址，不能据不同端点认定具体旧路径提速因果。用户另行“采纳”后，仅替换一DCache文件，两软件126输入保持，全新四构建原六及外部退休PC／周期匹配后发布。来源：[测量报告](../../sync/DCACHE-ADDRESS-FREQUENCY-20261107.md)、[PPA证书](../../sync/evidence/dcache-address-frequency-20261107-r01/finalization.json)、[采用证书](../../sync/evidence/dcache-address-production-adoption-20261107-r01/adoption.json)。
-
-### 2026-11-07：提前Load地址旁带未提频，离线定位RS／信用长链
-
-从已采用DCache地址版仅隔离改LSU／core／top／backend／DCache五文件，原Load地址旁带直达Cache接受读，状态writer／真实请求与仲裁保持。8192组授权、局部每模型9501次差分／字节owner、两个负向及新原六双模型输出周期持平通过。唯一新PPA面积31732.061339 μm²（−0.100890%）、Fmax308.155281 MHz（−2.979236%）、目标3.358355196208（−5.774649%），未采用。
-
-首审FUSE库卸载路径与断连失败保留，r03改用报告同SHA持久Liberty副本完整只读复审，无重复工具运行。离线将该候选最差起点`_566718_/QN`定位为DCache readIndexInner[0]，至PRF第3行写数据；generic结构依赖经Cache返回、LSU、共享CDB、RS唤醒／双发／信用到rename／PRF。211门结构链不是77映射组合单元的逐门RTL归因或可敏化证明；后续RS实验从已采用生产建立，不组合失败地址候选。来源：[PPA与失败接续](../../sync/EARLY-LOAD-ADDRESS-20261107.md)、[离线路径研究](../../sync/EARLY-LOAD-PRF-PATH-STUDY-20261107.md)。
-
-### 2026-11-07：整数双发RS直接行选择／释放信用PPA与正式采用
-
-仅目标双发RS组合拓扑按旧行tag提前flush资格，直接行mask连真实接受释放信用，原排序／无效载荷／当拍WB／全部writer保持；零或多winner也精确等价原OR索引解码，不新增合法年龄假设。五配置局部native／sv2v每模型15380拍、三个有效负向、256组实际选择RHS及131072组信用布尔检查通过；新原六答案／输出／周期完全持平，无新全状态形式证明。
-
-一次新整核PPA：面积31793.603519 μm²（+0.092857%，增29.495340）、Fmax327.784891 MHz（+3.201024%）、IPC1.122239838632持平、目标3.792484290924（+6.405709%）。232宏／逐叶面积／工具库约束及原六独立审计通过，额外指标checker首轮字段误读保留，r02只读复核，无重跑。用户随后“采用”，只替换一RS文件；两软件126输入保持，全新四构建原六答案／退休／课程周期资格后发布，三树HEAD／索引保持，未提交／推送。
-
-后续离线将生产最差`_569222_/QN`定位为DCache readIndexInner[1]，至PRF第34行写数据，2.950ns／周期3.05078125ns；71映射组合cell及208级generic结构链不作逐门同一链证明。来源：[筛选与PPA](../../sync/RS-ONEHOT-CREDIT-20261107.md)、[采用过程](../../sync/RS-ONEHOT-CREDIT-ADOPTION-20261107.md)、[采用证书](../../sync/evidence/rs-onehot-credit-production-adoption-20261107-r01/adoption.json)。
-
-### 2026-11-07：单发RS筛选通过但PPA连接无效，追加阻止采用
-
-单发全WB旁路提前flush资格及真实接受winner信用候选，六配置局部每模型18456拍、三个负向、新原六双模型周期／输出持平；首审3075／3076摘要误判经r02只读修复，旧失败保留。该RTL筛选不能代替Yosys跨generate解析等价。
-
-唯一整核工具与原独立面积审计虽退出0，但展开隐式声明winnerMaskInner，综合明确Branch／Load／Store-address三个RS信用无驱动。后续check零问题及STA完成不能证明信用行为被保留，原finalization的passed不构成有效PPA／采用资格。追加[validity-review.json](../../sync/evidence/rs-single-credit-ppa-20261107-r01/validity-review.json)优先，原证书／日志不回写；无效网表数字不作候选提频或退化结论，不自动修复／采用。
-
-由此建立完整日志语义门禁：真实生产日志正向、真实旧失败及合成负向／空日志拒绝；实际小Yosys隐式／无驱动／多驱动负向，`-noautowire`、真实SRAM包装后优化前`check -assert`，generic过才ABC、mapped过才STA，未知warning、UNOPTFLAT／LATCH不放宽，不只看工具退出码或末尾check。来源：[单发RS报告](../../sync/RS-SINGLE-CREDIT-PPA-20261107.md)、[其他频率路径与门禁](../../sync/FREQUENCY-ALTERNATIVES-RS-20261107.md)。
-
-### 2026-11-07：DCache tag快照严格前端修复、有效PPA与用户否决
-
-同读沿请求tag快照候选局部每模型38279次双模型差分／字节owner、三个负向、新原六输出周期持平。首次严格展开在ROB已声明跨generate selected引用处失败，未进入长综合；最小实际Yosys确认普通解析通过而`-noautowire`失败，不能关闭严格检查绕过。
-
-生成副本以显式同宽ROB／RS身份alias与query标量桥接，精确逆变换并保持全部state writer；split未用公开零端口的alias行零隔离以消除转换假环。原桥接r01 UNOPTFLAT、r02漏拷sim.cpp等失败保留，r03只补同SHA依赖。新保断言converted原六完整输出／周期资格、独立raw／实际hook正反例先通过，再同一候选一次有效新PPA，无旧checkpoint继承或门禁放宽。
-
-有效面积31881.462599 μm²（+0.276342%）、Fmax324.461343 MHz（−1.013942%）、IPC持平、目标3.705726549663（−2.287623%）。用户随后明确“不采用”，[否决决定](../../sync/evidence/dcache-read-tag-rejected-20261107-r01/decision.json)优先；不得自动恢复，原成功／失败产物均保留。来源：[严格前端修复](../../sync/STRICT-FRONTEND-FIX-20261107.md)、[有效PPA结果](../../sync/DCACHE-READ-TAG-PPA-RESULTS-20261107.md)。生成兼容基础设施后续可复用，不等于恢复已否决CPU候选。
-
-### 2026-11-07：Branch共享CDB旁路切断未提频，离线核验切点确实生效
-
-只在core的Branch RS设置WB_ISSUE_PORTS(ALU_CDB_PORTS)，保ALU当拍旁路及全WB寄存捕获，不加全核流水级；参数同时从原parallel selector选到既有linear selector，不能称其他拓扑完全不变。筛选局部两配置每模型8216拍、三个实际core负向、新原六双模型答案／各374104条退休通过，周期8435／13123／3110／5532／173951／162588，六项均回退，几何IPC1.106512494327（−1.401425%），qsort IPC−6.666820%。r01参考摘要格式失败保持，r02只修序列化。
-
-唯一新PPA面积31862.071199 μm²（+0.215350%）、Fmax323.640961 MHz（−1.264223%）、目标3.637552599925（−4.085230%）；两侧各自IPC计算目标，面积／IPC硬约束通过但未采用。严格前端新资格、运行时hook与实际工具日志门禁、232宏及逐叶面积审计通过。
-
-随后只读generic连通性确认共享CDB到Branch issue-ready／valid／信用依赖均消失，整数RS旁路仍在。新最差`_566759_/QN`为LSU sqAddressInner[3][5]到DCache way0/bank5地址，2.989ns／周期3.08984375ns；196级generic结构链经过SQ相邻word／转发／Load选择／阻塞／访存仲裁／预取取消／查询地址，不经过Branch。原生产只存5条PRF端点STA，没有同一SQ路线对照，不能称它原本就是第二关键或把约39ps差值单归因某段／布局。来源：[PPA结果](../../sync/BRANCH-SHARED-CUT-PPA-RESULTS-20261107.md)、[切链核验](../../sync/BRANCH-SHARED-CUT-PATH-EXPLANATION-20261107.md)。
-
-<a id="history-2026-11-08"></a>
-
-### 2026-11-08：当前生产16 KiB D$隔离筛选完成，IPC+5.511000%
-
-用户“扩容D$到16KB”，先从已采用DCache地址＋整数双发RS生产隔离筛选，仅实际backend实例SETS128→256，两路×32字节行＝16 KiB，其他43RTL／公共SRAM及writer文本不改。早字／typed Load预取／8请求4MSHR／owner与仲裁保持，不组合Branch切链／已否决tag，不套用11月4日旧16 KiB结果；参数化行数与tag宽度变化，不称全状态表示相同。
-
-严格lint／构建零警告；容量全256组两路／高组／dirty victim字节owner局部native／sv2v各3699接受、2892响应、1218一拍命中，串行容量环境背压0。预取整行／早字两压力环境背压分别1370／2195拍；高组alias、脏victim高组丢失、backend仍8 KiB三个实际负向检出。新原六双模型答案／每模型374104条九字段架构退休及完整日志周期匹配，独立raw／源范围／保护审计通过。
-
-首审误要求串行容量遍历blocked>0，全部仿真后失败，原脚本／输入／产物封存。r02只修覆盖归属：容量计数非负，两个实际压力环境仍须>0，其他阈值保持，不改RTL／刺激或重跑。成功证书独立保留，不回写失败。
-
-| 测试 | 当前8 KiB周期 | 16 KiB周期 | 周期变化 |
-|---|---:|---:|---:|
-| median | 8341 | 8341 | 0 |
-| multiply | 13119 | 13119 | 0 |
-| vvadd | 3101 | 3101 | 0 |
-| towers | 5531 | 5531 | 0 |
-| qsort | 162354 | 159112 | −3242 |
-| rsort | 162410 | 120112 | −42298 |
-| 几何IPC | 1.122239838632 | 1.184086472112 | +5.511000% |
-
-六项无退化，qsort IPC+2.037558%、rsort+35.215466%，IPC>1.1通过；此时尚无新面积／频率，不拼接旧PPA。来源：[筛选结果](../../sync/DCACHE16-SCREEN-RESULTS-20261108.md)、[成功证书](../../sync/evidence/dcache16-screen-20261108-r01/finalization.json)、[首审失败封存](../../sync/evidence/dcache16-screen-audit-failure-20261108-r01/failure-finalization.json)。
-
-### 2026-11-08：16 KiB D$唯一新PPA完成，硬约束通过但目标−2.271463%
-
-用户另行“综合一下”，授权同候选一次全新整核opt／ABC／STA与必要生成前端资格／独立审计，不授权自动采用。原screen局部／三个负向／原六架构退休精确复用；新生成前端保断言converted原六完整日志／周期／退休、逆变换writer、独立raw和实际hook正反例先通过，才进入一次新PPA，无旧checkpoint继承。
-
-| 指标 | 已采用8 KiB比较基线 | 16 KiB候选 | 相对变化 |
-|---|---:|---:|---:|
-| 面积 μm² | 31793.603519 | 35107.695801 | +10.423771% |
-| Fmax估计 MHz | 327.784891 | 331.498867 | +1.133053% |
-| 原六几何IPC | 1.122239838632 | 1.184086472112 | +5.511000% |
-| Fmax²×IPC/Area | 3.792484290924 | 3.706339426313 | −2.271463% |
-
-工具及独立审计退出0，含前端资格1小时28分33秒。面积增3314.092282 μm²，其中SRAM增2956.124122、非SRAM增357.968160；是整核分类差，不冒称完整模块归因。面积<36000／IPC>1.1通过，但面积增量超过目标中频率／IPC收益，不称目标优化成功或最优。IPC×Fmax估算+6.706495%，非墙钟实测。
-
-232宏总数不变，仅64数据宏128×8→256×8及2元数据宏128×21→256×20，其他166宏逐实例形状／面积保持，真实数据bits=16384×8；五标准库及未变RAM库SHA、两新RAM库与成本模型、ABC BUFx2／1fF和STA5fF／2ns、逐叶面积及两侧各自IPC目标审计通过。全过程190231日志行无阻断，7次0问题check；437提示仅435正常memory转寄存器及2ABC提示，严格门禁未放宽。
-
-新最差`_569508_/QN`到DCache way1/bank2 lane0 SRAM addr_in[4]，到达2.916ns／最小周期3.0166015625ns，未认定起点RTL字段或逐门因果。理想时钟无寄生，非后布局；2ns为参考目标，不表示500MHz收敛。1853认证路径及生产／软件／指针保护收口通过。来源：[PPA结果](../../sync/DCACHE16-PPA-RESULTS-20261108.md)、[最终证书](../../sync/evidence/dcache16-ppa-20261108-r01/finalization.json)、[收口复验](../../sync/evidence/dcache16-ppa-20261108-r01/post-completion-verification.json)。测量阶段未采用，综合授权结束恢复暂停。
-
-### 2026-11-08：用户授权采用16 KiB D$，软件资格／发布中（本次核对未发布）
-
-用户知悉上述权衡后明确“采纳并应用到生产”，仅授权已测backend实际SETS256替换、两软件容量同步／必要资格及文档／正式指针发布，不授权新综合、其他候选／组合或清理。两软件只改容量头组数128→256及注释，计划2输入变化／124保持，算法／state writer、主树旧快照Input、模板Register单写／统一sync保持。
-
-工作根`dcache16-production-adoption-20261108-r01`；先全新Release／断言四构建原六答案／退休／init+core+drain匹配8341／13119／3101／5531／159112／120112，再两外部副本各374104条退休PC／周期匹配。screen未记录退休时间戳，只重链接原native／sv2v对象的外部观察器补12次P记录，剔P后须与原完整日志逐字节保持，不重建RTL模型或改原资格。
-
-独立raw／源范围／保护及三树HEAD／索引通过后，才备份一RTL／两软件头／旧指针／文档，应用精确patch、原子发布并复核。本次只读核对时采用adoption／finalization尚未生成，正式指针仍为8 KiB的`current-production-adopted-rs-onehot-credit`，硬件输入哈希匹配；不能把授权或PPA成功等同生产发布完成。来源：[采用流程](../../sync/DCACHE16-ADOPTION-20261108.md)。原PPA／screen／失败证书不回写；最终身份以后续采用证书及正式指针为准。
-
-<a id="process-status-2026-11-08"></a>
-
-## 本次更新状态快照（2026-11-08核对时点）
-
-- **已发布生产**：四取指ROB16／PRF48、I$1 KiB／D$8 KiB，DCache读地址＋整数双发RS直接行选择／信用优化；面积31793.603519 μm²、Fmax327.784891 MHz、几何IPC1.122239838632、新目标3.792484290924。
-- **已测且获采用授权、未发布**：16 KiB D$，面积35107.695801 μm²、Fmax331.498867 MHz、IPC1.184086472112、目标3.706339426313；软件资格／发布流程执行中，不提前绑定生产指标。
-- **无效／否决／未采用**：单发RS信用PPA无驱动无效；DCache tag快照用户明确否决；提前Load地址、Branch切链有效PPA未采用。不自动组合或恢复。
-- **现行口径**：面积<36000、原六几何IPC>1.1，最大化Fmax²×IPC/Area；旧评分／旧门槛／下方旧快照保留历史归属。全部综合暂停，本次仅文档更新，不新启实验或提交／推送。
-
-<a id="archive-status-snapshot"></a>
-
-## 归档时状态快照（2026-11-07）
-
-### 当前状态索引（更新至2026-11-07，优先于历史阶段叙述）
-
-当前生产已采用**跨16B四取指**，默认fetch/decode/rename/commit为 **4/4/4/4**；两软件同步及发布后复验完成，不是仍待采用的实验版。
-
-| 当前认证指标 | 数值 | 相对上一双取指生产 |
-|---|---:|---:|
-| 面积 | 34947.061567 μm² | +0.713718% |
-| Fmax估计 | 319.301528 MHz | +0.997817% |
-| 原六项几何IPC | 1.137201912621 | +6.947322% |
-| 评分 `IPC^4 / Area^2 × Fmax` | 4.372501753378e-7 | +30.260993% |
-
-面积严格<36000、Fmax>300、几何IPC>1.0985三项目标均通过；面积余量约1052.938433 μm²。IPC×Fmax估算+8.014461%，**不是墙钟实测**；Fmax为同理想时钟／无寄生约束的整核STA估计，**不是后布局频率**。原六中qsort多614拍（IPC−0.414616%），其余五项改善，不称逐项无退化。
-
-权威入口为[正式生产指针](../../sync/evidence/current-production.json)，本次发布后的指针SHA256为`0037724c518a01e3ea42c397587cda7a4231665eec448ea896a1971a089a2718`。完整过程见下文“11 月 7 日：跨16B四取指的三方案对照、PPA与生产采用”，以及[采用证书](../../sync/evidence/fetch4-cross16-production-adoption-20261107-r01/adoption.json)、[最终收口](../../sync/evidence/fetch4-cross16-production-adoption-20261107-r01/finalization.json)和[发布后复验](../../sync/evidence/fetch4-cross16-production-adoption-20261107-r01/post-completion-verification.json)。
-
-本次仅整理本文件；不修改RTL、两软件、生产指针或历史证书，不重跑模型、仿真或综合。历史记录中的“当前生产”“未采用”“执行中”归属各自时点；发布时的文档哈希也保持原证书归属，不因后续文档更新回写。全部综合／ABC／STA继续暂停，未提交／推送，不自动继续实验、组合或清理。
-
-## 后续边界与经验
-
-- 早期“PPA暂停/待补”按各节日期保留；当前生产已有上述同源整核PPA及原六项/两软件验证，但六perf成功仍不覆盖任意输入完整状态等价、全部课程/恢复专项或所有异常域。
-- 输出正确不等于周期正确；软件对象大小不等于ASIC面积，代码“平衡化”不等于整核提频。
-- 拓宽取指、分配、执行、写回、提交是不同步骤，前端变宽不代表四个ALU或四个访存口。
-- IPC、频率、面积必须来自同源码/配置/工具/结束协议；单项收益不可相加，历史快照不得替代当前验收。
+等待期间仅source-only准备新meta measure/launcher：真实二文件逆回/无新FF/七RHS有意变化/实际configure与inside-stats绑定预检passed，复用已采用364.900参考/原2.5ns-INVx1-5fF/232宏/完整全组/后测；未调用PPA prepare、无PPA根/未排队或启动EDA，不修改当前full冻结输入。唯一待通知是此full screen，所有actual/旧研究/影子PPA通知均结束。生产364.899777MHz/32143.129859μm²/IPC1.122239838632/两软件/正式指针与400/面积<36000/IPC>1.1/完整全组保持，不自动采用叠加/改mapped/清理提交推送。

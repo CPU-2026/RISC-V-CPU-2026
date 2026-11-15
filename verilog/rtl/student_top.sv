@@ -63,6 +63,8 @@ module student_top #(
     data_transaction_t dmemTransactionInner;
     dcache_cpu_request_input_t dcacheRequestInner;
     dcache_cpu_response_output_t dcacheResponseInner;
+    data_transaction_t [1:0] responsePreviewTransaction;
+    logic [1:0] responsePreviewSelect;
     dcache_line_request_output_t dataRequestInner;
     dcache_line_response_input_t dataResponseInner;
     dcache_word_response_input_t dataWordResponseInner;
@@ -100,6 +102,7 @@ module student_top #(
       .dmemReqSizeOutput(dmemSizeInner), .dmemReqTransactionOutput(dmemTransactionInner),
       .dmemRspValidInput(dcacheResponseInner.valid), .dmemRspRdataInput(dcacheResponseInner.readData),
       .dmemRspTransactionInput(dcacheResponseInner.transaction),
+      .responsePreviewTransactionInput(responsePreviewTransaction),.responsePreviewSelectInput(responsePreviewSelect),
       .commitValidOutput(unusedCommitValidInner), .commitPcOutput(unusedCommitPcInner), .commitInstrOutput(unusedCommitInstrInner),
       .commitRdValidOutput(unusedCommitRdValidInner), .commitRdOutput(unusedCommitRdInner), .commitRdValueOutput(unusedCommitRdValueInner),
       .commitMemValidOutput(unusedCommitMemValidInner), .commitMemAddrOutput(unusedCommitMemAddrInner),
@@ -136,6 +139,7 @@ module student_top #(
     rv32_dmem_backend u_dmem_backend (
       .clkInput(clock), .rstNInput(resetNInner), .cpuRequestInput(dcacheRequestInner),
       .cpuReqReadyOutput(dmemReadyInner), .cpuResponseOutput(dcacheResponseInner),
+      .responsePreviewTransactionOutput(responsePreviewTransaction),.responsePreviewSelectOutput(responsePreviewSelect),
       .memRequestOutput(dataRequestInner), .memReadReadyInput(dataReadReadyInner),
       .memWriteReadyInput(dataWriteReadyInner), .memResponseInput(dataResponseInner), .memWordResponseInput(dataWordResponseInner),
       .memWriteResponseInput(cacheWriteResponseInner), .memRspReadyOutput(dataResponseReadyInner),

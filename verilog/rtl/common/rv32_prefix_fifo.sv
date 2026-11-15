@@ -4,6 +4,7 @@ module rv32_prefix_fifo #(
   parameter int unsigned WIDTH = 32,
   parameter int unsigned PUSH_WIDTH = 2,
   parameter int unsigned POP_WIDTH = 2,
+  parameter bit EXTERNAL_CREDIT = 1'b0,
   localparam int unsigned SLOT_W = $clog2(DEPTH),
   localparam int unsigned SEQ_W = SLOT_W + 1,
   localparam int unsigned PUSH_W = $clog2(PUSH_WIDTH + 1),
@@ -11,6 +12,7 @@ module rv32_prefix_fifo #(
 ) (
   input logic clkInput, rstNInput, freezeInput, flushInput,
   input logic inValidInput,
+  input logic inCreditInput,
   input logic [PUSH_W-1:0] inCountInput,
   input logic [PUSH_WIDTH-1:0][WIDTH-1:0] inDataInput,
   output logic inReadyOutput,
@@ -30,6 +32,7 @@ module rv32_prefix_fifo #(
     (countOutput < SEQ_W'(POP_WIDTH) ? POP_W'(countOutput) : POP_W'(POP_WIDTH));
   assign popInner = outReadyCountInput < outCountOutput ? outReadyCountInput : outCountOutput;
   assign inCapacityOutput = SEQ_W'(DEPTH) - countOutput + SEQ_W'(popInner);
+  logic countReadyInner;
   generate if (PUSH_WIDTH == 2) begin : g_prefix_credit
     logic oneSpaceInner, twoSpaceInner, popOneInner, popTwoInner;
     // Occupancy thresholds are OLD-state work. A late consumer acceptance
@@ -40,17 +43,25 @@ module rv32_prefix_fifo #(
     assign popTwoInner = popInner > POP_W'(1);
     always_comb begin
       case (inCountInput)
-        PUSH_W'(0): inReadyOutput = !flushInput;
-        PUSH_W'(1): inReadyOutput = !flushInput && (oneSpaceInner || popOneInner);
-        PUSH_W'(2): inReadyOutput = !flushInput &&
+        PUSH_W'(0): countReadyInner = !flushInput;
+        PUSH_W'(1): countReadyInner = !flushInput && (oneSpaceInner || popOneInner);
+        PUSH_W'(2): countReadyInner = !flushInput &&
           (twoSpaceInner || (oneSpaceInner && popOneInner) || popTwoInner);
-        default: inReadyOutput = 1'b0;
+        default: countReadyInner = 1'b0;
       endcase
     end
   end else begin : g_generic_credit
-    assign inReadyOutput = !flushInput && inCountInput <= PUSH_W'(PUSH_WIDTH) &&
+    assign countReadyInner = !flushInput && inCountInput <= PUSH_W'(PUSH_WIDTH) &&
       SEQ_W'(inCountInput) <= inCapacityOutput;
   end endgenerate
+  assign inReadyOutput=EXTERNAL_CREDIT ? inCreditInput : countReadyInner;
+`ifndef SYNTHESIS
+  always @(posedge clkInput) if(rstNInput) begin
+    if(EXTERNAL_CREDIT) assert(inCreditInput==countReadyInner)
+      else $fatal(1,"backward FIFO external credit identity");
+    else assert(!inCreditInput) else $fatal(1,"backward FIFO default credit must be tied low");
+  end
+`endif
   assign pushInner = inValidInput && inReadyOutput ? inCountInput : '0;
   for (genvar lane = 0; lane < POP_WIDTH; lane++) begin : g_read
     assign outDataOutput[lane] = lane < int'(outCountOutput) ?

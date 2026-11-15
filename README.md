@@ -14,7 +14,7 @@
 | 分支预测 | Tournament、BTB32、RAS8、checkpoint64 |
 | 恢复 | 每拍重放4个ROB槽，最多4拍 |
 | I$ | 1 KiB，直接映射，64 B行；2个请求包、最多8字信用 |
-| D$ | 16 KiB，256组×2路，32 B行；8请求槽、4 MSHR |
+| D$ | 8 KiB，128组×2路，32 B行；8请求槽、4 MSHR |
 
 支持合法RV32IM、对齐控制转移的无异常输入，不实现CSR及系统异常处理。程序向 `0x80000000` 全字写入结果退出：退出Store退休后冻结核心，排空至对应B握手，不扫描全部脏缓存行。
 
@@ -34,15 +34,15 @@ make perf MAX_CYCLES=100000000
 
 ## 验证与性能
 
-当前ROB16／PRF48配置已通过原六程序native／sv2v对照，以及两份软件模拟器的Release／断言构建和退休PC／周期对拍。课程周期包含初始化、核心执行与退出排空，六项几何平均IPC为 **1.122240**。
+当前双队列反向信用生产完成converted原六程序及374104条架构退休验证，以及两份软件模拟器的Release／断言构建和退休PC／周期对拍。课程周期包含初始化、核心执行与退出排空，六项几何平均IPC为 **1.122240**。
 
-**当前配置的面积、Fmax和评分尚未测量。** 验证仅覆盖已列明的程序与条件，不代表全输入形式证明，详见[验证范围](docs/course.md)。
+同源整核测量面积32256.416459 μm²、估计Fmax 357.339149 MHz；未达到400 MHz，全组非退化审查仍拒绝。有限验证不代表全输入形式证明，详见[验证与评估](docs/assessment.md)。
 
 ## 目录与文档
 
 - `verilog/rtl/`：处理器RTL；`verilog/filelist.f`：活动源码清单。
 - `scripts/`：构建、验证与综合工具；`testcases/`：课程测试子模块。
-- [架构说明](docs/architecture.md) · [参数配置](docs/parameterized-configuration.md)
+- [架构说明与参数配置](docs/architecture.md) · [文档导航](docs/README.md)
 - [AXI协议](docs/axi4-lite.md) · [SRAM模型](docs/sram.md)
 - [参数敏感度分析](docs/参数敏感度分析.md) · [综合评估](docs/assessment.md)
 

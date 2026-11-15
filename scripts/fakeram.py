@@ -7,6 +7,7 @@ packages are needed. All names and numeric values emitted here are generated
 from validated integer parameters, never from student-supplied strings.
 """
 from dataclasses import dataclass
+from contextlib import nullcontext
 import json
 from pathlib import Path
 
@@ -194,58 +195,64 @@ library({shape.macro}) {{
 '''
 
 
-def prepare_memories(design, out):
+def prepare_memories(design, out, profile=None):
     """Replace elaborated sram_fakeram specializations with concrete wrappers."""
-    modules = design["modules"]
-    replacements, shapes = {}, set()
-    for name, module in modules.items():
-        if name == "sram_fakeram" or module.get("attributes", {}).get("hdlname") == "sram_fakeram":
-            params = module["parameter_default_values"]
-            shape = Shape(*(integer_parameter(params, key, name)
-                            for key in ("DEPTH", "WIDTH", "WRITE_GRANULARITY")))
-            replacements[name] = shape
+    def measured(name):
+        return profile.measure(name) if profile is not None else nullcontext()
 
-    for module_name, module in modules.items():
-        for instance, cell in module.get("cells", {}).items():
-            kind = cell["type"]
-            where = f"{module_name}.{instance} ({cell.get('attributes', {}).get('src', 'unknown source')})"
-            if kind in replacements:
-                shape = replacements[kind]
-                shape.validate(where)
-                for port in ("clk", "en", "we", "wmask", "addr", "wdata"):
-                    if not cell.get("connections", {}).get(port):
-                        raise ram_error(where, f"required input {port} is not connected")
-                if shape.wrapper in modules or shape.macro in modules:
-                    raise ram_error(where, "generated RAM module names are reserved by the framework")
-                cell["type"] = shape.wrapper
-                cell["parameters"] = {}
-                shapes.add(shape)
-            elif kind.startswith("sram_fakeram") or kind.startswith("fakeram_asap7_"):
-                raise ram_error(where, f"unsupported RAM module {kind}; instantiate sram_fakeram")
-            elif not kind.startswith("$"):
-                target = modules.get(kind)
-                if target is None or target.get("attributes", {}).get("blackbox", "0").endswith("1"):
-                    raise ram_error(where, f"unsupported external module {kind}; "
-                                    "only sram_fakeram has a RAM library implementation")
-    for name in replacements:
-        del modules[name]
+    with measured("python.ram_rewrite"):
+        modules = design["modules"]
+        replacements, shapes = {}, set()
+        for name, module in modules.items():
+            if name == "sram_fakeram" or module.get("attributes", {}).get("hdlname") == "sram_fakeram":
+                params = module["parameter_default_values"]
+                shape = Shape(*(integer_parameter(params, key, name)
+                                for key in ("DEPTH", "WIDTH", "WRITE_GRANULARITY")))
+                replacements[name] = shape
+
+        for module_name, module in modules.items():
+            for instance, cell in module.get("cells", {}).items():
+                kind = cell["type"]
+                where = f"{module_name}.{instance} ({cell.get('attributes', {}).get('src', 'unknown source')})"
+                if kind in replacements:
+                    shape = replacements[kind]
+                    shape.validate(where)
+                    for port in ("clk", "en", "we", "wmask", "addr", "wdata"):
+                        if not cell.get("connections", {}).get(port):
+                            raise ram_error(where, f"required input {port} is not connected")
+                    if shape.wrapper in modules or shape.macro in modules:
+                        raise ram_error(where, "generated RAM module names are reserved by the framework")
+                    cell["type"] = shape.wrapper
+                    cell["parameters"] = {}
+                    shapes.add(shape)
+                elif kind.startswith("sram_fakeram") or kind.startswith("fakeram_asap7_"):
+                    raise ram_error(where, f"unsupported RAM module {kind}; instantiate sram_fakeram")
+                elif not kind.startswith("$"):
+                    target = modules.get(kind)
+                    if target is None or target.get("attributes", {}).get("blackbox", "0").endswith("1"):
+                        raise ram_error(where, f"unsupported external module {kind}; "
+                                        "only sram_fakeram has a RAM library implementation")
+        for name in replacements:
+            del modules[name]
 
     out.mkdir(parents=True, exist_ok=True)
     prepared = out / "prepared.json"
-    prepared.write_text(json.dumps(design) + "\n")
+    with measured("python.write_prepared_json"):
+        prepared.write_text(json.dumps(design) + "\n")
     wrappers = out / "wrappers.v"
-    wrappers.write_text("// Generated SRAM wrappers; do not edit.\n" +
-                        "\n".join(shape.verilog() for shape in sorted(shapes)))
     macros = {}
-    for shape in sorted(shapes):
-        macros[shape.macro] = {"depth": shape.depth, "width": shape.granularity,
-                               "area_um2": shape.lane_area}
-        (out / f"{shape.macro}.lib").write_text(liberty(shape))
-    (out / "manifest.json").write_text(json.dumps({
-        "model": MODEL,
-        "configurations": [{"module": s.wrapper, "depth": s.depth, "width": s.width,
-                            "write_granularity": s.granularity, "lanes": s.lanes,
-                            "macro": s.macro} for s in sorted(shapes)],
-        "macros": macros,
-    }, indent=2) + "\n")
+    with measured("python.write_ram_wrappers_and_libraries"):
+        wrappers.write_text("// Generated SRAM wrappers; do not edit.\n" +
+                            "\n".join(shape.verilog() for shape in sorted(shapes)))
+        for shape in sorted(shapes):
+            macros[shape.macro] = {"depth": shape.depth, "width": shape.granularity,
+                                   "area_um2": shape.lane_area}
+            (out / f"{shape.macro}.lib").write_text(liberty(shape))
+        (out / "manifest.json").write_text(json.dumps({
+            "model": MODEL,
+            "configurations": [{"module": s.wrapper, "depth": s.depth, "width": s.width,
+                                "write_granularity": s.granularity, "lanes": s.lanes,
+                                "macro": s.macro} for s in sorted(shapes)],
+            "macros": macros,
+        }, indent=2) + "\n")
     return prepared, wrappers, [out / f"{name}.lib" for name in sorted(macros)], macros

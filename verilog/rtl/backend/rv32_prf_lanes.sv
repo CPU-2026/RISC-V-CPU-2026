@@ -3,6 +3,7 @@
 // back into the rename planner. Retirement/replay appends are next-cycle credit.
 module rv32_prf_lanes #(
   parameter int unsigned LANES = 4,
+  parameter bit ALLOCATION_TAG_SIDEBAND = 1'b0,
   parameter int unsigned PRF_DEPTH = rv32_pkg::PRF_ENTRIES,
   parameter int unsigned ROB_DEPTH = rv32_pkg::ROB_ENTRIES,
   parameter int unsigned WRITEBACK_PORTS = 2,
@@ -11,6 +12,7 @@ module rv32_prf_lanes #(
 ) (
   input logic clkInput, rstNInput, freezeInput,
   input rv32_pkg::prf_allocation_input_t [LANES-1:0] allocationInput,
+  input rv32_pkg::phy_tag_t [LANES-1:0] allocationCandidateInput,
   output logic [LANES-1:0] previewReadyOutput,
   output rv32_pkg::phy_tag_t [LANES-1:0] previewPhyOutput,
   output logic [LANES-1:0] allocationFireOutput,
@@ -164,6 +166,13 @@ module rv32_prf_lanes #(
       end
     end
   end
+`ifndef SYNTHESIS
+  always @(posedge clkInput) if(rstNInput && ALLOCATION_TAG_SIDEBAND) begin
+    for(int lane=0;lane<LANES;lane++) if(allocationFireOutput[lane])
+      assert(allocationCandidateInput[lane]==allocationPhyOutput[lane])
+        else $fatal(1,"PRF early destination disagrees with actual allocation");
+  end
+`endif
   // Resolve writer priority once by physical identity, BEFORE row decode.
   // Suppressing a writer only when a later writer has the same tag is exactly
   // equivalent to the original per-row winner masks, including WB collisions.
@@ -173,7 +182,7 @@ module rv32_prf_lanes #(
   for (genvar writer = 0; writer < VALUE_WRITERS; writer++) begin : g_global_writer
     if (writer < LANES) begin : g_alloc
       assign writeValidInner[writer] = allocationFireOutput[writer];
-      assign writeTagInner[writer] = allocationPhyOutput[writer];
+      assign writeTagInner[writer] = ALLOCATION_TAG_SIDEBAND ? allocationCandidateInput[writer] : allocationPhyOutput[writer];
       assign writeDataInner[writer] = allocationInput[writer].value;
       assign writeReadyInner[writer] = allocationInput[writer].valueValid;
     end else begin : g_wb

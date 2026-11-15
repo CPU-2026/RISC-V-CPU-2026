@@ -11,6 +11,7 @@ module rv32_rename_four #(
   output logic [3:0] fireOutput,
   output logic [2:0] countOutput,
   input logic [6:0][$clog2(rv32_pkg::ROB_ENTRIES+1)-1:0] rsCreditsInput,
+  input logic [4:0] branchCreditFitsInput,
   input logic [$clog2(rv32_pkg::LQ_ENTRIES+1)-1:0] loadCreditsInput,
   input logic [$clog2(rv32_pkg::SQ_ENTRIES+1)-1:0] storeCreditsInput,
   input logic [3:0][$clog2(rv32_pkg::LQ_ENTRIES)-1:0] loadPreviewInput,
@@ -58,7 +59,7 @@ module rv32_rename_four #(
   prf_read_input_t [8+COMMIT_WIDTH-1:0] reads;
   prf_read_output_t [8+COMMIT_WIDTH-1:0] values;
   prf_read_output_t [3:0][1:0] sourceValues;
-  phy_tag_t [3:0] previewPhysical,allocatedPhysical;
+  phy_tag_t [3:0] previewPhysical,allocatedPhysical,destinationPreview;
 /* verilator lint_off UNUSEDSIGNAL */   logic [3:0] previewReady,physicalFire,robFire; /* verilator lint_on UNUSEDSIGNAL */
 /* verilator lint_off UNUSEDSIGNAL */   rob_tag_t [3:0] allocatedTags; /* verilator lint_on UNUSEDSIGNAL */
   logic [$clog2(PRF_ENTRIES+1)-1:0] freeCount;
@@ -88,8 +89,8 @@ module rv32_rename_four #(
     .restoreInput('{valid:flushInput.valid,squashTag:flushInput.robTag,headTag:statusOutput.headTag}),
     .recoveryInput,.replayInput(replayNarrowOutput),.commitInput(mapCommitInput)
   );
-  rv32_prf_lanes #(.LANES(4),.COMMIT_WIDTH(COMMIT_WIDTH),.READ_PORTS(8+COMMIT_WIDTH),.WRITEBACK_PORTS(WRITEBACK_PORTS)) u_prf (
-    .clkInput,.rstNInput,.freezeInput,.allocationInput(physical),.previewReadyOutput(previewReady),
+  rv32_prf_lanes #(.LANES(4),.ALLOCATION_TAG_SIDEBAND(1'b1),.COMMIT_WIDTH(COMMIT_WIDTH),.READ_PORTS(8+COMMIT_WIDTH),.WRITEBACK_PORTS(WRITEBACK_PORTS)) u_prf (
+    .clkInput,.rstNInput,.freezeInput,.allocationInput(physical),.allocationCandidateInput(destinationPreview),.previewReadyOutput(previewReady),
     .previewPhyOutput(previewPhysical),.allocationFireOutput(physicalFire),.allocationPhyOutput(allocatedPhysical),
     .freeInput,.restoreInput('{valid:flushInput.valid,squashTag:flushInput.robTag}),.recoveryInput,
     .restoreCountInput(robCountOutput),.replayInput(replayNarrowOutput),.readInput(reads),.readOutput(values),
@@ -103,15 +104,15 @@ module rv32_rename_four #(
     .commitOutput,.commitStoreOutput,.commitReadyInput,.commitFireOutput,.statusOutput,.countOutput(robCountOutput),
     .replayOffsetInput(recoveryInput.offset),.replayNarrowOutput,.replayRasOutput
   );
-  rv32_wide_rename_plan u_plan (
+  rv32_wide_rename_plan #(.BRANCH_CREDIT_FITS(1'b1)) u_plan (
     .enableInput(enableInput && !freezeInput && !flushInput.valid && !recoveryInput.active),
     .validInput,.wholeGroupInput,.decodedInput,.mapReadInput(mapRead),.oldDestinationInput(previous),.sourceReadInput(sourceValues),
     .freePhysicalInput(previewPhysical),.physicalCreditsInput(freeCount),.nextRobTagInput(nextTagOutput),
-    .robCreditsInput(robCredits),.rsCreditsInput,.loadCreditsInput,.storeCreditsInput,
+    .robCreditsInput(robCredits),.rsCreditsInput,.branchCreditFitsInput,.loadCreditsInput,.storeCreditsInput,
     .loadSlotInput(loadPreviewInput),.storeSlotInput(storePreviewInput),
     .fireOutput,.issueCountOutput(countOutput),.physicalCountOutput(unusedPhysicalCount),
     .loadCountOutput(unusedLoadCount),.storeCountOutput(unusedStoreCount),
-    .renameOutput(renames),.physicalOutput(physical),.robOutput(allocations),.rsOutput(base),
+    .renameOutput(renames),.physicalOutput(physical),.destinationPreviewOutput(destinationPreview),.robOutput(allocations),.rsOutput(base),
     .loadOutput,.storeOutput,.loadIndexOutput(loadIndices),.storeIndexOutput(storeIndices)
   );
   // Local experiment only: every output target is constant after elaboration.

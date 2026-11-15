@@ -38,6 +38,8 @@ module rv32_core #(
   input  logic [31:0]      dmemRspRdataInput,
   output rv32_pkg::data_transaction_t dmemReqTransactionOutput,
   input rv32_pkg::data_transaction_t dmemRspTransactionInput,
+  input rv32_pkg::data_transaction_t [1:0] responsePreviewTransactionInput,
+  input logic [1:0] responsePreviewSelectInput,
 
   output logic             commitValidOutput,
   output logic [31:0]      commitPcOutput,
@@ -153,6 +155,7 @@ module rv32_core #(
   logic [$clog2(MUL_RS_ENTRIES+1)-1:0] wideMulCreditsInner;
   logic [$clog2(DIV_RS_ENTRIES+1)-1:0] wideDivCreditsInner;
   logic [$clog2(BRANCH_RS_ENTRIES+1)-1:0] wideBranchCreditsInner;
+  logic [6:0][4:0] unusedCreditFitsInner;
   logic [$clog2(LOAD_RS_ENTRIES+1)-1:0] wideLoadRsCreditsInner;
   logic [$clog2(STORE_ADDR_RS_ENTRIES+1)-1:0] wideSaCreditsInner;
   logic [$clog2(STORE_VALUE_RS_ENTRIES+1)-1:0] wideSvCreditsInner;
@@ -905,7 +908,7 @@ module rv32_core #(
       .enableInput(bootDoneInner && !pipelineFrozenInner && !globalFlushInner),
       .decodedInput(wideDecodedInner),.validInput(wideValidInner),.wholeGroupInput(frontendWholeGroupInner),
       .fireOutput(wideFireInner),.countOutput(wideIssueCountInner),
-      .rsCreditsInput(wideRsCreditsInner),.loadCreditsInput(wideLoadCreditsInner),.storeCreditsInput(wideStoreCreditsInner),
+      .rsCreditsInput(wideRsCreditsInner),.branchCreditFitsInput(unusedCreditFitsInner[3]),.loadCreditsInput(wideLoadCreditsInner),.storeCreditsInput(wideStoreCreditsInner),
       .loadPreviewInput(wideLoadPreviewInner),.storePreviewInput(wideStorePreviewInner),
       .rsOutput(wideRsAllocInner),.rsAuxOutput(wideRsAuxInner),
       .loadOutput(wideLoadAllocInner),.storeOutput(wideStoreAllocInner),
@@ -1035,7 +1038,7 @@ module rv32_core #(
 
   rv32_rs #(.DEPTH(INT_RS_ENTRIES), .AUX_W(1), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH),
             .ISSUE_WIDTH(ALU_LANES), .INDEPENDENT_ISSUE_READY(ALU_LANES>1),
-            .REUSE_ON_ISSUE(1'b1), .WB_ISSUE_BYPASS(1'b1)) u_int_rs (
+            .REUSE_ON_ISSUE(1'b0), .WB_ISSUE_BYPASS(1'b1)) u_int_rs (
     .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
@@ -1044,7 +1047,7 @@ module rv32_core #(
     .allocSecondInput(intRsAllocSecondInputInner), .allocSecondReadyOutput(intAllocSecondReadyInner),
     .allocSecondAuxInput(issueSecondIsJumpInner),
     .allocLanesInput(wideRsAllocInner[0]),.allocLanesAuxInput(wideIntAuxInner),
-    .allocLanesFireOutput(wideRsFireInner[0]),.allocCreditsOutput(wideIntCreditsInner),
+    .allocLanesFireOutput(wideRsFireInner[0]),.allocCreditsOutput(wideIntCreditsInner),.allocCreditFitsOutput(unusedCreditFitsInner[0]),
     .writebackInput(writebackInputInner),
     .issueWritebackInput(writebackInputInner),
     .issueOutput(intRsIssueOutputInner), .issueReadyInput(intIssueReadyInner),
@@ -1073,7 +1076,7 @@ module rv32_core #(
     .allocSecondInput(mulRsAllocSecondInputInner), .allocSecondReadyOutput(mulAllocSecondReadyInner),
     .allocSecondAuxInput(1'b0),
     .allocLanesInput(wideRsAllocInner[1]),.allocLanesAuxInput(wideMulAuxInner),
-    .allocLanesFireOutput(wideRsFireInner[1]),.allocCreditsOutput(wideMulCreditsInner),
+    .allocLanesFireOutput(wideRsFireInner[1]),.allocCreditsOutput(wideMulCreditsInner),.allocCreditFitsOutput(unusedCreditFitsInner[1]),
     .writebackInput(writebackInputInner),
     .issueWritebackInput(writebackInputInner),
     .issueOutput(mulRsIssueOutputInner), .issueReadyInput(mulIssueReadyInner),
@@ -1101,7 +1104,7 @@ module rv32_core #(
     .allocSecondInput(divRsAllocSecondInputInner), .allocSecondReadyOutput(divAllocSecondReadyInner),
     .allocSecondAuxInput(1'b0),
     .allocLanesInput(wideRsAllocInner[2]),.allocLanesAuxInput(wideDivAuxInner),
-    .allocLanesFireOutput(wideRsFireInner[2]),.allocCreditsOutput(wideDivCreditsInner),
+    .allocLanesFireOutput(wideRsFireInner[2]),.allocCreditsOutput(wideDivCreditsInner),.allocCreditFitsOutput(unusedCreditFitsInner[2]),
     .writebackInput(writebackInputInner),
     .issueWritebackInput(writebackInputInner),
     .issueOutput(divRsIssueOutputInner), .issueReadyInput(divIssueReadyInner),
@@ -1121,7 +1124,7 @@ module rv32_core #(
   assign divIssueUseImmInner = divRsIssueOutputInner.useImmediate;
 
   rv32_rs #(.DEPTH(BRANCH_RS_ENTRIES), .AUX_W(3), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH),
-            .REUSE_ON_ISSUE(1'b1), .WB_ISSUE_BYPASS(1'b1)) u_branch_rs (
+            .REUSE_ON_ISSUE(1'b0), .WB_ISSUE_BYPASS(1'b1), .CREDIT_FIT_SIDEBAND(1'b1)) u_branch_rs (
     .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
@@ -1130,7 +1133,7 @@ module rv32_core #(
     .allocSecondInput(branchRsAllocSecondInputInner), .allocSecondReadyOutput(branchAllocSecondReadyInner),
     .allocSecondAuxInput(3'b0),
     .allocLanesInput(wideRsAllocInner[3]),.allocLanesAuxInput(wideBranchAuxInner),
-    .allocLanesFireOutput(wideRsFireInner[3]),.allocCreditsOutput(wideBranchCreditsInner),
+    .allocLanesFireOutput(wideRsFireInner[3]),.allocCreditsOutput(wideBranchCreditsInner),.allocCreditFitsOutput(unusedCreditFitsInner[3]),
     .writebackInput(writebackInputInner),
     .issueWritebackInput(writebackInputInner),
     .issueOutput(branchRsIssueOutputInner), .issueReadyInput(branchIssueReadyInner),
@@ -1150,7 +1153,7 @@ module rv32_core #(
   assign branchIssueUseImmInner = branchRsIssueOutputInner.useImmediate;
 
   rv32_rs #(.DEPTH(LOAD_RS_ENTRIES), .AUX_W(4), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH),
-            .REUSE_ON_ISSUE(1'b1), .WB_ISSUE_BYPASS(1'b1)) u_load_rs (
+            .REUSE_ON_ISSUE(1'b0), .WB_ISSUE_BYPASS(1'b1)) u_load_rs (
     .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
@@ -1159,7 +1162,7 @@ module rv32_core #(
     .allocSecondInput(loadRsAllocSecondInputInner), .allocSecondReadyOutput(loadRsAllocSecondReadyInner),
     .allocSecondAuxInput({1'b0, lqAllocSecondIndexInner}),
     .allocLanesInput(wideRsAllocInner[4]),.allocLanesAuxInput(wideLoadAuxInner),
-    .allocLanesFireOutput(wideRsFireInner[4]),.allocCreditsOutput(wideLoadRsCreditsInner),
+    .allocLanesFireOutput(wideRsFireInner[4]),.allocCreditsOutput(wideLoadRsCreditsInner),.allocCreditFitsOutput(unusedCreditFitsInner[4]),
     .writebackInput(writebackInputInner),
     .issueWritebackInput(writebackInputInner),
     .issueOutput(loadRsIssueOutputInner), .issueReadyInput(loadRsIssueReadyInner),
@@ -1167,7 +1170,7 @@ module rv32_core #(
     .issueLaneValidOutput(unusedLoadIssueLaneValidInner), .issueLaneOutput(unusedLoadIssueLaneInner),
     .issueLaneAuxOutput(unusedLoadIssueLaneAuxInner), .issueLaneReadyInput('0)
   );
-  rv32_rs #(.DEPTH(STORE_ADDR_RS_ENTRIES), .AUX_W(4), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH), .REUSE_ON_ISSUE(1'b1), .WB_ISSUE_BYPASS(1'b1)) u_store_addr_rs (
+  rv32_rs #(.DEPTH(STORE_ADDR_RS_ENTRIES), .AUX_W(4), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH), .REUSE_ON_ISSUE(1'b0), .WB_ISSUE_BYPASS(1'b1)) u_store_addr_rs (
     .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
@@ -1177,14 +1180,14 @@ module rv32_core #(
     .allocSecondInput(saRsAllocSecondInputInner), .allocSecondReadyOutput(saRsAllocSecondReadyInner),
     .allocSecondAuxInput({1'b1, sqAllocSecondIndexInner}),
     .allocLanesInput(wideRsAllocInner[5]),.allocLanesAuxInput(wideSaAuxInner),
-    .allocLanesFireOutput(wideRsFireInner[5]),.allocCreditsOutput(wideSaCreditsInner),
+    .allocLanesFireOutput(wideRsFireInner[5]),.allocCreditsOutput(wideSaCreditsInner),.allocCreditFitsOutput(unusedCreditFitsInner[5]),
     .issueOutput(saRsIssueOutputInner), .issueReadyInput(saRsIssueReadyInner),
     .issueAuxOutput(saAuxInner), .occupancyOutput(unusedSaOccupancyInner),
     .issueLaneValidOutput(unusedSaIssueLaneValidInner), .issueLaneOutput(unusedSaIssueLaneInner),
     .issueLaneAuxOutput(unusedSaIssueLaneAuxInner), .issueLaneReadyInput('0)
   );
   rv32_rs #(.DEPTH(STORE_VALUE_RS_ENTRIES), .AUX_W(3),
-             .ISSUE_WIDTH(STORE_VALUE_RS_ENTRIES), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH), .REUSE_ON_ISSUE(1'b1), .WB_ISSUE_BYPASS(1'b1), .WB_ISSUE_PORTS(ALU_CDB_PORTS)) u_store_value_rs (
+             .ISSUE_WIDTH(STORE_VALUE_RS_ENTRIES), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH), .REUSE_ON_ISSUE(1'b0), .WB_ISSUE_BYPASS(1'b1), .WB_ISSUE_PORTS(ALU_CDB_PORTS)) u_store_value_rs (
     .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
@@ -1193,7 +1196,7 @@ module rv32_core #(
     .allocSecondInput(svRsAllocSecondInputInner), .allocSecondReadyOutput(svRsAllocSecondReadyInner),
     .allocSecondAuxInput(sqAllocSecondIndexInner),
     .allocLanesInput(wideRsAllocInner[6]),.allocLanesAuxInput(wideSvAuxInner),
-    .allocLanesFireOutput(wideRsFireInner[6]),.allocCreditsOutput(wideSvCreditsInner),
+    .allocLanesFireOutput(wideRsFireInner[6]),.allocCreditsOutput(wideSvCreditsInner),.allocCreditFitsOutput(unusedCreditFitsInner[6]),
     .issueOutput(svRsIssueOutputInner), .issueReadyInput(!globalFlushInner ||
         rob_is_older(svRsIssueOutputInner.robTag, globalFlushTagInner)),
     .issueAuxOutput(svAuxInner), .occupancyOutput(unusedSvOccupancyInner),
@@ -1326,7 +1329,7 @@ module rv32_core #(
     lsuAddressInputInner.valid = aguAddressOutputInner.valid && !recoveryBusyInner;
   end
 
-  rv32_lsu #(.STORE_DATA_LANES(STORE_VALUE_RS_ENTRIES), .TAGGED_DMEM(TAGGED_DMEM),
+  rv32_lsu #(.STORE_DATA_LANES(STORE_VALUE_RS_ENTRIES), .TAGGED_DMEM(TAGGED_DMEM),.RESPONSE_PREVIEW(1'b1),
              .WRITEBACK_PORTS(WRITEBACK_PORTS), .COMMIT_WIDTH(COMMIT_WIDTH), .RENAME_WIDTH(ISSUE_WIDTH)) u_lsu (
     .coreStoppedInput(haltedInner),
     .loadYieldEnableInput(bootDoneInner && !pipelineFrozenInner && !globalFlushInner),
@@ -1358,6 +1361,7 @@ module rv32_core #(
     .dmemRequestOutput(lsuDmemRequestOutputInner), .dmemReqReadyInput(dmemReqReadyInput),
     .dmemResponseInput(lsuDmemResponseInputInner),
     .dmemReqTransactionOutput(dmemReqTransactionOutput), .dmemRspTransactionInput(dmemRspTransactionInput),
+    .responsePreviewTransactionInput,.responsePreviewSelectInput,
     .lqCountOutput(unusedLqCountInner), .sqCountOutput(sqCountInner)
   );
 
