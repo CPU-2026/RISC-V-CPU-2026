@@ -11,7 +11,9 @@ module rv32_rs #(
   parameter bit WB_ISSUE_BYPASS = 1'b0,
   parameter int unsigned WB_ISSUE_PORTS = WRITEBACK_PORTS,
   parameter bit CREDIT_FIT_SIDEBAND = 1'b0,
-  parameter bit INDEPENDENT_ISSUE_READY = 1'b0
+  parameter bit INDEPENDENT_ISSUE_READY = 1'b0,
+  parameter bit SELECTIVE_WAKE_PIPE = 1'b0,
+  parameter bit SEPARATE_ISSUE_WB = 1'b0
 ) (
   input  logic                   clkInput,
 /* verilator lint_off SYNCASYNCNET */   input  logic                   rstNInput, /* verilator lint_on SYNCASYNCNET */
@@ -125,7 +127,7 @@ module rv32_rs #(
   for (genvar row = 0; row < DEPTH; row++) begin : g_wakeup
     assign src1WbInner[row] = matching_writeback(src1TagInner[row]);
     assign src2WbInner[row] = matching_writeback(src2TagInner[row]);
-    if (WB_ISSUE_PORTS==WRITEBACK_PORTS) begin : g_all_issue_ports
+    if (WB_ISSUE_PORTS==WRITEBACK_PORTS && !SEPARATE_ISSUE_WB) begin : g_all_issue_ports
       assign src1IssueWbInner[row]=src1WbInner[row];
       assign src2IssueWbInner[row]=src2WbInner[row];
     end else begin : g_prefix_issue_ports
@@ -151,7 +153,85 @@ module rv32_rs #(
   endfunction
 
   // PARALLEL_SINGLE_ISSUE_SELECTOR
-  generate if (DEPTH==4 && ISSUE_WIDTH==2 && WB_ISSUE_BYPASS && INDEPENDENT_ISSUE_READY) begin : g_parallel_n_of_m
+  // Cross-generate identity alias; unused in statically disabled consumers.
+  /* verilator lint_off UNUSEDSIGNAL */
+  wire [DEPTH-1:0] selectiveDualRowsInner[ISSUE_WIDTH];
+  /* verilator lint_on UNUSEDSIGNAL */
+  generate if (SELECTIVE_WAKE_PIPE ||
+      !(DEPTH==4 && ISSUE_WIDTH==2 && WB_ISSUE_BYPASS && INDEPENDENT_ISSUE_READY)) begin : g_unused_dual_alias
+    for (genvar lane=0;lane<ISSUE_WIDTH;lane++) begin : g_lane
+      assign selectiveDualRowsInner[lane]='0;
+    end
+  end endgenerate
+  generate if (SELECTIVE_WAKE_PIPE) begin : g_selective_wake
+    logic [DEPTH-1:0] selectedRowsInner,choiceRowsInner,payloadRowsInner;
+    logic earlyFoundInner,choiceFoundInner;
+    logic [INDEX_W-1:0] earlyIndexInner,choiceIndexInner;
+    initial assert (ISSUE_WIDTH==1 && WB_ISSUE_BYPASS &&
+                    WB_ISSUE_PORTS==WRITEBACK_PORTS && (DEPTH==2 || DEPTH==4))
+      else $fatal(1,"selective onehot wake configuration");
+    always_comb begin
+      earlyFoundInner=1'b0;earlyIndexInner='0;
+      choiceFoundInner=1'b0;choiceIndexInner='0;
+      for (int row=0;row<DEPTH;row++) begin
+        if (busyInner[row] && src1ReadyInner[row] && src2ReadyInner[row] &&
+            (!earlyFoundInner || rs_is_older(robTagInner[row],robTagInner[earlyIndexInner]))) begin
+          earlyFoundInner=1'b1;earlyIndexInner=INDEX_W'(row);
+        end
+        if (busyInner[row] && !(src1ReadyInner[row] && src2ReadyInner[row]) &&
+            src1IssueReadyInner[row] && src2IssueReadyInner[row] &&
+            !selectedRowsInner[row] &&
+            (!choiceFoundInner || rs_is_older(robTagInner[row],robTagInner[choiceIndexInner]))) begin
+          choiceFoundInner=1'b1;choiceIndexInner=INDEX_W'(row);
+        end
+      end
+      // Decode the late winner BEFORE capture; payload never indexes by it.
+      choiceRowsInner='0;
+      if (choiceFoundInner) choiceRowsInner[choiceIndexInner]=1'b1;
+      issueFoundInner=(|selectedRowsInner) || earlyFoundInner;
+      payloadRowsInner='0;
+      if (|selectedRowsInner) payloadRowsInner=selectedRowsInner;
+      else payloadRowsInner[earlyIndexInner]=1'b1;
+      issueIndexInner='0;
+      issueOutput='0;issueAuxOutput='0;
+      for (int row=0;row<DEPTH;row++) begin
+        issueIndexInner |= INDEX_W'(row) & {INDEX_W{payloadRowsInner[row]}};
+        issueOutput.operation=operation_e'(issueOutput.operation |
+          (opInner[row] & {$bits(operation_e){payloadRowsInner[row]}}));
+        issueOutput.robTag |= robTagInner[row] & {ROB_TAG_W{payloadRowsInner[row]}};
+        issueOutput.destinationPhy |= destPhyInner[row] & {PHY_TAG_W{payloadRowsInner[row]}};
+        issueOutput.source1Value |= src1ValueInner[row] & {32{payloadRowsInner[row]}};
+        issueOutput.source2Value |= src2ValueInner[row] & {32{payloadRowsInner[row]}};
+        issueOutput.immediate |= immInner[row] & {32{payloadRowsInner[row]}};
+        issueOutput.programCounter |= pcInner[row] & {32{payloadRowsInner[row]}};
+        issueOutput.predictedProgramCounter |= predictedPcInner[row] & {32{payloadRowsInner[row]}};
+        issueOutput.useImmediate |= useImmInner[row] && payloadRowsInner[row];
+        issueAuxOutput |= auxInner[row] & {AUX_W{payloadRowsInner[row]}};
+      end
+      issueOutput.valid=issueFoundInner && (!flushInfoInput.valid ||
+        rs_is_older(issueOutput.robTag,flushInfoInput.robTag));
+      laneFoundInner[0]=issueFoundInner;laneIndexInner[0]=issueIndexInner;
+      laneTakenInner=issueFoundInner ? payloadRowsInner : '0;
+      issueLaneValidOutput[0]=issueOutput.valid;
+      issueLaneOutput[0]=issueOutput;issueLaneAuxOutput[0]=issueAuxOutput;
+    end
+    always_ff @(posedge clkInput or negedge rstNInput) begin
+      if (!rstNInput) selectedRowsInner<='0;
+      else if (!freezeInput) begin
+        if (flushInfoInput.valid) selectedRowsInner<='0;
+        else if (!(|selectedRowsInner) || issueAcceptInner[0])
+          selectedRowsInner<=choiceRowsInner;
+      end
+    end
+`ifndef SYNTHESIS
+    always @(posedge clkInput) if (rstNInput) begin
+      assert ($onehot0(selectedRowsInner)) else $fatal(1,"onehot selector encoding");
+      for (int row=0;row<DEPTH;row++) if (selectedRowsInner[row])
+        assert (busyInner[row] && src1ReadyInner[row] && src2ReadyInner[row])
+          else $fatal(1,"held selector lost its resident OLD ready row");
+    end
+`endif
+  end else if (DEPTH==4 && ISSUE_WIDTH==2 && WB_ISSUE_BYPASS && INDEPENDENT_ISSUE_READY) begin : g_parallel_n_of_m
     // 2-of-4 age-ranked arbitration. All candidate ranks are computed in
     // parallel; rank 1 never waits for rank 0's winner/index or removal mask.
     // Busy ROB identities inhabit one legal half-ring. Equal tags preserve
@@ -167,6 +247,7 @@ module rv32_rs #(
         rs_is_older(robTagInner[row],flushInfoInput.robTag);
     end
     for (genvar lane=0;lane<ISSUE_WIDTH;lane++) begin : g_selected_row
+      assign selectiveDualRowsInner[lane]=selectedRowMaskInner[lane];
       // Exact decode of the original OR-encoded index, even for zero or
       // multiple winner bits. On legal one-hot grants this is the winner row.
       // Keep index-zero invalid payloads and do not assume a legal age window.
@@ -253,6 +334,8 @@ module rv32_rs #(
     end
 `endif
   end else if (ISSUE_WIDTH == 1 && WB_ISSUE_BYPASS && WB_ISSUE_PORTS==WRITEBACK_PORTS && DEPTH >= 2) begin : g_parallel_select
+    cdb_result_t [WRITEBACK_PORTS-1:0] operandWritebackInner;
+    assign operandWritebackInner=SEPARATE_ISSUE_WB ? issueWritebackInput : writebackInput;
     logic [DEPTH-1:0] readyMaskInner, winnerMaskInner;
     logic [DEPTH-1:0] outranksInner [DEPTH];
     for (genvar row = 0; row < DEPTH; row++) begin : g_row
@@ -305,16 +388,16 @@ module rv32_rs #(
         // Static row identities authenticate WB early. Only the selected row
         // contributes, including row 0 on an invalid issue cycle.
         source1StoredInner |= src1ValueInner[row] & {32{selected[row] &&
-          (src1ReadyInner[row] || !src1WbInner[row].valid)}};
+          (src1ReadyInner[row] || !src1IssueWbInner[row].valid)}};
         source2StoredInner |= src2ValueInner[row] & {32{selected[row] &&
-          (src2ReadyInner[row] || !src2WbInner[row].valid)}};
+          (src2ReadyInner[row] || !src2IssueWbInner[row].valid)}};
         source1PriorHitInner = 1'b0;
         source2PriorHitInner = 1'b0;
         for (int portIndex=0;portIndex<WRITEBACK_PORTS;portIndex++) begin
-          source1PortHitInner = writebackInput[portIndex].valid &&
-            writebackInput[portIndex].phyTag == src1TagInner[row];
-          source2PortHitInner = writebackInput[portIndex].valid &&
-            writebackInput[portIndex].phyTag == src2TagInner[row];
+          source1PortHitInner = operandWritebackInner[portIndex].valid &&
+            operandWritebackInner[portIndex].phyTag == src1TagInner[row];
+          source2PortHitInner = operandWritebackInner[portIndex].valid &&
+            operandWritebackInner[portIndex].phyTag == src2TagInner[row];
           source1PortMaskInner[portIndex] |= selected[row] && !src1ReadyInner[row] &&
             source1PortHitInner && !source1PriorHitInner;
           source2PortMaskInner[portIndex] |= selected[row] && !src2ReadyInner[row] &&
@@ -328,8 +411,8 @@ module rv32_rs #(
       selectedData.source1Value = source1StoredInner;
       selectedData.source2Value = source2StoredInner;
       for (int portIndex=0;portIndex<WRITEBACK_PORTS;portIndex++) begin
-        selectedData.source1Value |= writebackInput[portIndex].value & {32{source1PortMaskInner[portIndex]}};
-        selectedData.source2Value |= writebackInput[portIndex].value & {32{source2PortMaskInner[portIndex]}};
+        selectedData.source1Value |= operandWritebackInner[portIndex].value & {32{source1PortMaskInner[portIndex]}};
+        selectedData.source2Value |= operandWritebackInner[portIndex].value & {32{source2PortMaskInner[portIndex]}};
       end
       selectedData.valid = (|winnerMaskInner) && (!flushInfoInput.valid ||
         rs_is_older(selectedData.robTag, flushInfoInput.robTag));
@@ -568,7 +651,7 @@ module rv32_rs #(
     wire [DEPTH-1:0] creditRowMaskInner[ISSUE_WIDTH];
     for (genvar lane=0;lane<ISSUE_WIDTH;lane++) begin : g_credit_row
       if (DEPTH==4 && ISSUE_WIDTH==2 && WB_ISSUE_BYPASS && INDEPENDENT_ISSUE_READY) begin : g_direct
-        assign creditRowMaskInner[lane]=g_parallel_n_of_m.selectedRowMaskInner[lane];
+        assign creditRowMaskInner[lane]=selectiveDualRowsInner[lane];
       end else begin : g_legacy
         for (genvar row=0;row<DEPTH;row++) begin : g_decode
           assign creditRowMaskInner[lane][row]=INDEX_W'(row)==laneIndexInner[lane];

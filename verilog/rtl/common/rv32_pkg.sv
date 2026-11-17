@@ -36,7 +36,9 @@ package rv32_pkg;
   // Execution lanes are independent of ordered allocation width and CDB width.
   parameter int unsigned ALU_UNITS = `CPU_ALU_UNITS;
   parameter int unsigned ALU_CDB_PORTS = `CPU_ALU_CDB_PORTS;
-  parameter int unsigned WRITEBACK_PORTS = ALU_CDB_PORTS + 1;
+  parameter int unsigned MULDIV_CDB_PORT = ALU_CDB_PORTS;
+  parameter int unsigned LOAD_CDB_PORT = ALU_CDB_PORTS + 1;
+  parameter int unsigned WRITEBACK_PORTS = ALU_CDB_PORTS + 2;
   // Capacities define public identity types: override at compilation, uniformly
   // for the package and every consumer, rather than on a single ROB/PRF instance.
 `ifdef CPU_ROB_ENTRIES

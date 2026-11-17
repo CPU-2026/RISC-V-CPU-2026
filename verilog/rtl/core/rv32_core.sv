@@ -206,14 +206,23 @@ module rv32_core #(
   logic [31:0] prfSrc1ValueInner, prfSrc2ValueInner, prfCommitValueInner;
 /* verilator lint_off UNUSEDSIGNAL */   logic [PRF_ENTRIES-1:0] prfReadyVectorInner; /* verilator lint_on UNUSEDSIGNAL */
   rv32_pkg::cdb_result_t [WRITEBACK_PORTS-1:0] writebackInputInner;
+  // Branch-only issue bus; ordinary writeback is deliberately untouched.
+  rv32_pkg::cdb_result_t [WRITEBACK_PORTS-1:0] branchIssueWritebackInner;
+  always_comb begin
+    branchIssueWritebackInner=writebackInputInner;
+    // Keep ALU and actual MUL/DIV grants as same-cycle issue sources.
+    // A granted Load still reaches ordinary RS wakeup/allocation capture.
+    branchIssueWritebackInner[LOAD_CDB_PORT].valid=1'b0;
+  end
+
   logic [WRITEBACK_PORTS-1:0] writebackValidInner;
   for (genvar portIndex=0;portIndex<WRITEBACK_PORTS;portIndex++) begin : g_wb_valid
     assign writebackValidInner[portIndex]=writebackInputInner[portIndex].valid;
   end
-  rv32_pkg::cdb_result_t [2:0] sharedCdbCandidatesInner;
-  rv32_pkg::rob_tag_t [2:0] sharedCdbTagsInner;
+  rv32_pkg::cdb_result_t [1:0] sharedCdbCandidatesInner;
+  rv32_pkg::rob_tag_t [1:0] sharedCdbTagsInner;
   rv32_pkg::rob_tag_t sharedCdbTagInner;
-  logic [2:0] sharedCdbGrantInner;
+  logic [1:0] sharedCdbGrantInner;
   logic loadResultEligibleInner, mulResultEligibleInner, divResultEligibleInner;
   rv32_pkg::prf_read_input_t [COMMIT_WIDTH+3:0] prfReadInputInner;
 /* verilator lint_off UNUSEDSIGNAL */   rv32_pkg::prf_read_output_t [COMMIT_WIDTH+3:0] prfReadOutputInner; /* verilator lint_on UNUSEDSIGNAL */
@@ -557,19 +566,18 @@ module rv32_core #(
                                         phyTag: wbMulPhyInner, value: wbMulValueInner};
   assign sharedCdbCandidatesInner[1] = '{valid: divResultEligibleInner,
                                         phyTag: wbDivPhyInner, value: wbDivValueInner};
-  assign sharedCdbCandidatesInner[2] = '{valid: loadResultEligibleInner,
-                                        phyTag: wbLoadPhyInner, value: wbLoadValueInner};
   assign sharedCdbTagsInner[0] = wbMulTagInner;
   assign sharedCdbTagsInner[1] = wbDivTagInner;
-  assign sharedCdbTagsInner[2] = wbLoadTagInner;
   rv32_cdb_arbiter u_shared_cdb (
     .candidateInput(sharedCdbCandidatesInner), .candidateTagInput(sharedCdbTagsInner),
-    .resultOutput(writebackInputInner[ALU_CDB_PORTS]), .robTagOutput(sharedCdbTagInner),
+    .resultOutput(writebackInputInner[MULDIV_CDB_PORT]), .robTagOutput(sharedCdbTagInner),
     .grantOutput(sharedCdbGrantInner)
   );
   assign wbMulValidInner = sharedCdbGrantInner[0];
   assign wbDivValidInner = sharedCdbGrantInner[1];
-  assign wbLoadValidInner = sharedCdbGrantInner[2];
+  assign writebackInputInner[LOAD_CDB_PORT] = '{valid: loadResultEligibleInner,
+    phyTag: wbLoadPhyInner, value: wbLoadValueInner};
+  assign wbLoadValidInner = writebackInputInner[LOAD_CDB_PORT].valid;
   assign aluCdbValidInner = aluExecuteOutputInner.valid;
   assign wbAluValueInner = aluExecuteOutputInner.value;
   assign wbAluTagInner = aluExecuteOutputInner.robTag;
@@ -665,10 +673,11 @@ module rv32_core #(
     assign robCompletionInputInner[2]='0;
     assign robLookupInputInner[1]='{robTag:wbAluTagInner};
   end endgenerate
-  assign robCompletionInputInner[1] = '{valid: writebackInputInner[ALU_CDB_PORTS].valid,
+  assign robCompletionInputInner[1] = '{valid: writebackInputInner[MULDIV_CDB_PORT].valid,
                                          robTag: sharedCdbTagInner,
                                          exception: 1'b0};
-  assign robCompletionInputInner[3] = '0;
+  assign robCompletionInputInner[3] = '{valid: writebackInputInner[LOAD_CDB_PORT].valid,
+    robTag: wbLoadTagInner, exception: 1'b0};
   assign robCompletionInputInner[4] = '{valid: branchResultLiveInner,
                                         robTag: bruTagInner,
                                          exception: 1'b0};
@@ -1124,7 +1133,7 @@ module rv32_core #(
   assign divIssueUseImmInner = divRsIssueOutputInner.useImmediate;
 
   rv32_rs #(.DEPTH(BRANCH_RS_ENTRIES), .AUX_W(3), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH),
-            .REUSE_ON_ISSUE(1'b0), .WB_ISSUE_BYPASS(1'b1), .CREDIT_FIT_SIDEBAND(1'b1)) u_branch_rs (
+            .REUSE_ON_ISSUE(1'b0), .WB_ISSUE_BYPASS(1'b1), .CREDIT_FIT_SIDEBAND(1'b1), .SEPARATE_ISSUE_WB(1'b1)) u_branch_rs (
     .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
@@ -1135,7 +1144,7 @@ module rv32_core #(
     .allocLanesInput(wideRsAllocInner[3]),.allocLanesAuxInput(wideBranchAuxInner),
     .allocLanesFireOutput(wideRsFireInner[3]),.allocCreditsOutput(wideBranchCreditsInner),.allocCreditFitsOutput(unusedCreditFitsInner[3]),
     .writebackInput(writebackInputInner),
-    .issueWritebackInput(writebackInputInner),
+    .issueWritebackInput(branchIssueWritebackInner),
     .issueOutput(branchRsIssueOutputInner), .issueReadyInput(branchIssueReadyInner),
     .issueAuxOutput(branchIssueAuxInner), .occupancyOutput(unusedBranchOccupancyInner),
     .issueLaneValidOutput(unusedBranchIssueLaneValidInner), .issueLaneOutput(unusedBranchIssueLaneInner),
@@ -1153,7 +1162,7 @@ module rv32_core #(
   assign branchIssueUseImmInner = branchRsIssueOutputInner.useImmediate;
 
   rv32_rs #(.DEPTH(LOAD_RS_ENTRIES), .AUX_W(4), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH),
-            .REUSE_ON_ISSUE(1'b0), .WB_ISSUE_BYPASS(1'b1)) u_load_rs (
+            .REUSE_ON_ISSUE(1'b0), .WB_ISSUE_BYPASS(1'b1), .SELECTIVE_WAKE_PIPE(1'b1)) u_load_rs (
     .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
@@ -1170,7 +1179,7 @@ module rv32_core #(
     .issueLaneValidOutput(unusedLoadIssueLaneValidInner), .issueLaneOutput(unusedLoadIssueLaneInner),
     .issueLaneAuxOutput(unusedLoadIssueLaneAuxInner), .issueLaneReadyInput('0)
   );
-  rv32_rs #(.DEPTH(STORE_ADDR_RS_ENTRIES), .AUX_W(4), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH), .REUSE_ON_ISSUE(1'b0), .WB_ISSUE_BYPASS(1'b1)) u_store_addr_rs (
+  rv32_rs #(.DEPTH(STORE_ADDR_RS_ENTRIES), .AUX_W(4), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH), .REUSE_ON_ISSUE(1'b0), .WB_ISSUE_BYPASS(1'b1), .SELECTIVE_WAKE_PIPE(1'b1)) u_store_addr_rs (
     .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
