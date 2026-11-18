@@ -148,7 +148,7 @@ package rv32_pkg;
   // the ICache keeps CACHE_LINE_BYTES.
   parameter int unsigned DCACHE_LINE_BYTES = 32;
   parameter int unsigned DCACHE_LINE_BITS = DCACHE_LINE_BYTES << 3;
-  parameter int unsigned RAS_ENTRIES = 8;
+  parameter int unsigned RAS_ENTRIES = 4;
 
   localparam logic [31:0] HALT_INSN = 32'h0ff0_0513;
   localparam logic [6:0] OPCODE_LUI    = 7'b0110111;
