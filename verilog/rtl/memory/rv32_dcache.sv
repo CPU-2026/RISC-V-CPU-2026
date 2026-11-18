@@ -74,7 +74,6 @@ module rv32_dcache #(
   logic [OFFSET_W-1:0] readLookupAddressInner;
   logic [1:0] readLookupSizeInner;
   dcache_cpu_request_input_t readLookupRequestInner;
-  logic [WAYS-1:0] readWayMaskInner;
   logic validInner [SETS][WAYS];
   logic [PLRU_W-1:0] plruInner [SETS];
   logic [31:0] dataRdataBankInner [WAYS][WORDS_PER_LINE];
@@ -496,7 +495,8 @@ module rv32_dcache #(
       requestInner[firstInner].request.address == AXI_EXIT_ADDR && exitReadyInput;
     exitValueOutput = firstInner >= 0 ? requestInner[firstInner].request.writeData : 32'b0;
     for (int w = 0; w < WAYS; w++)
-      if (readValidInner && hitWayInner < 0 && readWayMaskInner[w] &&
+      if (readValidInner && hitWayInner < 0 &&
+          validInner[set_of(requestInner[readIndexInner].request.address)][w] &&
           metaRdataInner[w][TAG_W-1:0] == requestInner[readIndexInner].request.address[31:OFFSET_W+INDEX_W])
         hitWayInner = w;
     victimWayInner = select_victim(set_of(requestInner[readIndexInner].request.address));
@@ -831,7 +831,6 @@ module rv32_dcache #(
       readValidInner <= 0;
       readLookupAddressInner <= '0;
       readLookupSizeInner <= '0;
-      readWayMaskInner <= 0;
       for (int i = 0; i < REQUEST_DEPTH; i++) begin
         requestInner[i] <= '0;
         olderInner[i] <= 0;
@@ -850,16 +849,12 @@ module rv32_dcache #(
         readIndexInner <= REQUEST_W'(allocationInner);
         readLookupAddressInner <= cpuRequestInput.address[OFFSET_W-1:0];
         readLookupSizeInner <= cpuRequestInput.size;
-        for (int w = 0; w < WAYS; w++)
-          readWayMaskInner[w] <= validInner[set_of(cpuRequestInput.address)][w];
       end else if (lookupInner >= 0) begin
         readIndexInner <= REQUEST_W'(lookupInner);
         // Candidate index is independent of the late grant qualification;
         // lookupInner>=0 guarantees it names this same old active request.
         readLookupAddressInner <= requestInner[REQUEST_W'(lookupCandidateInner)].request.address[OFFSET_W-1:0];
         readLookupSizeInner <= requestInner[REQUEST_W'(lookupCandidateInner)].request.size;
-        for (int w = 0; w < WAYS; w++)
-          readWayMaskInner[w] <= validInner[set_of(requestInner[lookupInner].request.address)][w];
       end
       for (int i = 0; i < REQUEST_DEPTH; i++) begin
         if (i == allocationInner) begin
@@ -915,8 +910,10 @@ module rv32_dcache #(
         if (allocateMissInner == m) begin
           missesInner[m] <= '{line:line_of(requestInner[readIndexInner].request.address),
             owner:readIndexInner, way:victimWayInner, valid:1'b1,
-            victimTag:readWayMaskInner[victimWayInner] ? metaRdataInner[victimWayInner][TAG_W-1:0] : TAG_W'(0),
-            dirty:readWayMaskInner[victimWayInner] && metaRdataInner[victimWayInner][TAG_W],
+            victimTag:validInner[set_of(requestInner[readIndexInner].request.address)][victimWayInner] ?
+              metaRdataInner[victimWayInner][TAG_W-1:0] : TAG_W'(0),
+            dirty:validInner[set_of(requestInner[readIndexInner].request.address)][victimWayInner] &&
+              metaRdataInner[victimWayInner][TAG_W],
             default:'0};
         end else if (fillFireInner && fillMissInner == m) missesInner[m].valid <= 0;
         else if (missesInner[m].valid) begin
@@ -929,20 +926,24 @@ module rv32_dcache #(
         if (wordReturnInner && wordMissInner==2'(m)) missesInner[m].responded <= 1;
         end
       end
-      for (int s = 0; s < SETS; s++) begin
-        if (fillFireInner && set_of(missesInner[fillMissInner].line) == INDEX_W'(s))
-          plruInner[s] <= plru_touch(plruInner[s], missesInner[fillMissInner].way);
-        else if (storeHintFireInner && set_of(requestInner[firstInner].request.address) == INDEX_W'(s))
-          plruInner[s] <= plru_touch(plruInner[s], storeHintWayInner);
-        else if (readValidInner && hitWayInner >= 0 && set_of(requestInner[readIndexInner].request.address) == INDEX_W'(s))
-          plruInner[s] <= plru_touch(plruInner[s], WAY_W'(hitWayInner));
-        for (int w = 0; w < WAYS; w++) begin
-          if (allocateMissInner >= 0 && set_of(requestInner[readIndexInner].request.address) == INDEX_W'(s) && victimWayInner == WAY_W'(w))
-            validInner[s][w] <= 0;
-          else if (fillFireInner && set_of(missesInner[fillMissInner].line) == INDEX_W'(s) && missesInner[fillMissInner].way == WAY_W'(w))
-            validInner[s][w] <= 1;
-        end
-      end
+      // Candidate 16KiB: verilator no longer fully unrolls the per-set loops
+      // at 256 sets (BLKLOOPINIT). Exact flat rewrite: each edge updates at
+      // most one plru entry (original if/else-if priority) and at most two
+      // valid entries; the allocate write is emitted last so a same-entry
+      // allocate/fillFire conflict keeps the original allocate-first priority.
+      if (fillFireInner)
+        plruInner[set_of(missesInner[fillMissInner].line)] <=
+          plru_touch(plruInner[set_of(missesInner[fillMissInner].line)], missesInner[fillMissInner].way);
+      else if (storeHintFireInner)
+        plruInner[set_of(requestInner[firstInner].request.address)] <=
+          plru_touch(plruInner[set_of(requestInner[firstInner].request.address)], storeHintWayInner);
+      else if (readValidInner && hitWayInner >= 0)
+        plruInner[set_of(requestInner[readIndexInner].request.address)] <=
+          plru_touch(plruInner[set_of(requestInner[readIndexInner].request.address)], WAY_W'(hitWayInner));
+      if (fillFireInner)
+        validInner[set_of(missesInner[fillMissInner].line)][missesInner[fillMissInner].way] <= 1;
+      if (allocateMissInner >= 0)
+        validInner[set_of(requestInner[readIndexInner].request.address)][victimWayInner] <= 0;
     end
   end
   // Wide payloads have no reset/allocation clear. Ready/dirty ownership gates

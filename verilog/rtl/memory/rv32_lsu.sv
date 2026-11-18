@@ -672,6 +672,30 @@ module rv32_lsu #(
           lqTagInner[notifyLoad], lqAddressInner[notifyLoad], lqSizeInner[notifyLoad]);
     end
   end
+  // Candidate A2: the early-forward loop below reuses the same full-pair
+  // notify matrix instead of instantiating sixteen redundant notify_matches
+  // scans (each matrix entry already carries both address-ready gates; the
+  // loop's own lqAddressReady check makes the matrix read exactly equal to
+  // sqAddressReady && notify_matches). PREVIEW=0 builds keep the inline form.
+  wire earlyForwardMatchInner [LQ_DEPTH][STORE_DATA_LANES];
+  generate if (RESPONSE_PREVIEW && TAGGED_DMEM) begin : g_early_forward_matrix_read
+    for (genvar earlyRow=0;earlyRow<LQ_DEPTH;earlyRow++) begin : g_row
+      for (genvar earlyLane=0;earlyLane<STORE_DATA_LANES;earlyLane++) begin : g_lane
+        assign earlyForwardMatchInner[earlyRow][earlyLane]=
+          oldNotifyMatchInner[earlyRow][storeDataIndexInput[earlyLane]];
+      end
+    end
+  end else begin : g_early_forward_inline
+    for (genvar earlyRow=0;earlyRow<LQ_DEPTH;earlyRow++) begin : g_row
+      for (genvar earlyLane=0;earlyLane<STORE_DATA_LANES;earlyLane++) begin : g_lane
+        assign earlyForwardMatchInner[earlyRow][earlyLane]=
+          sqAddressReadyInner[storeDataIndexInput[earlyLane]] &&
+          notify_matches(storeDataIndexInput[earlyLane],
+            sqAddressInner[storeDataIndexInput[earlyLane]],
+            lqTagInner[earlyRow], lqAddressInner[earlyRow], lqSizeInner[earlyRow]);
+      end
+    end
+  end endgenerate
   logic [LQ_INDEX_W-1:0] previewResultIndexInner;
   rob_tag_t previewResultTagInner;
   phy_tag_t previewResultDestinationInner;
@@ -797,13 +821,11 @@ module rv32_lsu #(
   // address mux. The inserted row wins only when it was not address-ready,
   // so addressInput.address is exactly its request address when useInsert.
   always_comb begin : load_candidate_qualification
-/* verilator lint_off UNUSEDSIGNAL */     store_forward_result_t insertQuery;
-    store_forward_result_t baseQuery; /* verilator lint_on UNUSEDSIGNAL */
-    insertQuery = '0;
+/* verilator lint_off UNUSEDSIGNAL */     store_forward_result_t baseQuery; /* verilator lint_on UNUSEDSIGNAL */
     baseQuery = '0;
-    if (loadAddressEventInner)
-      insertQuery = query_store_forward(loadSelectTagsInner[addressIndexInput],
-        addressInput.address, lqSizeInner[addressIndexInput]);
+    // The insert candidate's forward query is the existing addressedForward
+    // query (same row tag/address/size inputs); reuse it instead of scanning
+    // the SQ twice.
     if (loadInsertBaseWinnerInner.valid)
       baseQuery = query_store_forward(loadInsertBaseWinnerInner.tag,
         lqAddressInner[loadInsertBaseWinnerInner.index],
@@ -812,7 +834,7 @@ module rv32_lsu #(
     baseCandidateLiveInner = loadInsertBaseWinnerInner.valid &&
       (!flushInfoInput.valid ||
        rob_is_older(loadInsertBaseWinnerInner.tag, flushInfoInput.robTag));
-    insertCandidateBlockedInner = insertQuery.cacheBlocked;
+    insertCandidateBlockedInner = addressedForwardInner.cacheBlocked;
     baseCandidateBlockedInner = baseQuery.cacheBlocked;
     insertCandidateNeedsMemoryInner = !coreStoppedInput && insertCandidateLiveInner &&
       !insertCandidateBlockedInner && int'(fifoCountInner) < DATA_REQUEST_ENTRIES;
@@ -866,9 +888,8 @@ module rv32_lsu #(
           (!flushInfoInput.valid || rob_is_older(lqTagInner[forwardIndexInner], flushInfoInput.robTag))) begin
         if (lqAddressReadyInner[forwardIndexInner]) begin
           for (int lane = 0; lane < STORE_DATA_LANES; lane = lane + 1) begin
-            if (storeDataEventInner[lane] && sqAddressReadyInner[storeDataIndexInput[lane]] &&
-                notify_matches(storeDataIndexInput[lane], sqAddressInner[storeDataIndexInput[lane]],
-                  lqTagInner[forwardIndexInner], lqAddressInner[forwardIndexInner], lqSizeInner[forwardIndexInner])) begin
+            if (storeDataEventInner[lane] &&
+                earlyForwardMatchInner[forwardIndexInner][lane]) begin
               lqEarlyForwardInner[forwardIndexInner] = 1'b1;
               lqEarlyValueInner[forwardIndexInner] = storeDataInput[lane].value;
             end
