@@ -39,6 +39,73 @@ module rv32_bpu_ras #(
   integer normalIndexInner, recoveryIndexInner, laneInner, windowIndexInner;
   rob_tag_t replayTagInner;
   integer seqIndexInner;
+  localparam bit RAIL_REPLAY = RECOVERY_WIDTH==8 && RAS_STORAGE_ENTRIES==8;
+  logic [RAS_TOP_W-1:0] replayTop;
+  logic replayStillOpen;
+  logic [RAS_STORAGE_ENTRIES-1:0] replayWrite;
+  logic [31:0] replayData [RAS_STORAGE_ENTRIES];
+  if (RAIL_REPLAY) begin : g_replay_rails
+    function automatic logic [15:0] advance_depth(input logic [15:0] d, input logic push, pop);
+      // pop+push replaces the top, except at zero (becomes one) and at
+      // encodings above eight (pop only). No unreachable-state waiver.
+      return ({16{!push && !pop}} & d) |
+             ({16{ push && !pop}} & ((d & 16'hff00) | ((d & 16'h00ff)<<1))) |
+             ({16{!push &&  pop}} & ((d>>1) | (d & 16'h0001))) |
+             ({16{ push &&  pop}} & ((d & 16'h01fe) | ((d & 16'h0001)<<1) | ((d & 16'hfe00)>>1)));
+    endfunction
+    wire [3:0] initialDepth=recoveryInput.first ? baselineTopInner : specRasTopInner;
+    wire initialOpen=recoveryInput.first || replayActiveInner;
+    wire [7:0] stop, push, pop;
+    wire [7:0][31:0] linkPc;
+    for(genvar i=0;i<8;i++) begin : g_decode
+      wire rob_replay_ras_t item=robInput[0].replayRasWindow[i];
+      wire rob_tag_t expected=recoveryInput.nextTag+rob_tag_t'(i);
+      wire inWindow=int'(recoveryInput.offset)+i<ROB_ENTRIES && int'(recoveryInput.offset)+i<int'(recoveryInput.liveCount);
+      wire tagEqual=item.robTag==expected;
+      wire eligible=initialOpen && !(|(stop & 8'((1<<i)-1))) && inWindow && tagEqual;
+      wire jalr=item.opcode==OPCODE_JALR && item.funct3==3'b000;
+      assign stop[i]=inWindow && (!tagEqual || expected==recoveryInput.squashTag);
+      assign push[i]=eligible && (item.opcode==OPCODE_JAL || jalr) && (item.rd==5'd1 || item.rd==5'd5);
+      assign pop[i]=eligible && jalr && (item.rs1==5'd1 || item.rs1==5'd5) && item.rd!=item.rs1;
+      assign linkPc[i]=item.programCounter+32'd4;
+    end
+    assign replayStillOpen=initialOpen && !(|stop);
+    wire [15:0] d0=16'h0001<<initialDepth;
+    wire [15:0] d1=advance_depth(d0,push[0],pop[0]);
+    wire [15:0] d2=advance_depth(d1,push[1],pop[1]);
+    wire [15:0] d3=advance_depth(d2,push[2],pop[2]);
+    wire [15:0] d4=advance_depth(d3,push[3],pop[3]);
+    wire [15:0] d5=advance_depth(d4,push[4],pop[4]);
+    wire [15:0] d6=advance_depth(d5,push[5],pop[5]);
+    wire [15:0] d7=advance_depth(d6,push[6],pop[6]);
+    wire [15:0] d8=advance_depth(d7,push[7],pop[7]);
+    assign replayTop={|(d8 & 16'hff00),|(d8 & 16'hf0f0),|(d8 & 16'hcccc),|(d8 & 16'haaaa)};
+    for(genvar slot=0;slot<8;slot++) begin : g_slot
+      wire [7:0] hits;
+      assign hits[0]=push[0] && ((d0[slot] && (slot==0 || !pop[0])) || (d0[slot+1] && pop[0]));
+      assign hits[1]=push[1] && ((d1[slot] && (slot==0 || !pop[1])) || (d1[slot+1] && pop[1]));
+      assign hits[2]=push[2] && ((d2[slot] && (slot==0 || !pop[2])) || (d2[slot+1] && pop[2]));
+      assign hits[3]=push[3] && ((d3[slot] && (slot==0 || !pop[3])) || (d3[slot+1] && pop[3]));
+      assign hits[4]=push[4] && ((d4[slot] && (slot==0 || !pop[4])) || (d4[slot+1] && pop[4]));
+      assign hits[5]=push[5] && ((d5[slot] && (slot==0 || !pop[5])) || (d5[slot+1] && pop[5]));
+      assign hits[6]=push[6] && ((d6[slot] && (slot==0 || !pop[6])) || (d6[slot+1] && pop[6]));
+      assign hits[7]=push[7] && ((d7[slot] && (slot==0 || !pop[7])) || (d7[slot+1] && pop[7]));
+      wire [7:0][31:0] data;
+      for(genvar lane=0;lane<8;lane++) begin : g_select
+        localparam logic [7:0] YOUNGER=8'(~((1<<(lane+1))-1));
+        wire selected=hits[lane] && !(|(hits & YOUNGER));
+        assign data[lane]=linkPc[lane] & {32{selected}};
+      end
+      assign replayWrite[slot]=|hits;
+      assign replayData[slot]=((data[0]|data[1])|(data[2]|data[3])) |
+                              ((data[4]|data[5])|(data[6]|data[7]));
+    end
+  end else begin : g_scalar_restore
+    assign replayTop='0;
+    assign replayStillOpen=1'b0;
+    assign replayWrite='0;
+    for(genvar i=0;i<RAS_STORAGE_ENTRIES;i++) assign replayData[i]='0;
+  end
 
   always_comb begin
     if (specRasTopInner == '0)
@@ -106,7 +173,12 @@ module rv32_bpu_ras #(
           specRasPcNext[recoveryIndexInner] = archValidInner[recoveryIndexInner] ?
             archReadDataInner[recoveryIndexInner*32 +: 32] : 32'b0;
       end
-      for (laneInner = 0; laneInner < RECOVERY_WIDTH; laneInner = laneInner + 1) begin
+      if (RAIL_REPLAY) begin
+        replayActiveNext=replayStillOpen;
+        specRasTopNext=replayTop;
+        for(int slot=0;slot<RAS_STORAGE_ENTRIES;slot++)
+          if(replayWrite[slot]) specRasPcNext[slot]=replayData[slot];
+      end else for (laneInner = 0; laneInner < RECOVERY_WIDTH; laneInner = laneInner + 1) begin
         windowIndexInner = int'(recoveryInput.offset) + laneInner;
         replayTagInner = recoveryInput.nextTag + rob_tag_t'(laneInner);
         if (replayActiveNext && windowIndexInner < ROB_ENTRIES &&

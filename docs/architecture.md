@@ -12,7 +12,7 @@ SystemVerilog RV32IM 乱序核，顺序重命名和分配，乱序执行，按�
 | 执行与写回 | 双 ALU、单 AGU；四路 CDB：两个 ALU 各一路，MUL/DIV 共享一路，Load 独占一路 |
 | LQ／SQ／Load 运输 owner | 各 8 项 |
 | 分支预测 | Tournament、BTB 32 项、RAS 8 项、checkpoint 64 项 |
-| 恢复 | 先同步读取已提交基线，再每拍重放 4 个 ROB 槽，最多 4 拍重放 |
+| 恢复 | 先同步读取已提交基线，再每拍重放 8 个 ROB 槽，最多 2 拍重放 |
 
 ## 前端与预测
 
@@ -26,7 +26,7 @@ SystemVerilog RV32IM 乱序核，顺序重命名和分配，乱序执行，按�
 - Integer、Branch、Load、StoreAddr、StoreValue RS 只按拍初空位分配，不借当拍离站释放的槽。Load 与 StoreAddr 共用 AGU，采用选择性晚唤醒；Branch 保留完整写回捕获，但不以 Load 当拍旁路派发，仍可用 ALU 和 MUL/DIV 当拍结果。
 - MUL/DIV 共享写回按最老合格结果仲裁，未获准者保留。条件分支走 BRU，JAL/JALR 走 ALU。退休只认拍初 ready 的连续前缀；`retirementOutput` 覆盖全部退休通道，旧标量 `commit*` 只覆盖通道 0。
 - Flush 选最老候选，取消严格年轻项。恢复时 RAT/RAS 重放存活前缀，自由队列另外遍历取消项以回收物理号；分配、执行、退休和 CDB 暂停，LSU/Cache/AXI 继续排空。
-- [RAS](../verilog/rtl/predictor/rv32_bpu_ras.sv)按 ROB 顺序重放存活的调用和返回，恢复完整栈，而非只恢复栈顶。
+- [八路 RAS 重放](../verilog/rtl/predictor/rv32_bpu_ras.sv)用独热编码表示每步栈深，每个栈槽选择本拍最后一次写入；重放恢复完整栈，而非只恢复栈顶。
 
 ## 访存与缓存
 
@@ -53,4 +53,4 @@ SystemVerilog RV32IM 乱序核，顺序重命名和分配，乱序执行，按�
 | `CPU_BPU_CKPT_ENTRIES` | 2 的幂，且覆盖 `ROB + 取指字信用 + FQ + IQ`，默认向上取整为 64。 |
 | `CPU_ICACHE_SETS` / `CPU_ICACHE_WAYS` | 默认 16/1；组数为至少 2 的 2 次幂，可选 1/2/4 路。容量为 `SETS × WAYS × 64 B`。 |
 
-每拍重放槽数按 `ceil(ROB_ENTRIES / 4)` 派生。构建见[课程用法](template.md)，历史配置矩阵见[参数实验](参数敏感度分析.md#parameter-validation)。
+只有 ROB16 四分配配置最多重放 2 拍；其他配置按最多 4 拍派生每拍重放槽数。构建见[课程用法](template.md)，历史配置矩阵见[参数实验](参数敏感度分析.md#parameter-validation)。

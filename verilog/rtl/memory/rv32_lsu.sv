@@ -85,6 +85,15 @@ module rv32_lsu #(
   localparam int unsigned LQ_INDEX_W = $clog2(LQ_DEPTH);
   localparam int unsigned SQ_INDEX_W = $clog2(SQ_DEPTH);
 
+  // Redundant facts describe the SAME OLD LQ state as the original fields.
+  // Their D inputs replay the original NBA writer order, not last-cycle facts.
+  logic [LQ_DEPTH-1:0] loadRequestBaseInner, loadInsertableInner, loadPendingAddressInner;
+  logic [LQ_DEPTH-1:0] loadRequestBaseNextInner, loadInsertableNextInner, loadPendingAddressNextInner;
+  rob_tag_t [LQ_DEPTH-1:0] summaryTagNextInner;
+  wire [LQ_DEPTH-1:0][LQ_DEPTH-1:0] loadPairOlderCachedInner;
+  wire loadSummaryTagEventInner=addressInput.valid && !addressInput.isStore &&
+    lqTagInner[addressIndexInput]==addressInput.robTag &&
+    (!flushInfoInput.valid || rob_is_older(addressInput.robTag,flushInfoInput.robTag));
   logic lqValidInner [LQ_DEPTH];
   rob_tag_t lqTagInner [LQ_DEPTH];
   phy_tag_t lqDestInner [LQ_DEPTH];
@@ -178,6 +187,12 @@ module rv32_lsu #(
   rob_tag_t [LQ_DEPTH-1:0] loadSelectTagsInner;
   load_select_t loadSelectWinnerInner;
   logic loadBlockedInner;
+  // SQ qualification is a pure function of OLD rows. Prepare each old
+  // Load row before the late winner/address mux; AGU uses the existing query.
+  wire loadRequestUsesAddressInner;
+  wire [LQ_DEPTH-1:0] oldRequestCacheBlockedInner, oldRequestYieldsInner, oldPostedStoreBlocksInner;
+  wire [SQ_DEPTH-1:0] postedStoreUnsafeInner, incomingPostedBlockInner;
+  wire incomingRequestYieldsInner, selectedRequestYieldsInner;
   logic loadNeedsMemoryInner;
   logic selectedLoadLiveInner;
 
@@ -260,10 +275,10 @@ module rv32_lsu #(
   for(genvar right=0;right<LQ_DEPTH;right++)begin : g_load_tree_pair_right
     for(genvar left=0;left<LQ_DEPTH;left++)begin : g_left
       if(right>left)begin : g_pair
-        assign loadTreePairOlderInner[right][left]=
-          rob_is_older(loadSelectTagsInner[right],loadSelectTagsInner[left]);
+        assign loadTreePairOlderInner[right][left]=loadPairOlderCachedInner[right][left];
       end else begin : g_unused_pair
         assign loadTreePairOlderInner[right][left]=1'b0;
+        assign loadPairOlderCachedInner[right][left]=1'b0;
       end
     end
   end
@@ -328,9 +343,8 @@ module rv32_lsu #(
   wire load_select_t loadInsertWinnerInner [LQ_DEPTH];
   for(genvar row=0;row<LQ_DEPTH;row++)begin : g_load_address_insertion
     wire [LQ_DEPTH-1:0] insertedMask;
-    assign loadInsertBaseMaskInner[row]=lqValidInner[row] && lqAddressReadyInner[row] &&
-      !lqSentInner[row] && !lqResultReadyInner[row];
-    assign loadInsertEligibleInner[row]=lqValidInner[row] && !lqSentInner[row] && !lqResultReadyInner[row];
+    assign loadInsertBaseMaskInner[row]=loadRequestBaseInner[row];
+    assign loadInsertEligibleInner[row]=loadInsertableInner[row];
     assign insertedMask=loadInsertBaseMaskInner |
       ((LQ_DEPTH'(1)<<row) & {LQ_DEPTH{loadInsertEligibleInner[row]}});
     assign loadInsertWinnerInner[row]=select_load_pair_flags(insertedMask,loadSelectTagsInner,loadTreePairOlderInner);
@@ -338,7 +352,8 @@ module rv32_lsu #(
   assign loadInsertBaseWinnerInner=select_load_pair_flags(loadInsertBaseMaskInner,loadSelectTagsInner,loadTreePairOlderInner);
   // Preserve the old ready-row candidate even when the new address forwards.
   // No event, flush/identity rejection, or suppressed insertion uses baseTree.
-  assign loadSelectWinnerInner=loadAddressEventInner &&
+  // I=0 makes the inserted tree byte-identical to base, even for no winner.
+  assign loadSelectWinnerInner=loadSummaryTagEventInner && loadInsertableInner[addressIndexInput] &&
     (lqBroadcastedInner[addressIndexInput] || !addressedForwardValidInner) ?
     loadInsertWinnerInner[addressIndexInput] : loadInsertBaseWinnerInner;
 `ifndef SYNTHESIS
@@ -350,8 +365,10 @@ module rv32_lsu #(
   assign loadSelectFoundInner = loadSelectWinnerInner.valid;
   assign loadSelectIndexInner = loadSelectWinnerInner.index;
   assign loadSelectTagInner = loadSelectWinnerInner.tag;
-  assign loadSelectAddressInner = !lqAddressReadyInner[loadSelectIndexInner] &&
-    loadAddressEventInner && addressIndexInput == $bits(addressIndexInput)'(loadSelectIndexInner) ?
+  // P includes OLD validity, preserving even row0 inactive payload selection.
+  assign loadRequestUsesAddressInner = loadSummaryTagEventInner && loadPendingAddressInner[addressIndexInput] &&
+    addressIndexInput == $bits(addressIndexInput)'(loadSelectIndexInner);
+  assign loadSelectAddressInner = loadRequestUsesAddressInner ?
     addressInput.address : lqAddressInner[loadSelectIndexInner];
   // A separate combinational tournament: result production must not compete
   // with request selection for hardware or gain an extra register stage.
@@ -591,6 +608,24 @@ module rv32_lsu #(
     end
   endfunction
 
+  // Only the cache-admission bit of query_store_forward. Committed Stores
+  // do not set it; unknown/overlapping older uncommitted Stores do.
+  function automatic logic query_request_cache_block(
+    input rob_tag_t loadTagInput,
+    input logic [31:0] loadAddressInput,
+    input mem_size_e loadSizeInput
+  );
+    logic blocked;
+    blocked=1'b0;
+    for(int s=0;s<SQ_DEPTH;s++)
+      if(sqValidInner[s] && !sqCommittedInner[s] &&
+         rob_is_older(sqTagInner[s],loadTagInput) &&
+         (!sqAddressReadyInner[s] ||
+          byte_overlap(loadAddressInput,loadSizeInput,sqAddressInner[s],sqSizeInner[s])))
+        blocked=1'b1;
+    return blocked;
+  endfunction
+
   // Match software StoreNotify qualification, including the younger same-word
   // or unknown-address guards. This event contract is distinct from the (A)
   // Load-address query: notifications match the same START and WIDTH only.
@@ -791,6 +826,60 @@ module rv32_lsu #(
   always_comb
     addressedForwardInner = query_store_forward(
       lqTagInner[addressIndexInput], addressInput.address, lqSizeInner[addressIndexInput]);
+
+  // Keep the exact original mask, including actual same-edge retirement.
+  // Separate this producer from its consumers to preserve true acyclic deps.
+  always_comb begin : prepare_posted_store_mask
+    postedStoreMaskInner='0;
+    for(int s=0;s<SQ_DEPTH;s++)
+      postedStoreMaskInner[s]=sqValidInner[s] && sqCommittedInner[s];
+    for(int lane=0;lane<COMMIT_WIDTH;lane++)
+      if(storeRetireFireInner[lane]) postedStoreMaskInner[storeCommitIndexInput[lane]]=1'b1;
+  end
+  for(genvar scanStore=0;scanStore<SQ_DEPTH;scanStore++)begin : g_scan_store
+    assign postedStoreUnsafeInner[scanStore]=!sqAddressReadyInner[scanStore] ||
+      !sqDataReadyInner[scanStore] || !yield_ram_access(sqAddressInner[scanStore],sqSizeInner[scanStore]);
+    assign incomingPostedBlockInner[scanStore]=postedStoreMaskInner[scanStore] &&
+      (postedStoreUnsafeInner[scanStore] ||
+       byte_overlap(addressInput.address,lqSizeInner[addressIndexInput],
+                    sqAddressInner[scanStore],sqSizeInner[scanStore]));
+  end
+  for(genvar scanLoad=0;scanLoad<LQ_DEPTH;scanLoad++)begin : g_old_request_scan
+    wire [SQ_DEPTH-1:0] postedBlocks;
+    assign oldRequestCacheBlockedInner[scanLoad]=query_request_cache_block(
+      lqTagInner[scanLoad],lqAddressInner[scanLoad],lqSizeInner[scanLoad]);
+    assign oldRequestYieldsInner[scanLoad]=yield_ram_access(lqAddressInner[scanLoad],lqSizeInner[scanLoad]);
+    for(genvar scanStore=0;scanStore<SQ_DEPTH;scanStore++)begin : g_store
+      assign postedBlocks[scanStore]=postedStoreMaskInner[scanStore] &&
+        (postedStoreUnsafeInner[scanStore] ||
+         byte_overlap(lqAddressInner[scanLoad],lqSizeInner[scanLoad],
+                      sqAddressInner[scanStore],sqSizeInner[scanStore]));
+    end
+    assign oldPostedStoreBlocksInner[scanLoad]=|postedBlocks;
+  end
+  assign incomingRequestYieldsInner=yield_ram_access(addressInput.address,lqSizeInner[addressIndexInput]);
+  assign selectedRequestYieldsInner=loadRequestUsesAddressInner ?
+    incomingRequestYieldsInner : oldRequestYieldsInner[loadSelectIndexInner];
+
+`ifndef SYNTHESIS
+  // Original post-mux equations remain the independent runtime oracle.
+  always @(posedge clkInput)if(rstNInput)begin : moved_SQ_scan_oracle
+    logic originalPostedBlock;
+    originalPostedBlock=1'b0;
+    for(int s=0;s<SQ_DEPTH;s++)
+      if(postedStoreMaskInner[s] &&
+         (!sqAddressReadyInner[s] || !sqDataReadyInner[s] ||
+          !yield_ram_access(sqAddressInner[s],sqSizeInner[s]) ||
+          byte_overlap(loadSelectAddressInner,lqSizeInner[loadSelectIndexInner],
+                       sqAddressInner[s],sqSizeInner[s])))originalPostedBlock=1'b1;
+    assert(loadBlockedInner==selectedForwardInner.cacheBlocked)
+      else $fatal(1,"SQ moved cache-block exact original post-mux oracle");
+    assert(postedStoreBlocksLoadInner==originalPostedBlock)
+      else $fatal(1,"SQ moved posted-Store exact original post-mux oracle");
+    assert(selectedRequestYieldsInner==yield_ram_access(loadSelectAddressInner,lqSizeInner[loadSelectIndexInner]))
+      else $fatal(1,"SQ moved yield exact original post-mux oracle");
+  end
+`endif
 
   // Store-address arrival updates SQ only; it no longer notifies waiting
   // Loads. Load-address SQ queries and Store-data notifications remain. A Load
@@ -1026,7 +1115,8 @@ module rv32_lsu #(
     if (loadSelectFoundInner)
       selectedForwardInner = query_store_forward(loadSelectTagInner,
         loadSelectAddressInner, lqSizeInner[loadSelectIndexInner]);
-    loadBlockedInner = selectedForwardInner.cacheBlocked;
+    loadBlockedInner = loadSelectFoundInner && (loadRequestUsesAddressInner ?
+      addressedForwardInner.cacheBlocked : oldRequestCacheBlockedInner[loadSelectIndexInner]);
     selectedLoadLiveInner = loadSelectFoundInner &&
       (!flushInfoInput.valid || rob_is_older(loadSelectTagInner, flushInfoInput.robTag));
     // No new Load after the exit Store retires; committed SQ still progresses.
@@ -1041,22 +1131,11 @@ module rv32_lsu #(
 
     // Include ALL old posted Stores and actual same-edge retiring Stores.
     // Committed identities can outlive the ROB age window: do NOT age-filter them.
-    postedStoreMaskInner='0;
-    for(int s=0;s<SQ_DEPTH;s++)
-      postedStoreMaskInner[s]=sqValidInner[s] && sqCommittedInner[s];
-    for(int lane=0;lane<COMMIT_WIDTH;lane++)
-      if(storeRetireFireInner[lane]) postedStoreMaskInner[storeCommitIndexInput[lane]]=1'b1;
-    postedStoreBlocksLoadInner=1'b0;
-    for(int s=0;s<SQ_DEPTH;s++)
-      if(postedStoreMaskInner[s] &&
-         (!sqAddressReadyInner[s] || !sqDataReadyInner[s] ||
-          !yield_ram_access(sqAddressInner[s],sqSizeInner[s]) ||
-          byte_overlap(loadSelectAddressInner,lqSizeInner[loadSelectIndexInner],
-            sqAddressInner[s],sqSizeInner[s])))
-        postedStoreBlocksLoadInner=1'b1;
+    postedStoreBlocksLoadInner=loadRequestUsesAddressInner ?
+      (|incomingPostedBlockInner) : oldPostedStoreBlocksInner[loadSelectIndexInner];
     loadBypassStoreInner=loadYieldEnableInput && !coreStoppedInput && !flushInfoInput.valid &&
       storeAvailableInner && !storeYieldDebtInner && loadNeedsMemoryInner &&
-      yield_ram_access(loadSelectAddressInner,lqSizeInner[loadSelectIndexInner]) &&
+      selectedRequestYieldsInner &&
       !postedStoreBlocksLoadInner && pressureLowInner;
     // This is the ACTUAL Store grant, also used by BOTH old SQ dequeue paths.
     storeSendSelectedInner=storeAvailableInner && !loadBypassStoreInner;
@@ -1101,6 +1180,104 @@ module rv32_lsu #(
     end
   end
 
+  // Compute the summaries of the original NEXT state. All original LQ,
+  // FIFO, SQ, identity, credit and forwarding writers below remain untouched.
+  for(genvar summaryRow=0;summaryRow<LQ_DEPTH;summaryRow++)begin : g_scheduler_summary
+    always_comb begin : next_tag
+      summaryTagNextInner[summaryRow]=lqTagInner[summaryRow];
+      if(!coreStoppedInput && !flushInfoInput.valid)begin
+        if(RENAME_WIDTH!=4 && loadAllocationInput.valid && loadAllocReadyOutput &&
+           loadAllocIndexOutput==LQ_INDEX_W'(summaryRow))
+          summaryTagNextInner[summaryRow]=loadAllocationInput.robTag;
+        if(loadAllocSecondFireInner && loadAllocSecondIndexOutput==LQ_INDEX_W'(summaryRow))
+          summaryTagNextInner[summaryRow]=loadAllocationSecondInput.robTag;
+        if(RENAME_WIDTH==4)for(int lane=0;lane<4;lane++)
+          if(loadAllocationLanesFireOutput[lane] && loadLanesIndexInner[lane]==LQ_INDEX_W'(summaryRow))
+            summaryTagNextInner[summaryRow]=loadAllocationLanesInput[lane].robTag;
+      end
+    end
+    always_comb begin : next_flags
+      logic v,a,s,r,allocated,doPop,doPush;
+      v=lqValidInner[summaryRow];a=lqAddressReadyInner[summaryRow];
+      s=lqSentInner[summaryRow];r=lqResultReadyInner[summaryRow];
+      allocated=1'b0;
+      doPop=dmemResponseInput.valid && fifoValidInner[responseOwnerInner];
+      doPush=dmemRequestOutput.valid && dmemReqReadyInput && loadRequestSelectedInner &&
+        (int'(fifoCountInner)<DATA_REQUEST_ENTRIES || doPop);
+      if(!coreStoppedInput)begin
+        if(flushInfoInput.valid)begin
+          if(lqValidInner[summaryRow] && rob_is_younger(lqTagInner[summaryRow],flushInfoInput.robTag))
+            v=1'b0;
+        end else begin
+          allocated=(RENAME_WIDTH!=4 && loadAllocationInput.valid && loadAllocReadyOutput &&
+                     loadAllocIndexOutput==LQ_INDEX_W'(summaryRow)) ||
+            (loadAllocSecondFireInner && loadAllocSecondIndexOutput==LQ_INDEX_W'(summaryRow));
+          if(RENAME_WIDTH==4)for(int lane=0;lane<4;lane++)
+            allocated|=loadAllocationLanesFireOutput[lane] &&
+              loadLanesIndexInner[lane]==LQ_INDEX_W'(summaryRow);
+          if(allocated)begin v=1'b1;a=1'b0;s=1'b0;r=1'b0;end
+        end
+        // Match against OLD identity, after allocation/flush in NBA priority.
+        for(int lane=0;lane<COMMIT_WIDTH;lane++)
+          if(robRetireInput[lane].valid && lqValidInner[summaryRow] &&
+             lqTagInner[summaryRow]==robRetireInput[lane].robTag)v=1'b0;
+        if(addressInput.valid && !addressInput.isStore && loadAddressMatchInner &&
+           (!flushInfoInput.valid || rob_is_older(addressInput.robTag,flushInfoInput.robTag)) &&
+           addressIndexInput==$bits(addressIndexInput)'(summaryRow))a=1'b1;
+        // Full immutable-owner/drop/flush/generation/sent/result guard, OLD fields.
+        if(doPop && !fifoDropInner[responseOwnerInner] &&
+           !(flushInfoInput.valid && !rob_is_older(fifoTagInner[responseOwnerInner],flushInfoInput.robTag)) &&
+           fifoIndexInner[responseOwnerInner]==LQ_INDEX_W'(summaryRow) &&
+           lqValidInner[summaryRow] && lqTagInner[summaryRow]==fifoTagInner[responseOwnerInner] &&
+           lqSentInner[summaryRow] && !lqResultReadyInner[summaryRow])r=1'b1;
+        if(doPush && loadSelectIndexInner==LQ_INDEX_W'(summaryRow))s=1'b1;
+        // The exclusion is the original accepted read, NOT the credit-qualified doPush.
+        if(lqEarlyForwardInner[summaryRow] &&
+           !(dmemRequestOutput.valid && dmemReqReadyInput && loadRequestSelectedInner &&
+             loadSelectIndexInner==LQ_INDEX_W'(summaryRow)))begin r=1'b1;s=1'b1;end
+      end
+      loadRequestBaseNextInner[summaryRow]=v && a && !s && !r;
+      loadInsertableNextInner[summaryRow]=v && !s && !r;
+      loadPendingAddressNextInner[summaryRow]=v && !a;
+    end
+  end
+  always_ff @(posedge clkInput or negedge rstNInput)begin
+    if(!rstNInput)begin
+      loadRequestBaseInner<='0;loadInsertableInner<='0;loadPendingAddressInner<='0;
+    end else if(!coreStoppedInput)begin
+      loadRequestBaseInner<=loadRequestBaseNextInner;
+      loadInsertableInner<=loadInsertableNextInner;
+      loadPendingAddressInner<=loadPendingAddressNextInner;
+    end
+  end
+  for(genvar summaryRight=1;summaryRight<LQ_DEPTH;summaryRight++)begin : g_summary_age_right
+    for(genvar summaryLeft=0;summaryLeft<summaryRight;summaryLeft++)begin : g_left
+      logic pairOlderInner;
+      assign loadPairOlderCachedInner[summaryRight][summaryLeft]=pairOlderInner;
+      always_ff @(posedge clkInput or negedge rstNInput)begin
+        if(!rstNInput)pairOlderInner<=1'b0;
+        else if(!coreStoppedInput)
+          pairOlderInner<=
+            rob_is_older(summaryTagNextInner[summaryRight],summaryTagNextInner[summaryLeft]);
+      end
+    end
+  end
+`ifndef SYNTHESIS
+  always @(posedge clkInput)if(rstNInput)begin : summary_original_state_oracle
+    for(int row=0;row<LQ_DEPTH;row++)begin
+      assert(loadRequestBaseInner[row]==(lqValidInner[row] && lqAddressReadyInner[row] &&
+             !lqSentInner[row] && !lqResultReadyInner[row]))
+        else $fatal(1,"LQ summary base does not describe current original state");
+      assert(loadInsertableInner[row]==(lqValidInner[row] && !lqSentInner[row] && !lqResultReadyInner[row]))
+        else $fatal(1,"LQ summary insertion does not describe current original state");
+      assert(loadPendingAddressInner[row]==(lqValidInner[row] && !lqAddressReadyInner[row]))
+        else $fatal(1,"LQ summary pending-address does not describe current original state");
+      for(int left=0;left<row;left++)
+        assert(loadPairOlderCachedInner[row][left]==rob_is_older(lqTagInner[row],lqTagInner[left]))
+          else $fatal(1,"LQ summary pair age does not describe current original tags");
+    end
+  end
+`endif
   // Debt survives flush/replay: a committed/actually-retiring Store survives too.
   // Ready or a proposal never consumes the one-Load allowance.
   always_ff @(posedge clkInput or negedge rstNInput) begin
