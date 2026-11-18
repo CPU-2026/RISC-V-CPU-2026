@@ -162,9 +162,7 @@ module rv32_lsu #(
   assign storeAllocSecondFireInner = RENAME_WIDTH == 2 && storeAllocationSecondInput.valid && storeAllocSecondReadyOutput;
   assign storeAllocCountInner = RENAME_WIDTH==4 ? storeAllocLanesCountInner :
     (SQ_INDEX_W+1)'(storeAllocFireInner) + (SQ_INDEX_W+1)'(storeAllocSecondFireInner);
-  logic loadSelectFoundInner;
   logic [LQ_INDEX_W-1:0] loadSelectIndexInner;
-  rob_tag_t loadSelectTagInner;
   logic [31:0] loadSelectAddressInner;
   // Carry the winner's tag through a balanced tournament. Re-reading the tag
   // through the previous winner's index serializes every comparison in a loop.
@@ -177,9 +175,7 @@ module rv32_lsu #(
   logic [LQ_DEPTH-1:0] loadSelectCandidatesInner;
   rob_tag_t [LQ_DEPTH-1:0] loadSelectTagsInner;
   load_select_t loadSelectWinnerInner;
-  logic loadBlockedInner;
   logic loadNeedsMemoryInner;
-  logic selectedLoadLiveInner;
 
   typedef struct packed {
     // Forward-query blocking and Cache admission are distinct predicates.
@@ -192,9 +188,17 @@ module rv32_lsu #(
   logic storeAddressEventInner, loadAddressEventInner;
   logic lqEarlyForwardInner [LQ_DEPTH];
   logic [31:0] lqEarlyValueInner [LQ_DEPTH];
-/* verilator lint_off UNUSEDSIGNAL */   store_forward_result_t selectedForwardInner; /* verilator lint_on UNUSEDSIGNAL */
   store_forward_result_t addressedForwardInner;
   logic addressedForwardValidInner;
+  // Candidate A: per-candidate qualification cofactors, computed in parallel
+  // from the AGU payload and the base tree winner (see the combinational
+  // block named load_candidate_qualification).
+  logic useInsertInner;
+  logic insertCandidateLiveInner, baseCandidateLiveInner;
+  logic insertCandidateBlockedInner, baseCandidateBlockedInner;
+  logic insertCandidateNeedsMemoryInner, baseCandidateNeedsMemoryInner;
+  logic insertCandidateYieldsInner, baseCandidateYieldsInner;
+  logic insertCandidateBlocksStoreInner, baseCandidateBlocksStoreInner;
   integer forwardIndexInner;
 
   logic resultSelectFoundInner;
@@ -321,35 +325,38 @@ module rv32_lsu #(
     assign resultSelectCandidatesInner[row] = lqValidInner[row] && lqResultReadyInner[row] &&
       !lqBroadcastedInner[row];
   end
-  // Only OLD LQ fields enter these complete original-tree alternatives.
-  // The AGU event/index and forwarding decision do not enter their age trees.
+  // Only OLD LQ fields enter the base age tree. The AGU event/index and
+  // forwarding decision do not enter its age tree.
   wire [LQ_DEPTH-1:0] loadInsertBaseMaskInner, loadInsertEligibleInner;
   wire load_select_t loadInsertBaseWinnerInner;
-  wire load_select_t loadInsertWinnerInner [LQ_DEPTH];
-  for(genvar row=0;row<LQ_DEPTH;row++)begin : g_load_address_insertion
-    wire [LQ_DEPTH-1:0] insertedMask;
+  for(genvar row=0;row<LQ_DEPTH;row++)begin : g_load_insert_masks
     assign loadInsertBaseMaskInner[row]=lqValidInner[row] && lqAddressReadyInner[row] &&
       !lqSentInner[row] && !lqResultReadyInner[row];
     assign loadInsertEligibleInner[row]=lqValidInner[row] && !lqSentInner[row] && !lqResultReadyInner[row];
-    assign insertedMask=loadInsertBaseMaskInner |
-      ((LQ_DEPTH'(1)<<row) & {LQ_DEPTH{loadInsertEligibleInner[row]}});
-    assign loadInsertWinnerInner[row]=select_load_pair_flags(insertedMask,loadSelectTagsInner,loadTreePairOlderInner);
   end
   assign loadInsertBaseWinnerInner=select_load_pair_flags(loadInsertBaseMaskInner,loadSelectTagsInner,loadTreePairOlderInner);
-  // Preserve the old ready-row candidate even when the new address forwards.
-  // No event, flush/identity rejection, or suppressed insertion uses baseTree.
-  assign loadSelectWinnerInner=loadAddressEventInner &&
-    (lqBroadcastedInner[addressIndexInput] || !addressedForwardValidInner) ?
-    loadInsertWinnerInner[addressIndexInput] : loadInsertBaseWinnerInner;
+  // Candidate A: the eight per-row inserted trees collapse into one age
+  // comparison because ROB tags are unique among live rows. The inserted row
+  // wins exactly when it is eligible and strictly older than the base winner.
+  // useInsertInner implies the row was not address-ready, so the late address
+  // mux below stays equivalent. The original serial-tree oracle below still
+  // proves the combined selection at simulation time.
+  assign useInsertInner=loadAddressEventInner &&
+      (lqBroadcastedInner[addressIndexInput] || !addressedForwardValidInner) &&
+      loadInsertEligibleInner[addressIndexInput] &&
+      (!loadInsertBaseWinnerInner.valid ||
+       rob_is_older(loadSelectTagsInner[addressIndexInput], loadInsertBaseWinnerInner.tag));
+  assign loadSelectWinnerInner=useInsertInner ?
+      '{valid:1'b1, tag:loadSelectTagsInner[addressIndexInput],
+        index:LQ_INDEX_W'(addressIndexInput)} :
+      loadInsertBaseWinnerInner;
 `ifndef SYNTHESIS
   always_comb begin
     assert(loadSelectWinnerInner==select_oldest_load(loadSelectCandidatesInner,loadSelectTagsInner))
       else $fatal(1,"LQ insertion exact original tree oracle");
   end
 `endif
-  assign loadSelectFoundInner = loadSelectWinnerInner.valid;
   assign loadSelectIndexInner = loadSelectWinnerInner.index;
-  assign loadSelectTagInner = loadSelectWinnerInner.tag;
   assign loadSelectAddressInner = !lqAddressReadyInner[loadSelectIndexInner] &&
     loadAddressEventInner && addressIndexInput == $bits(addressIndexInput)'(loadSelectIndexInner) ?
     addressInput.address : lqAddressInner[loadSelectIndexInner];
@@ -785,6 +792,55 @@ module rv32_lsu #(
   assign addressedForwardValidInner = query_store_forward_valid(addressInput.robTag,
     addressInput.address, lqSizeInner[addressIndexInput]);
 
+  // Candidate A: both cones read OLD SQ/LQ state only; the AGU payload and
+  // the base winner arrive in parallel, so no slow query serializes after the
+  // address mux. The inserted row wins only when it was not address-ready,
+  // so addressInput.address is exactly its request address when useInsert.
+  always_comb begin : load_candidate_qualification
+/* verilator lint_off UNUSEDSIGNAL */     store_forward_result_t insertQuery;
+    store_forward_result_t baseQuery; /* verilator lint_on UNUSEDSIGNAL */
+    insertQuery = '0;
+    baseQuery = '0;
+    if (loadAddressEventInner)
+      insertQuery = query_store_forward(loadSelectTagsInner[addressIndexInput],
+        addressInput.address, lqSizeInner[addressIndexInput]);
+    if (loadInsertBaseWinnerInner.valid)
+      baseQuery = query_store_forward(loadInsertBaseWinnerInner.tag,
+        lqAddressInner[loadInsertBaseWinnerInner.index],
+        lqSizeInner[loadInsertBaseWinnerInner.index]);
+    insertCandidateLiveInner = loadAddressEventInner;
+    baseCandidateLiveInner = loadInsertBaseWinnerInner.valid &&
+      (!flushInfoInput.valid ||
+       rob_is_older(loadInsertBaseWinnerInner.tag, flushInfoInput.robTag));
+    insertCandidateBlockedInner = insertQuery.cacheBlocked;
+    baseCandidateBlockedInner = baseQuery.cacheBlocked;
+    insertCandidateNeedsMemoryInner = !coreStoppedInput && insertCandidateLiveInner &&
+      !insertCandidateBlockedInner && int'(fifoCountInner) < DATA_REQUEST_ENTRIES;
+    baseCandidateNeedsMemoryInner = !coreStoppedInput && baseCandidateLiveInner &&
+      !baseCandidateBlockedInner && int'(fifoCountInner) < DATA_REQUEST_ENTRIES;
+    insertCandidateYieldsInner = yield_ram_access(addressInput.address,
+      lqSizeInner[addressIndexInput]);
+    baseCandidateYieldsInner = yield_ram_access(
+      lqAddressInner[loadInsertBaseWinnerInner.index],
+      lqSizeInner[loadInsertBaseWinnerInner.index]);
+    insertCandidateBlocksStoreInner = 1'b0;
+    baseCandidateBlocksStoreInner = 1'b0;
+    for (int s = 0; s < SQ_DEPTH; s++)
+      if (postedStoreMaskInner[s]) begin
+        if (!sqAddressReadyInner[s] || !sqDataReadyInner[s] ||
+            !yield_ram_access(sqAddressInner[s], sqSizeInner[s]) ||
+            byte_overlap(addressInput.address, lqSizeInner[addressIndexInput],
+              sqAddressInner[s], sqSizeInner[s]))
+          insertCandidateBlocksStoreInner = 1'b1;
+        if (!sqAddressReadyInner[s] || !sqDataReadyInner[s] ||
+            !yield_ram_access(sqAddressInner[s], sqSizeInner[s]) ||
+            byte_overlap(lqAddressInner[loadInsertBaseWinnerInner.index],
+              lqSizeInner[loadInsertBaseWinnerInner.index],
+              sqAddressInner[s], sqSizeInner[s]))
+          baseCandidateBlocksStoreInner = 1'b1;
+      end
+  end
+
   // One query for the LQ row named by addressIndexInput. The per-row loop below
   // consumes it only on the matching iteration, so eight identical scans (they
   // differ solely in lqTag/lqSize) collapse into this single instance.
@@ -1022,16 +1078,12 @@ module rv32_lsu #(
     storeAllocIndexOutput = sqTailSeqInner[SQ_INDEX_W-1:0];
     storeAllocReadyOutput = storeAllocFoundInner && !flushInfoInput.valid;
 
-    selectedForwardInner = '0;
-    if (loadSelectFoundInner)
-      selectedForwardInner = query_store_forward(loadSelectTagInner,
-        loadSelectAddressInner, lqSizeInner[loadSelectIndexInner]);
-    loadBlockedInner = selectedForwardInner.cacheBlocked;
-    selectedLoadLiveInner = loadSelectFoundInner &&
-      (!flushInfoInput.valid || rob_is_older(loadSelectTagInner, flushInfoInput.robTag));
+    // Candidate A: the two pre-qualified load candidates are selected by the
+    // winner; the slow store-forward/yield cones ran in parallel and no
+    // longer serialize after the address mux.
     // No new Load after the exit Store retires; committed SQ still progresses.
-    loadNeedsMemoryInner = !coreStoppedInput && selectedLoadLiveInner && !loadBlockedInner &&
-                          int'(fifoCountInner) < DATA_REQUEST_ENTRIES;
+    loadNeedsMemoryInner = useInsertInner ?
+      insertCandidateNeedsMemoryInner : baseCandidateNeedsMemoryInner;
 
     storeAvailableInner = sqValidInner[sqHeadIndexInner] &&
       sqCommittedInner[sqHeadIndexInner];
@@ -1046,17 +1098,11 @@ module rv32_lsu #(
       postedStoreMaskInner[s]=sqValidInner[s] && sqCommittedInner[s];
     for(int lane=0;lane<COMMIT_WIDTH;lane++)
       if(storeRetireFireInner[lane]) postedStoreMaskInner[storeCommitIndexInput[lane]]=1'b1;
-    postedStoreBlocksLoadInner=1'b0;
-    for(int s=0;s<SQ_DEPTH;s++)
-      if(postedStoreMaskInner[s] &&
-         (!sqAddressReadyInner[s] || !sqDataReadyInner[s] ||
-          !yield_ram_access(sqAddressInner[s],sqSizeInner[s]) ||
-          byte_overlap(loadSelectAddressInner,lqSizeInner[loadSelectIndexInner],
-            sqAddressInner[s],sqSizeInner[s])))
-        postedStoreBlocksLoadInner=1'b1;
+    postedStoreBlocksLoadInner=useInsertInner ?
+      insertCandidateBlocksStoreInner : baseCandidateBlocksStoreInner;
     loadBypassStoreInner=loadYieldEnableInput && !coreStoppedInput && !flushInfoInput.valid &&
       storeAvailableInner && !storeYieldDebtInner && loadNeedsMemoryInner &&
-      yield_ram_access(loadSelectAddressInner,lqSizeInner[loadSelectIndexInner]) &&
+      (useInsertInner ? insertCandidateYieldsInner : baseCandidateYieldsInner) &&
       !postedStoreBlocksLoadInner && pressureLowInner;
     // This is the ACTUAL Store grant, also used by BOTH old SQ dequeue paths.
     storeSendSelectedInner=storeAvailableInner && !loadBypassStoreInner;

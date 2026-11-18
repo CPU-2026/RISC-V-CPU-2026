@@ -60,8 +60,27 @@ module rv32_rob_lanes #(
     rob_tag_t tag;
     logic valid;
     logic ready;
+    logic isHeadCall;
+    logic isHeadRet;
   } commit_read_t;
   commit_read_t commitReadInner[COMMIT_WIDTH];
+  // Candidate R6: call/return decode precomputed per row from the stored
+  // instruction, so commit consumers skip the post-select opcode decode.
+  wire [DEPTH-1:0] rowIsCallInner, rowIsRetInner;
+  for (genvar row = 0; row < DEPTH; row++) begin : g_row_call_ret_decode
+    assign rowIsCallInner[row] =
+      ((payloadInner[row].instruction[6:0] == OPCODE_JAL) ||
+       (payloadInner[row].instruction[6:0] == OPCODE_JALR &&
+        payloadInner[row].instruction[14:12] == 0)) &&
+      (payloadInner[row].instruction[11:7] == 5'd1 ||
+       payloadInner[row].instruction[11:7] == 5'd5);
+    assign rowIsRetInner[row] =
+      payloadInner[row].instruction[6:0] == OPCODE_JALR &&
+      payloadInner[row].instruction[14:12] == 0 &&
+      (payloadInner[row].instruction[19:15] == 5'd1 ||
+       payloadInner[row].instruction[19:15] == 5'd5) &&
+      payloadInner[row].instruction[11:7] != payloadInner[row].instruction[19:15];
+  end
   if (DEPTH>=COMMIT_WIDTH && COMMIT_WIDTH>1) begin : g_commit_banked
     localparam int BANK_W=$clog2(COMMIT_WIDTH);
     localparam int ROWS=DEPTH/COMMIT_WIDTH;
@@ -89,7 +108,9 @@ module rv32_rob_lanes #(
         for (int row=0;row<ROWS;row++) begin
           selected|=commit_read_t'{payload:payloadInner[row*COMMIT_WIDTH+bank],
             tag:tagInner[row*COMMIT_WIDTH+bank],valid:validInner[row*COMMIT_WIDTH+bank],
-            ready:readyInner[row*COMMIT_WIDTH+bank]} & {$bits(commit_read_t){selectRow[row]}};
+            ready:readyInner[row*COMMIT_WIDTH+bank],
+            isHeadCall:rowIsCallInner[row*COMMIT_WIDTH+bank],
+            isHeadRet:rowIsRetInner[row*COMMIT_WIDTH+bank]} & {$bits(commit_read_t){selectRow[row]}};
         end
       end
     end
@@ -121,7 +142,9 @@ module rv32_rob_lanes #(
         selected='0;
         for (int row=0;row<DEPTH;row++) begin
           selected|=commit_read_t'{payload:payloadInner[row],tag:tagInner[row],
-            valid:validInner[row],ready:readyInner[row]} & {$bits(commit_read_t){selectRow[row]}};
+            valid:validInner[row],ready:readyInner[row],
+            isHeadCall:rowIsCallInner[row],isHeadRet:rowIsRetInner[row]} &
+            {$bits(commit_read_t){selectRow[row]}};
         end
       end
       assign commitReadInner[lane]=selected;
@@ -201,6 +224,8 @@ module rv32_rob_lanes #(
       commitOutput[lane].oldPhysicalRegister=commitPayloadInner[lane].oldPhysicalRegister;
       commitOutput[lane].storeQueueIndex=commitPayloadInner[lane].storeQueueIndex;
       commitOutput[lane].isHalt=commitPayloadInner[lane].isHalt;
+      commitOutput[lane].isHeadCall=commitReadInner[lane].isHeadCall;
+      commitOutput[lane].isHeadReturn=commitReadInner[lane].isHeadRet;
       commitStoreOutput[lane]=commitPayloadInner[lane].isStore;
       open=commitOutput[lane].valid && !commitPayloadInner[lane].isHalt;
     end

@@ -55,6 +55,20 @@ module rv32_rob #(
   logic [31:0] predictedPcInner [DEPTH];
   bpu_ckpt_id_t predictorCkptIdInner [DEPTH];
   logic isRetInner [DEPTH];
+  // Candidate R6: call/return decode precomputed per row from the stored
+  // instruction, so commit consumers skip the post-select opcode decode.
+  wire [DEPTH-1:0] rowIsCallInner, rowIsRetInner;
+  for (genvar row = 0; row < DEPTH; row++) begin : g_row_call_ret_decode
+    assign rowIsCallInner[row] =
+      ((instrInner[row][6:0] == OPCODE_JAL) ||
+       (instrInner[row][6:0] == OPCODE_JALR && instrInner[row][14:12] == 0)) &&
+      (instrInner[row][11:7] == 5'd1 || instrInner[row][11:7] == 5'd5);
+    assign rowIsRetInner[row] =
+      instrInner[row][6:0] == OPCODE_JALR &&
+      instrInner[row][14:12] == 0 &&
+      (instrInner[row][19:15] == 5'd1 || instrInner[row][19:15] == 5'd5) &&
+      instrInner[row][11:7] != instrInner[row][19:15];
+  end
 
   rob_tag_t headInner, tailInner;
   logic [$clog2(DEPTH+1)-1:0] countInner;
@@ -266,6 +280,8 @@ module rv32_rob #(
       commitStoreOutput[lane] = storeInner[slot];
       commitOutput[lane].storeQueueIndex = sqIndexInner[slot];
       commitOutput[lane].isHalt = haltInner[slot];
+      commitOutput[lane].isHeadCall = rowIsCallInner[slot];
+      commitOutput[lane].isHeadReturn = rowIsRetInner[slot];
       commitOutput[lane].hasException = 1'b0; // Compatibility field, no exception state.
       prefix = eligible && !haltInner[slot];
     end
