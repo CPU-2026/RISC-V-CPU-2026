@@ -42,7 +42,7 @@ module rv32_bpu_direction #(
     queryP2Inner = queryPcInput >> 2;
     queryLocalIdxInner = BHT_INDEX_W'({queryP2Inner, localHistoryInner[queryP2Inner[BHT_INDEX_W-1:0]]});
     queryGlobalIdxInner = queryP2Inner[BHT_INDEX_W-1:0] ^ ghrInner;
-    querySelIdxInner = queryP2Inner[BHT_INDEX_W-1:0] ^ ghrInner;
+    querySelIdxInner = queryP2Inner[BHT_INDEX_W-1:0];
     queryCondIdxInner = queryP2Inner[COND_INDEX_W-1:0];
     predictionOutput.useGlobal = selectorInner[querySelIdxInner] == 2'b11 &&
       ((globalPhtInner[queryGlobalIdxInner] == 2'b00 || globalPhtInner[queryGlobalIdxInner] == 2'b11) ||
@@ -60,7 +60,7 @@ module rv32_bpu_direction #(
     branchP2Inner = branchInput.programCounter >> 2;
     branchLocalIdxInner = BHT_INDEX_W'({branchP2Inner, branchContextInput.localHistory});
     branchGlobalIdxInner = branchP2Inner[BHT_INDEX_W-1:0] ^ branchInput.globalHistory;
-    branchSelIdxInner = branchP2Inner[BHT_INDEX_W-1:0] ^ branchInput.globalHistory;
+    branchSelIdxInner = branchP2Inner[BHT_INDEX_W-1:0];
     branchCondIdxInner = branchP2Inner[COND_INDEX_W-1:0];
   end
 
