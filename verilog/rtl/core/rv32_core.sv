@@ -494,8 +494,15 @@ module rv32_core #(
     for (int lane = 0; lane < COMMIT_WIDTH; lane++) begin
       predictorRobInputInner[lane].willCommit = retirementFireInner[lane];
       predictorRobInputInner[lane].headTag = robCommitOutputInner[lane].robTag;
-      predictorRobInputInner[lane].isHeadCall = robCommitOutputInner[lane].isHeadCall;
-      predictorRobInputInner[lane].isHeadReturn = robCommitOutputInner[lane].isHeadReturn;
+      predictorRobInputInner[lane].isHeadCall =
+        ((robCommitOutputInner[lane].instruction[6:0] == OPCODE_JAL) ||
+         (robCommitOutputInner[lane].instruction[6:0] == OPCODE_JALR &&
+          robCommitOutputInner[lane].instruction[14:12] == 0)) &&
+        (robCommitOutputInner[lane].instruction[11:7] == 1 || robCommitOutputInner[lane].instruction[11:7] == 5);
+      predictorRobInputInner[lane].isHeadReturn = robCommitOutputInner[lane].instruction[6:0] == OPCODE_JALR &&
+        robCommitOutputInner[lane].instruction[14:12] == 0 &&
+        (robCommitOutputInner[lane].instruction[19:15] == 1 || robCommitOutputInner[lane].instruction[19:15] == 5) &&
+        robCommitOutputInner[lane].instruction[11:7] != robCommitOutputInner[lane].instruction[19:15];
       predictorRobInputInner[lane].headProgramCounter = robCommitOutputInner[lane].programCounter;
     end
     for (robInputIndexInner = 0; robInputIndexInner < RECOVERY_WIDTH;

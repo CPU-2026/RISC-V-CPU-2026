@@ -653,10 +653,6 @@ package rv32_pkg;
     phy_tag_t oldPhysicalRegister;
     logic [2:0] storeQueueIndex;
     logic isHalt;
-    // Candidate R6: call/return decode precomputed per ROB row, so the RAS
-    // arch-update enable no longer waits for the post-select opcode decode.
-    logic isHeadCall;
-    logic isHeadReturn;
     logic hasException; // Compatibility output, always zero.
   } rob_commit_output_t;
 
