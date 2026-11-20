@@ -16,7 +16,8 @@ module rv32_axi_data (
   input logic [31:0] exitValueInput,
   output logic exitReadyOutput,
   output rv32_pkg::axi_master_t masterOutput,
-  input rv32_pkg::axi_slave_t slaveInput
+  input rv32_pkg::axi_slave_t slaveInput,
+  output logic [1:0] readHeadTransactionOutput, writeHeadTransactionOutput
 );
   import rv32_pkg::*;
   localparam int DEPTH = 8;
@@ -53,6 +54,10 @@ module rv32_axi_data (
 /* verilator lint_off UNUSEDSIGNAL */   wire [SLOT_W-1:0] writeCollectSlotInner = SLOT_W'(writeOrderInner[writeCollectSeqInner[3:0]]); /* verilator lint_on UNUSEDSIGNAL */
   localparam int SLOT_W = $clog2(DEPTH);
   logic [SLOT_W-1:0] readHeadOwnerInner, writeHeadOwnerInner;
+  logic [1:0] readHeadTxnInner;
+  logic [1:0] writeHeadTxnInner;
+  assign readHeadTransactionOutput=readHeadTxnInner;
+  assign writeHeadTransactionOutput=writeHeadTxnInner;
   // Mirror the ring head at its update edge, avoiding order->descriptor
   // indirection in every completion/payload consumer, including empty state.
 /* verilator lint_off UNUSEDSIGNAL */   wire [SLOT_W-1:0] readHeadSlotInner = SLOT_W'(4'(readHeadOwnerInner)); /* verilator lint_on UNUSEDSIGNAL */
@@ -297,6 +302,55 @@ module rv32_axi_data (
         writeHeadOwnerInner <= SLOT_W'(writeOrderInner[4'(writeHeadInner + 4'd1)]);
     end
   end
+  // Shadow only the two read-response ID bits. Prepare the following ring
+  // entry before pop; bypass any descriptor written on the very same edge.
+  // This preserves the value on an idle response port as well as on a grant.
+  wire [SLOT_W-1:0] followingReadOwnerInner = SLOT_W'(readOrderInner[4'(readHeadInner + 4'd1)]);
+  wire readBecomesHeadInner = pushReadInner &&
+    (readCountInner == 0 || (popReadInner && readCountInner == 1));
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) readHeadTxnInner <= '0;
+    else if (readBecomesHeadInner)
+      readHeadTxnInner <= (pushWriteInner && SLOT_W'(writeSlotInner) == SLOT_W'(readSlotInner)) ?
+                          requestInput.writeTransaction : requestInput.readTransaction;
+    else if (popReadInner) begin
+      if (pushWriteInner && SLOT_W'(writeSlotInner) == followingReadOwnerInner)
+        readHeadTxnInner <= requestInput.writeTransaction;
+      else if (pushReadInner && SLOT_W'(readSlotInner) == followingReadOwnerInner)
+        readHeadTxnInner <= requestInput.readTransaction;
+      else readHeadTxnInner <= entriesInner[followingReadOwnerInner].transaction;
+    end else if (pushWriteInner && SLOT_W'(writeSlotInner) == readHeadSlotInner)
+      readHeadTxnInner <= requestInput.writeTransaction;
+    else if (pushReadInner && SLOT_W'(readSlotInner) == readHeadSlotInner)
+      readHeadTxnInner <= requestInput.readTransaction;
+  end
+`ifndef SYNTHESIS
+  always @(posedge clkInput) if (rstNInput)
+    assert (readHeadTxnInner == entriesInner[readHeadSlotInner].transaction)
+      else $fatal(1, "AXI read-head transaction differs from original descriptor");
+`endif
+  // The write response uses this existing head's ID, without a late slot mux.
+  // Track OLD orders and the same-edge descriptor writers, even while idle.
+  wire [SLOT_W-1:0] followingWriteOwnerInner = SLOT_W'(writeOrderInner[4'(writeHeadInner + 4'd1)]);
+  wire writeBecomesHeadInner = pushWriteInner &&
+    (writeCountInner == 0 || (popWriteInner && writeCountInner == 1));
+  wire [SLOT_W-1:0] writeHeadTxnNextOwnerInner =
+    popWriteInner ? followingWriteOwnerInner : writeHeadSlotInner;
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) writeHeadTxnInner <= '0;
+    else if (writeBecomesHeadInner ||
+             (pushWriteInner && SLOT_W'(writeSlotInner) == writeHeadTxnNextOwnerInner))
+      writeHeadTxnInner <= requestInput.writeTransaction;
+    else if (pushReadInner && SLOT_W'(readSlotInner) == writeHeadTxnNextOwnerInner)
+      writeHeadTxnInner <= requestInput.readTransaction;
+    else if (popWriteInner)
+      writeHeadTxnInner <= entriesInner[followingWriteOwnerInner].transaction;
+  end
+`ifndef SYNTHESIS
+  always @(posedge clkInput) if (rstNInput)
+    assert (writeHeadTxnInner == entriesInner[writeHeadSlotInner].transaction)
+      else $fatal(1, "AXI write-head transaction differs from original descriptor");
+`endif
   // Payload state is held by the SRAM helper; all descriptor FSMs are unchanged.
 `ifndef SYNTHESIS
   always @(posedge clkInput) if (rstNInput) begin

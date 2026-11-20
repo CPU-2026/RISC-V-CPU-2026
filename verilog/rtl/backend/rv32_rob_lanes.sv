@@ -73,16 +73,19 @@ module rv32_rob_lanes #(
     assign firstBank=BANK_W'(baseSlot);
     assign baseRow=ROW_W'(baseSlot>>BANK_W);
     for (genvar bank=0;bank<COMMIT_WIDTH;bank++) begin : g_bank
-      logic [ROW_W-1:0] selectedCommitRow;
       logic [ROWS-1:0] selectRow;
       commit_read_t selected;
-      if (bank==COMMIT_WIDTH-1) begin : g_last_bank
-        assign selectedCommitRow=baseRow;
-      end else begin : g_rotated_bank
-        assign selectedCommitRow=baseRow+ROW_W'(BANK_W'(bank)<firstBank);
-      end
+      // Decode both neighboring rows using constant comparisons. The low head
+      // bits only choose between the two decodes, rather than feeding an adder.
       for (genvar row=0;row<ROWS;row++) begin : g_decode
-        assign selectRow[row]=(selectedCommitRow & ROW_W'(ROWS-1))==ROW_W'(row);
+        if (ROWS==1) begin : g_only
+          assign selectRow[row]=1'b1;
+        end else if (bank==COMMIT_WIDTH-1) begin : g_last
+          assign selectRow[row]=baseRow==ROW_W'(row);
+        end else begin : g_wrapped
+          assign selectRow[row]=(firstBank>BANK_W'(bank)) ?
+            baseRow==ROW_W'((row+ROWS-1)%ROWS) : baseRow==ROW_W'(row);
+        end
       end
       always_comb begin
         selected='0;

@@ -1,33 +1,39 @@
 # 项目历史
 
-## 版本沿革
+## 当前生产
 
-| 日期 | 主要变化 |
-|---|---|
-| 2026-11-07 | 放开 16 B 边界的四指令取指；完成 14 组有限配置的[参数实验](参数敏感度分析.md)。 |
-| 2026-11-12 | ROB16、PRF48、8 KiB D$ 基线保留完整写回包，加入双队列反向信用。 |
-| 2026-11-16～17 | Load/StoreAddr 采用选择性晚唤醒，Branch 禁用 Load 同拍旁路；Load 改为独占一路 CDB。 |
-| 2026-11-18 | LSU 调度摘要 H 替换版本 B，不保留 B 的 D$ 树形选路；S 在 H 上前移 SQ 扫描，400 MHz 下无 setup 违例。 |
-| 2026-11-18 | W8 把每拍恢复槽数由 4 增至 8，原六周期下降，但未通过 400 MHz。 |
-| 2026-11-18 | 采用 W8 上的八路 RAS 组合重放；原六周期不变，估计 Fmax 超过 400 MHz。 |
-| 2026-11-19 | 采用 RAS 深度 4，恢复宽度仍为 8；两套软件同步。2.0 ns 映射估计 Fmax **455.313473 MHz**。 |
+**476.057648 MHz／34068.91 μm²／原六几何 IPC 1.109294605**（2.0 ns 映射及 STA）。相对已提交的 [455 MHz 基线](https://github.com/CPU-2026/RISC-V-CPU-2026/commit/0f5a1d7)，估计 Fmax **+4.556%**、面积 **−18.57 μm²**、setup 违例端点 **3231→2003**；原六答案、周期和 **374104 条完整退休记录**不变。[时序](频率分析.md#当前生产关键路径示意图) · [验证](assessment.md#原六程序)。
 
-A2、R6 各自从 W8 测量，均降频；未采用，也未叠加。独立 postmap、LSU 返回寄存边界、D$ tag 快照和 PRF 并行排名仍未采用。
+### 本次采用顺序
 
-## 发布记录
+下表为同一 2.0 ns 口径下的生产快照，不等同于逐项 Git 提交。收据位于工作区 `.cpu2026-synthesis/<采用目录>/adoption.json`。
 
-- **当前生产：** 硬件仅改 [`RAS_ENTRIES`](../verilog/rtl/common/rv32_pkg.sv) 8→4，两软件各改一个容量常量。原六四个软件构建通过，两个观察副本各 374104 条退休记录的 PC、周期、通道与新 RTL 一致。正式指针 `sync/evidence/current-production.json`，采用证据 `.cpu2026-synthesis/ras4-production-20261119-r01/adoption.json`，本次无新 Git 提交。
+| 日期 | 采用的改动 | 估计 Fmax（MHz） | 采用目录 |
+|---|---|---:|---|
+| 2026-11-19 | D$ 在原写入授权下按队首预选 Store 写载荷 | 472.106962 | `ras4-store-head-production-20261119-r01` |
+| 2026-11-19 | AXI 读队首切换时同拍保存缺失号 | 472.979215 | `head-txn-production-20261119-r01` |
+| 2026-11-19 | AXI 写队首也同拍保存缺失号，Fmax 不变、面积下降 | 472.979215 | `write-head-txn-production-20261119-r01` |
+| 2026-11-19 | Store→Load 同拍广播，按授权采用；原六未触发该旁路 | 471.454880 | `store-notify-direct-production-20261119-r01` |
+| 2026-11-20 | D$ 对各物理请求槽并行比较命中标签 | 474.953618 | `dcache-tag-production-20261120-r01` |
+| 2026-11-20 | ROB 退休 bank 预译码，用队首低位选择译码结果 | 475.615420 | `rob-decode-production-20261120-r02` |
+| 2026-11-20 | LSU 按返回槽提前准备 Load 候选，实际回包才选通，保持同拍唤醒 | **476.057648** | `lsu-owner-production-20261120-r03` |
 
-### 深度 8 生产版及后续候选的历史记录
+476 版相对 475 只更新 [`rv32_lsu.sv`](../verilog/rtl/memory/rv32_lsu.sv)，按当时授权采用；部分时序组仍有退化。生产指针 `sync/evidence/current-production.json` 绑定 46 项硬件、126 项软件输入；228 个 SRAM 实例与 475 版一致。
 
-- 硬件 [`0c9ba970ac4e`](https://github.com/CPU-2026/RISC-V-CPU-2026/commit/0c9ba970ac4ed233e52c1bbe2e06c29f0ffb8c24) 相对 W8 只换入实测的 [`rv32_bpu_ras.sv`](../verilog/rtl/predictor/rv32_bpu_ras.sv)，未合入远端分叉的两个提交。
-- 软件主树 `403071cd0868`、模板 `a9b409ff6406` 已与该版本同步。见[原六验证](assessment.md#验证范围与测试入口)与[整核时序](频率分析.md)。
-- 工作区证据：`sync/evidence/current-production.json`；`.cpu2026-synthesis/w8-ras-depth-rails-production-adoption-20261118-r01/adoption.json`。
-- 主树默认 2.0 ns 重新映射同一 RTL，`build/synth/opt/report.json` 为 395.366795 MHz；与发布记录的 2.5 ns 映射区分，见[时序对照](频率分析.md)。
-- 450 MHz 提频首轮：RAS 读写控制候选为 **400.939702 MHz / 34339.796399 μm² / IPC 1.110948571**。较 2.0 ns 基线提频 1.410%，原六周期及 374104 条完整退休记录不变，尚未达到 450 MHz。功能与映射证据分别为 `f450-ras-readmode-r01/independent-verification.json`、`f450-ras-readmode-resume-r03/completion.json`，见[频率分析](频率分析.md)；未采用。
-- 11 月 19 日夜间批次未启动参数试验。上游收据 02:16 已落盘，等待文件通知的驱动未接续；至 08:00 截止，提交宽度 2、RAS 深度 4、BTB64 均仅有源码快照。证据 `night450-handoff-r02/closeout.json`；下次由上游退出回调直接核验收据。
-- 上午三个参数点中，提交宽度 2 因 IPC 1.065667 淘汰；BTB64 为 402.515723 MHz / 36031.353419 μm² / IPC 1.112267，面积超限 31.35 μm²。唯一采用的是 RAS 深度 4，面积 **34087.480167 μm²**、原六几何 **IPC 1.109294605**，较前生产同口径提频 **15.162%**。证据 `morning-fmax-20261119-r02/completion.json`。
+### 软件同步
 
-## 清理与证据边界
+主模拟器与模板模拟器以 **474 RTL** 为同步基线：Store 退休按 ROB 保存的 SQ 槽定位，D$ 按槽比较标签并从队首选择 Store 写载荷，AXI 同拍保存读写队首缺失号，Load 写回采用同拍 Store 转发值。两树各 **44867** 次退休 Store 与 474 RTL 匹配；475／476 采用时未改软件，复用对拍的条件见[验证范围](assessment.md#原六程序)。
 
-逐项实验、采用与否决依据保存在[原提交的历史记录](https://github.com/CPU-2026/RISC-V-CPU-2026/blob/0c9ba970ac4ed233e52c1bbe2e06c29f0ffb8c24/docs/history.md)。工作区的 `sync/` 和实验产物不随硬件仓库克隆提供；已清理的日志、网表和检查点不能凭历史摘要重审或接续。
+## 未采用的候选
+
+AXI 读队首预存**回填地址**与已采用的预存**缺失号**不同，未纳入生产。`nextTag` 直取、重放对齐 XOR、RAS 写槽并行及两条一组阈值均独立测量，未采用、未叠加。实测及原因见[独立候选](频率分析.md#未采用的独立候选)。其余试验沿革见[历史时序](频率分析.md#历史生产与时序诊断)。
+
+## 早期沿革
+
+- **2026-11-07～17：** 四指令取指允许跨 16 B 边界；形成 ROB16／PRF48／8 KiB D$ 配置和双队列反向信用；Load／StoreAddr 采用选择性晚唤醒、Load 独占一路 CDB，Branch 不用 Load 同拍旁路派发。[参数实验](参数敏感度分析.md)
+- **2026-11-18：** LSU 调度摘要 H 替换 B；S 在 H 上前移 SQ 扫描。W8 将每拍恢复宽度由 4 槽增至 8 槽；随后采用八路 RAS 组合重放。深度 8 生产源码及同一 RTL 不同映射目标的结果，见[历史测量](频率分析.md#历史测量对照25-ns-映射)。
+- **2026-11-19：** RAS 从 8 槽减至 4 槽，恢复宽度仍为 8；两套软件同步。2.0 ns 映射估计 Fmax **455.313473 MHz**。采用收据 `.cpu2026-synthesis/ras4-production-20261119-r01/adoption.json`。
+
+## 证据边界
+
+工作区 `sync/`、实验产物和两个软件仓库不随本硬件仓库克隆提供。旧方案见[历史提交](https://github.com/CPU-2026/RISC-V-CPU-2026/blob/0c9ba970ac4ed233e52c1bbe2e06c29f0ffb8c24/docs/history.md)；缺失的原始日志、网表和检查点不能凭摘要重审。

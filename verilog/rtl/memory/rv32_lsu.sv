@@ -706,45 +706,96 @@ module rv32_lsu #(
   mem_size_e previewResultSizeInner;
   logic previewResultUnsignedInner;
   load_result_output_t previewCdbPacketInner;
+  logic directStorePacketInner;
   generate if(RESPONSE_PREVIEW && TAGGED_DMEM)begin : g_response_preview
+    // Prepare each transport owner's narrow candidate before the late return
+    // mux (including fill and word returns, which use owners[0]). A candidate
+    // never authorizes a result: select the real route and require response.valid.
+    typedef struct packed {
+      logic [LQ_INDEX_W-1:0] index;
+      rob_tag_t tag;
+      phy_tag_t destination;
+      mem_size_e size;
+      logic isUnsigned, identity, addressForward, storeValue, winner;
+    } owner_candidate_t;
+    wire [LQ_DEPTH-1:0] rowLive, rowBeatsBuffered, rowAddressForward, rowStoreValue;
+    wire owner_candidate_t ownerCandidate [DATA_REQUEST_ENTRIES];
+    owner_candidate_t selectedCandidate [3];
     wire [2:0] identityRows,forwardRows,winnerRows,selectedRows;
+    wire [2:0] storeValueRows, addressForwardRows;
     data_transaction_t [2:0] owners;
     wire [LQ_INDEX_W-1:0] indices[3];
+    logic bufferedWritebackValid;
+    assign bufferedWritebackValid=bufferedResultWinnerInner.valid &&
+      (!flushInfoInput.valid || rob_is_older(bufferedResultWinnerInner.tag,flushInfoInput.robTag));
     assign owners[0]=responseOwnerInner;
     assign owners[1]=responsePreviewTransactionInput[0];
     assign owners[2]=responsePreviewTransactionInput[1];
     assign selectedRows={responsePreviewSelectInput,!(|responsePreviewSelectInput)};
-    for(genvar option=0;option<3;option++)begin : g_option
+    for (genvar row=0;row<LQ_DEPTH;row++) begin : g_row_candidate
       wire [STORE_DATA_LANES-1:0] notifications;
-      assign indices[option]=fifoIndexInner[owners[option]];
-      assign identityRows[option]=fifoValidInner[owners[option]] && !fifoDropInner[owners[option]] &&
-        lqValidInner[indices[option]] && lqTagInner[indices[option]]==fifoTagInner[owners[option]] &&
-        lqSentInner[indices[option]] && !lqResultReadyInner[indices[option]] && !lqBroadcastedInner[indices[option]] &&
-        (!flushInfoInput.valid || rob_is_older(fifoTagInner[owners[option]],flushInfoInput.robTag));
-      for(genvar lane=0;lane<STORE_DATA_LANES;lane++)begin : g_notify
+      wire addressOverride=loadAddressEventInner && addressIndexInput==$bits(addressIndexInput)'(row);
+      for (genvar lane=0;lane<STORE_DATA_LANES;lane++) begin : g_notify
         assign notifications[lane]=storeDataEventInner[lane] &&
-          oldNotifyMatchInner[indices[option]][storeDataIndexInput[lane]];
+          oldNotifyMatchInner[row][storeDataIndexInput[lane]];
       end
-      assign forwardRows[option]=loadAddressEventInner &&
-        addressIndexInput==$bits(addressIndexInput)'(indices[option]) ? addressedForwardValidInner : (|notifications);
-      assign winnerRows[option]=identityRows[option] && !forwardRows[option] &&
-        (!bufferedResultWinnerInner.valid || rob_is_older(lqTagInner[indices[option]],bufferedResultWinnerInner.tag) ||
-         (lqTagInner[indices[option]]==bufferedResultWinnerInner.tag && indices[option]<bufferedResultWinnerInner.index));
+      assign rowAddressForward[row]=addressOverride && addressedForwardValidInner;
+      assign rowStoreValue[row]=!addressOverride && (|notifications);
+      assign rowLive[row]=lqValidInner[row] && lqSentInner[row] &&
+        !lqResultReadyInner[row] && !lqBroadcastedInner[row] &&
+        (!flushInfoInput.valid || rob_is_older(lqTagInner[row],flushInfoInput.robTag));
+      wire smallerOnTie;
+      // The maximum encoded row is never below an unsigned buffered index.
+      // Other rows, including non-power-of-two configurations, compare the
+      // full index exactly as before.
+      if (LQ_INDEX_W'(row)=={LQ_INDEX_W{1'b1}}) begin : g_max_index
+        assign smallerOnTie=1'b0;
+      end else begin : g_compare_indices
+        assign smallerOnTie=LQ_INDEX_W'(row)<bufferedResultWinnerInner.index;
+      end
+      assign rowBeatsBuffered[row]=!bufferedResultWinnerInner.valid ||
+        rob_is_older(lqTagInner[row],bufferedResultWinnerInner.tag) ||
+        (lqTagInner[row]==bufferedResultWinnerInner.tag && smallerOnTie);
+    end
+    for (genvar owner=0;owner<DATA_REQUEST_ENTRIES;owner++) begin : g_owner_candidate
+      wire [LQ_INDEX_W-1:0] index=fifoIndexInner[owner];
+      // The FIFO and LQ full tags must match before using the LQ's flush check.
+      wire identity=fifoValidInner[owner] && !fifoDropInner[owner] &&
+        rowLive[index] && lqTagInner[index]==fifoTagInner[owner];
+      assign ownerCandidate[owner]='{index:index, tag:lqTagInner[index], destination:lqDestInner[index],
+        size:mem_size_e'(lqSizeInner[index]), isUnsigned:lqUnsignedInner[index], identity:identity,
+        addressForward:rowAddressForward[index], storeValue:rowStoreValue[index],
+        winner:identity && !rowAddressForward[index] && rowBeatsBuffered[index]};
+    end
+    for (genvar option=0;option<3;option++) begin : g_option
+      always_comb begin : select_candidate
+        selectedCandidate[option]='0;
+        for (int owner=0;owner<DATA_REQUEST_ENTRIES;owner++)
+          selectedCandidate[option]|=ownerCandidate[owner] &
+            {$bits(owner_candidate_t){owners[option]==data_transaction_t'(owner)}};
+      end
+      assign indices[option]=selectedCandidate[option].index;
+      assign identityRows[option]=selectedCandidate[option].identity;
+      assign addressForwardRows[option]=selectedCandidate[option].addressForward;
+      assign storeValueRows[option]=selectedCandidate[option].storeValue;
+      assign forwardRows[option]=addressForwardRows[option] || storeValueRows[option];
+      assign winnerRows[option]=selectedCandidate[option].winner;
     end
     assign responseResultIdentityLiveInner=dmemResponseInput.valid && (|(identityRows & selectedRows));
     assign responseForwardPriorityInner=|(forwardRows & selectedRows);
-    assign responseResultLiveInner=responseResultIdentityLiveInner && !responseForwardPriorityInner;
+    assign responseResultLiveInner=responseResultIdentityLiveInner && !(|(addressForwardRows & selectedRows));
     assign chooseResponseResultInner=dmemResponseInput.valid && (|(winnerRows & selectedRows));
+    assign directStorePacketInner=chooseResponseResultInner && (|(storeValueRows & selectedRows));
     always_comb begin : preview_metadata
       previewResultIndexInner='0;previewResultTagInner='0;previewResultDestinationInner='0;
       previewResultSizeInner=mem_size_e'(0);previewResultUnsignedInner=1'b0;
       for(int option=0;option<3;option++)begin
         previewResultIndexInner|=indices[option] & {LQ_INDEX_W{selectedRows[option]}};
-        previewResultTagInner|=lqTagInner[indices[option]] & {ROB_TAG_W{selectedRows[option]}};
-        previewResultDestinationInner|=lqDestInner[indices[option]] & {PHY_TAG_W{selectedRows[option]}};
+        previewResultTagInner|=selectedCandidate[option].tag & {ROB_TAG_W{selectedRows[option]}};
+        previewResultDestinationInner|=selectedCandidate[option].destination & {PHY_TAG_W{selectedRows[option]}};
         previewResultSizeInner=mem_size_e'(previewResultSizeInner |
-          (lqSizeInner[indices[option]] & {$bits(mem_size_e){selectedRows[option]}}));
-        previewResultUnsignedInner|=lqUnsignedInner[indices[option]] && selectedRows[option];
+          (selectedCandidate[option].size & {$bits(mem_size_e){selectedRows[option]}}));
+        previewResultUnsignedInner|=selectedCandidate[option].isUnsigned && selectedRows[option];
       end
     end
     // Each option forms its complete original response-vs-buffered CDB
@@ -755,18 +806,55 @@ module rv32_lsu #(
       previewCdbPacketInner='0;packet='0;useResponse=1'b0;
       for(int option=0;option<3;option++)begin
         useResponse=dmemResponseInput.valid && winnerRows[option];
-        packet.robTag=useResponse ? lqTagInner[indices[option]] : bufferedResultWinnerInner.tag;
-        packet.destinationPhy=useResponse ? lqDestInner[indices[option]] : lqDestInner[bufferedResultWinnerInner.index];
+        packet.robTag=useResponse ? selectedCandidate[option].tag : bufferedResultWinnerInner.tag;
+        packet.destinationPhy=useResponse ? selectedCandidate[option].destination : lqDestInner[bufferedResultWinnerInner.index];
         packet.value=useResponse ?
-          extend_load(dmemResponseInput.readData,lqSizeInner[indices[option]],lqUnsignedInner[indices[option]]) :
+          extend_load(storeValueRows[option] ? lqEarlyValueInner[indices[option]] : dmemResponseInput.readData,
+            selectedCandidate[option].size,selectedCandidate[option].isUnsigned) :
           extend_load(lqResultInner[bufferedResultWinnerInner.index],lqSizeInner[bufferedResultWinnerInner.index],
             lqUnsignedInner[bufferedResultWinnerInner.index]);
-        packet.valid=(useResponse || bufferedResultWinnerInner.valid) &&
-          (!flushInfoInput.valid || rob_is_older(packet.robTag,flushInfoInput.robTag));
+        // A selected response already passed flush with this exact tag.
+        // Check the buffered tag before the source mux instead of after it.
+        packet.valid=useResponse || bufferedWritebackValid;
         previewCdbPacketInner|=packet & {$bits(load_result_output_t){selectedRows[option]}};
       end
     end
 `ifndef SYNTHESIS
+    // Independent post-route oracle for the real response, including canceled
+    // owners, same-edge forwarding, the age tie and an invalid writeback.
+    always @(posedge clkInput) if (rstNInput) begin : selected_owner_oracle
+      logic live, advance, addressOverride, addressForward, storeValue;
+      logic [LQ_INDEX_W-1:0] index;
+      load_result_output_t packet;
+      rob_tag_t tag;
+      index=fifoIndexInner[responseOwnerInner];
+      tag=lqTagInner[index];
+      live=dmemResponseInput.valid && fifoValidInner[responseOwnerInner] && !fifoDropInner[responseOwnerInner] &&
+        lqValidInner[index] && tag==fifoTagInner[responseOwnerInner] && lqSentInner[index] &&
+        !lqResultReadyInner[index] && !lqBroadcastedInner[index] &&
+        (!flushInfoInput.valid || rob_is_older(fifoTagInner[responseOwnerInner],flushInfoInput.robTag));
+      addressOverride=loadAddressEventInner && addressIndexInput==$bits(addressIndexInput)'(index);
+      addressForward=addressOverride && addressedForwardValidInner;
+      storeValue=1'b0;
+      for (int lane=0;lane<STORE_DATA_LANES;lane++)
+        if (!addressOverride && storeDataEventInner[lane] &&
+            oldNotifyMatchInner[index][storeDataIndexInput[lane]]) storeValue=1'b1;
+      advance=live && !addressForward &&
+        (!bufferedResultWinnerInner.valid || rob_is_older(tag,bufferedResultWinnerInner.tag) ||
+         (tag==bufferedResultWinnerInner.tag && index<bufferedResultWinnerInner.index));
+      packet.robTag=advance ? tag : bufferedResultWinnerInner.tag;
+      packet.destinationPhy=advance ? lqDestInner[index] : lqDestInner[bufferedResultWinnerInner.index];
+      packet.value=advance ? extend_load(storeValue ? lqEarlyValueInner[index] : dmemResponseInput.readData,
+        lqSizeInner[index],lqUnsignedInner[index]) :
+        extend_load(lqResultInner[bufferedResultWinnerInner.index],lqSizeInner[bufferedResultWinnerInner.index],
+          lqUnsignedInner[bufferedResultWinnerInner.index]);
+      packet.valid=(advance || bufferedResultWinnerInner.valid) &&
+        (!flushInfoInput.valid || rob_is_older(packet.robTag,flushInfoInput.robTag));
+      assert (packet==loadResultOutput && live==responseResultIdentityLiveInner &&
+        (live && !addressForward)==responseResultLiveInner && advance==chooseResponseResultInner &&
+        (advance && storeValue)==directStorePacketInner)
+        else $fatal(1,"LSU actual-owner candidate differs from post-route oracle");
+    end
     always_comb begin
       assert(!chooseResponseResultInner || responseResultLiveInner)
         else $fatal(1,"Response preview live qualification consistency");
@@ -779,6 +867,7 @@ module rv32_lsu #(
     end
 `endif
   end else begin : g_original_response
+  assign directStorePacketInner=1'b0;
   assign responseResultIdentityLiveInner = dmemResponseInput.valid && fifoValidInner[responseOwnerInner] &&
     !fifoDropInner[responseOwnerInner] && lqValidInner[responseResultIndexInner] &&
     lqTagInner[responseResultIndexInner] == fifoTagInner[responseOwnerInner] &&
@@ -1076,7 +1165,9 @@ module rv32_lsu #(
       originalPacket.robTag=resultSelectTagInner;
       originalPacket.destinationPhy=chooseResponseResultInner ? previewResultDestinationInner : lqDestInner[bufferedResultWinnerInner.index];
       originalPacket.value=chooseResponseResultInner ?
-        extend_load(dmemResponseInput.readData,previewResultSizeInner,previewResultUnsignedInner) :
+        extend_load(lqEarlyForwardInner[responseResultIndexInner] ?
+          lqEarlyValueInner[responseResultIndexInner] : dmemResponseInput.readData,
+          previewResultSizeInner,previewResultUnsignedInner) :
         extend_load(lqResultInner[bufferedResultWinnerInner.index],lqSizeInner[bufferedResultWinnerInner.index],
           lqUnsignedInner[bufferedResultWinnerInner.index]);
       assert(loadResultOutput==originalPacket)else $fatal(1,"Response payload cofactor oracle");
@@ -1518,7 +1609,11 @@ module rv32_lsu #(
               loadSelectIndexInner == LQ_INDEX_W'(seqIndexInner))) begin
           lqResultReadyInner[seqIndexInner] <= 1'b1;
           lqSentInner[seqIndexInner] <= 1'b1;
-          lqBroadcastedInner[seqIndexInner] <= 1'b0;
+          // Saved forwarding data retries after backpressure, but must not
+          // re-enter the CDB after an accepted same-cycle bypass.
+          lqBroadcastedInner[seqIndexInner] <= directStorePacketInner &&
+            loadResultOutput.valid && loadResultReadyInput &&
+            resultSelectIndexInner==LQ_INDEX_W'(seqIndexInner);
         end
       end
     end

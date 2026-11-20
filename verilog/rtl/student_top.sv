@@ -66,9 +66,18 @@ module student_top #(
     data_transaction_t [1:0] responsePreviewTransaction;
     logic [1:0] responsePreviewSelect;
     dcache_line_request_output_t dataRequestInner;
-    dcache_line_response_input_t dataResponseInner;
+    dcache_line_response_input_t dataResponseInner, dataResponseToCacheInner;
+    logic [1:0] dataHeadTransactionInner;
+    // Same-edge ID bypass: all other fields come from the unchanged AXI reply.
+    assign dataResponseToCacheInner = '{valid:dataResponseInner.valid, address:dataResponseInner.address,
+      transaction:dataHeadTransactionInner, data:dataResponseInner.data};
+`ifndef SYNTHESIS
+    always @(posedge clock) if (!reset)
+      assert(dataResponseToCacheInner == dataResponseInner) else $fatal(1,"AXI read reply bundle changed");
+`endif
     dcache_word_response_input_t dataWordResponseInner;
     dcache_write_response_input_t dataWriteResponseInner, cacheWriteResponseInner;
+    logic [1:0] dataWriteHeadTransactionInner;
     logic dataReadReadyInner, dataWriteReadyInner, dataResponseReadyInner, dataWriteResponseReadyInner;
     logic exitReadyInner, exitValidInner;
     logic [31:0] exitValueInner;
@@ -135,13 +144,18 @@ module student_top #(
       size:dmemSizeInner, transaction:dmemTransactionInner};
     assign cacheWriteResponseInner = '{valid:dataWriteResponseInner.valid &&
       dataWriteResponseInner.address != AXI_EXIT_ADDR, address:dataWriteResponseInner.address,
-      transaction:dataWriteResponseInner.transaction};
+      transaction:dataWriteHeadTransactionInner};
+`ifndef SYNTHESIS
+    always @(posedge clock) if (!reset)
+      assert(cacheWriteResponseInner.transaction == dataWriteResponseInner.transaction)
+        else $fatal(1,"AXI write reply transaction changed");
+`endif
     rv32_dmem_backend u_dmem_backend (
       .clkInput(clock), .rstNInput(resetNInner), .cpuRequestInput(dcacheRequestInner),
       .cpuReqReadyOutput(dmemReadyInner), .cpuResponseOutput(dcacheResponseInner),
       .responsePreviewTransactionOutput(responsePreviewTransaction),.responsePreviewSelectOutput(responsePreviewSelect),
       .memRequestOutput(dataRequestInner), .memReadReadyInput(dataReadReadyInner),
-      .memWriteReadyInput(dataWriteReadyInner), .memResponseInput(dataResponseInner), .memWordResponseInput(dataWordResponseInner),
+      .memWriteReadyInput(dataWriteReadyInner), .memResponseInput(dataResponseToCacheInner), .memWordResponseInput(dataWordResponseInner),
       .memWriteResponseInput(cacheWriteResponseInner), .memRspReadyOutput(dataResponseReadyInner),
       .memWriteRspReadyOutput(dataWriteResponseReadyInner), .initializedOutput(unusedDmemInitializedInner),
       .exitReadyInput(exitReadyInner), .exitValidOutput(exitValidInner), .exitValueOutput(exitValueInner)
@@ -149,8 +163,8 @@ module student_top #(
     rv32_axi_data u_axi_data (
       .clkInput(clock), .rstNInput(resetNInner), .requestInput(dataRequestInner),
       .readReadyOutput(dataReadReadyInner), .writeReadyOutput(dataWriteReadyInner),
-      .responseOutput(dataResponseInner), .wordResponseOutput(dataWordResponseInner), .responseReadyInput(dataResponseReadyInner),
-      .writeResponseOutput(dataWriteResponseInner),
+      .responseOutput(dataResponseInner), .readHeadTransactionOutput(dataHeadTransactionInner), .wordResponseOutput(dataWordResponseInner), .responseReadyInput(dataResponseReadyInner),
+      .writeResponseOutput(dataWriteResponseInner), .writeHeadTransactionOutput(dataWriteHeadTransactionInner),
       .writeResponseReadyInput(dataWriteResponseReadyInner || dataWriteResponseInner.address == AXI_EXIT_ADDR),
       .exitValidInput(exitValidInner), .exitValueInput(exitValueInner), .exitReadyOutput(exitReadyInner),
       .masterOutput(dataMasterInner), .slaveInput(dataSlaveInner)

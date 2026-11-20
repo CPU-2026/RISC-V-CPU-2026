@@ -444,6 +444,18 @@ module rv32_dcache #(
     set_of(requestInner[REQUEST_W'(lookupCandidateInner)].request.address) :
     set_of(cpuRequestInput.address);
   assign idleOutput = rstNInput && countInner == 0 && !readValidInner && !prefetchPendingInner;
+  // Compare each old physical request's tag in parallel with its index
+  // decode. No tag/address snapshot and no new state on the synchronous read.
+  wire [WAYS-1:0] readHitWayInner;
+  for (genvar hw=0; hw<WAYS; hw++) begin : g_read_compare_way
+    wire [REQUEST_DEPTH-1:0] rowMatches;
+    for (genvar hr=0; hr<REQUEST_DEPTH; hr++) begin : g_read_compare_row
+      assign rowMatches[hr] = (readIndexInner==REQUEST_W'(hr)) &&
+        (metaRdataInner[hw][TAG_W-1:0] == requestInner[hr].request.address[31:OFFSET_W+INDEX_W]);
+    end
+    assign readHitWayInner[hw] = readValidInner && readWayMaskInner[hw] && (|rowMatches);
+  end
+
 
   // Allocation is not on the response/LSU-selection path. Keeping it separate
   // also makes the absence of a combinational request -> response bypass clear.
@@ -496,8 +508,7 @@ module rv32_dcache #(
       requestInner[firstInner].request.address == AXI_EXIT_ADDR && exitReadyInput;
     exitValueOutput = firstInner >= 0 ? requestInner[firstInner].request.writeData : 32'b0;
     for (int w = 0; w < WAYS; w++)
-      if (readValidInner && hitWayInner < 0 && readWayMaskInner[w] &&
-          metaRdataInner[w][TAG_W-1:0] == requestInner[readIndexInner].request.address[31:OFFSET_W+INDEX_W])
+      if (hitWayInner < 0 && readHitWayInner[w])
         hitWayInner = w;
     victimWayInner = select_victim(set_of(requestInner[readIndexInner].request.address));
     // One shared read-hit extractor. The eight request rows differ only in
@@ -719,13 +730,15 @@ module rv32_dcache #(
   // selection; form independent disjoint Fill and Store address terms instead
   // of a common priority-mux write-address result. No state or grant change.
   logic [INDEX_W-1:0] fillWriteAddressInner,storeWriteAddressInner;
+  // A granted Store is always the oldest demand. Select that row's payload
+  // in parallel with authorization; only the original grant enables a write.
   always_comb begin : prepare_bank_parallel_addresses
     fillWriteAddressInner={INDEX_W{1'b0}};
     storeWriteAddressInner={INDEX_W{1'b0}};
     if(rstNInput && fillBeatInner)
       fillWriteAddressInner=set_of(missesInner[fillMissInner].line);
     if(rstNInput && !fillBeatInner && storeInner>=0)
-      storeWriteAddressInner=set_of(requestInner[storeInner].request.address);
+      storeWriteAddressInner=set_of(requestInner[firstInner].request.address);
   end
   for(genvar addressWay=0;addressWay<WAYS;addressWay++)begin : g_mask_address_way
     for(genvar addressBank=0;addressBank<WORDS_PER_LINE;addressBank++)begin : g_mask_address_bank
@@ -778,21 +791,21 @@ module rv32_dcache #(
       end
     end else if (rstNInput && storeInner >= 0) begin
       way = storeHintFireInner ? int'(storeHintWayInner) :
-        readValidInner && int'(readIndexInner) == storeInner && hitWayInner >= 0 ?
-        hitWayInner : int'(requestInner[storeInner].way);
+        readValidInner && int'(readIndexInner) == firstInner && hitWayInner >= 0 ?
+        hitWayInner : int'(requestInner[firstInner].way);
       for (int i = 0; i < 4; i++) begin
-        globalByte = int'(requestInner[storeInner].request.address[OFFSET_W-1:0]) + i;
-        if (i < bytes_for_size(requestInner[storeInner].request.size) && requestInner[storeInner].request.writeStrobe[i]) begin
+        globalByte = int'(requestInner[firstInner].request.address[OFFSET_W-1:0]) + i;
+        if (i < bytes_for_size(requestInner[firstInner].request.size) && requestInner[firstInner].request.writeStrobe[i]) begin
           dataEnableBankInner[way][globalByte >> 2] = 1;
           dataWriteBankInner[way][globalByte >> 2] = 1;
           dataMaskBankInner[way][globalByte >> 2][globalByte & 3] = 1;
-          dataWdataBankInner[way][globalByte >> 2][(globalByte & 3)*8+:8] = requestInner[storeInner].request.writeData[i*8+:8];
+          dataWdataBankInner[way][globalByte >> 2][(globalByte & 3)*8+:8] = requestInner[firstInner].request.writeData[i*8+:8];
         end
       end
       metaEnableInner[way] = 1;
       metaWriteInner[way] = 1;
-      metaAddressInner[way] = set_of(requestInner[storeInner].request.address);
-      metaWdataInner = {1'b1, requestInner[storeInner].request.address[31:OFFSET_W+INDEX_W]};
+      metaAddressInner[way] = set_of(requestInner[firstInner].request.address);
+      metaWdataInner = {1'b1, requestInner[firstInner].request.address[31:OFFSET_W+INDEX_W]};
     end else if (rstNInput && (lookupInner >= 0 || acceptLookupInner)) begin
       for (int w = 0; w < WAYS; w++) begin
         metaEnableInner[w] = 1;
