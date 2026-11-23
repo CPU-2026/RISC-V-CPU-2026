@@ -33,7 +33,8 @@ module tb_cpu;
 
   logic imemRspReadyOutput, imemFlushOutput;
   rv32_pkg::icache_cpu_request_input_t imemCacheRequestOutput;
-  rv32_core #(.FETCH_WIDTH(1)) dut (.*);
+  rv32_core #(.FETCH_WIDTH(1)) dut (
+    .dmemStoreSetPreviewOutput(),.*);
   function automatic logic [31:0] instruction(input logic [31:0] pc);
     case (pc)
       0: return 32'h04000093;
@@ -200,7 +201,8 @@ module tb_lsu_capacity;
   data_memory_response_input_t dmemResponseInput = '0;
   logic [4:0] lqCountOutput, sqCountOutput;
 
-  rv32_lsu #(.LQ_DEPTH(16), .SQ_DEPTH(16)) dut (.*);
+  rv32_lsu #(.LQ_DEPTH(16), .SQ_DEPTH(16)) dut (
+    .storeHeadSetPreviewOutput(),.loadIdentityInput('0), .loadWinnerIdentityOutput(), .*);
 
   initial begin
     repeat (3) @(negedge clkInput);

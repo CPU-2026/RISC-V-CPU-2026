@@ -80,8 +80,12 @@ package rv32_pkg;
 `endif
   parameter int unsigned ROB_TAG_W    = $clog2(ROB_ENTRIES) + 1;
   parameter int unsigned PHY_TAG_W    = $clog2(PRF_ENTRIES);
-  parameter int unsigned LQ_ENTRIES   = 8;
-  parameter int unsigned SQ_ENTRIES   = 8;
+  parameter int unsigned LQ_ENTRIES   = 4;
+  parameter int unsigned SQ_ENTRIES   = 4;
+  // Physical queue identities are separate from the eight transport IDs.
+  localparam int unsigned SQ_SLOT_W = $clog2(SQ_ENTRIES);
+  localparam int unsigned LSQ_SLOT_W = ($clog2(LQ_ENTRIES) > SQ_SLOT_W) ?
+                                         $clog2(LQ_ENTRIES) : SQ_SLOT_W;
   function automatic int unsigned checkpoint_capacity(input int unsigned requiredEntries);
     int unsigned capacity;
     capacity = 1;
@@ -148,7 +152,7 @@ package rv32_pkg;
   // the ICache keeps CACHE_LINE_BYTES.
   parameter int unsigned DCACHE_LINE_BYTES = 32;
   parameter int unsigned DCACHE_LINE_BITS = DCACHE_LINE_BYTES << 3;
-  parameter int unsigned RAS_ENTRIES = 4;
+  parameter int unsigned RAS_ENTRIES = 3;
 
   localparam logic [31:0] HALT_INSN = 32'h0ff0_0513;
   localparam logic [6:0] OPCODE_LUI    = 7'b0110111;
@@ -622,7 +626,7 @@ package rv32_pkg;
     phy_tag_t oldPhysicalRegister;
     logic ready;
     logic isStore;
-    logic [2:0] storeQueueIndex;
+    logic [SQ_SLOT_W-1:0] storeQueueIndex;
     logic isHalt;
     logic hasException; // Compatibility input, not stored/consumed by the ROB.
     logic [31:0] predictedProgramCounter;
@@ -651,7 +655,7 @@ package rv32_pkg;
     logic [4:0] architecturalRegister;
     phy_tag_t newPhysicalRegister;
     phy_tag_t oldPhysicalRegister;
-    logic [2:0] storeQueueIndex;
+    logic [SQ_SLOT_W-1:0] storeQueueIndex;
     logic isHalt;
     logic hasException; // Compatibility output, always zero.
   } rob_commit_output_t;
@@ -675,11 +679,17 @@ package rv32_pkg;
   typedef struct packed {
     rob_tag_t robTag;
     logic [31:0] programCounter;
-    logic [6:0] opcode;
-    logic [4:0] rd;
-    logic [2:0] funct3;
-    logic [4:0] rs1;
+    logic [1:0] rasAction;  // {return, call}; applied only after original replay eligibility.
   } rob_replay_ras_t;
+
+  function automatic logic [1:0] ras_replay_actions(input logic [19:0] insn);
+    logic ind, linkRd, linkRs;
+    ind = insn[6:0] == OPCODE_JALR && insn[14:12] == 3'b000;
+    linkRd = {insn[11:10],insn[8:7]} == 4'b0001;
+    linkRs = {insn[19:18],insn[16:15]} == 4'b0001;
+    return {ind && linkRs && insn[11:7] != insn[19:15],
+            linkRd && (insn[6:0] == OPCODE_JAL || ind)};
+  endfunction
 
   typedef struct packed {
     logic willCommit;

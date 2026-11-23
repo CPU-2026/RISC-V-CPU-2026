@@ -35,7 +35,7 @@ module rv32_bpu_ras #(
   logic archWriteInner;
   logic replayActiveInner, replayActiveNext;
   logic replayCallInner, replayRetInner;
-  logic replayRdLinkInner, replayRs1LinkInner;
+  // Replay opcode/link classification is supplied by the physical ROB row.
   integer normalIndexInner, recoveryIndexInner, laneInner, windowIndexInner;
   rob_tag_t replayTagInner;
   integer seqIndexInner;
@@ -63,10 +63,10 @@ module rv32_bpu_ras #(
       wire inWindow=int'(recoveryInput.offset)+i<ROB_ENTRIES && int'(recoveryInput.offset)+i<int'(recoveryInput.liveCount);
       wire tagEqual=item.robTag==expected;
       wire eligible=initialOpen && !(|(stop & 8'((1<<i)-1))) && inWindow && tagEqual;
-      wire jalr=item.opcode==OPCODE_JALR && item.funct3==3'b000;
+      // Classification is speculatively prepared; eligibility is unchanged.
       assign stop[i]=inWindow && (!tagEqual || expected==recoveryInput.squashTag);
-      assign push[i]=eligible && (item.opcode==OPCODE_JAL || jalr) && (item.rd==5'd1 || item.rd==5'd5);
-      assign pop[i]=eligible && jalr && (item.rs1==5'd1 || item.rs1==5'd5) && item.rd!=item.rs1;
+      assign push[i]=eligible && item.rasAction[0];
+      assign pop[i]=eligible && item.rasAction[1];
       assign linkPc[i]=item.programCounter+32'd4;
     end
     assign replayStillOpen=initialOpen && !(|stop);
@@ -163,8 +163,6 @@ module rv32_bpu_ras #(
     replayTagInner = '0;
     replayCallInner = 1'b0;
     replayRetInner = 1'b0;
-    replayRdLinkInner = 1'b0;
-    replayRs1LinkInner = 1'b0;
     windowIndexInner = 0;
     if (recoveryInput.active) begin
       if (recoveryInput.first) begin
@@ -184,16 +182,8 @@ module rv32_bpu_ras #(
         if (replayActiveNext && windowIndexInner < ROB_ENTRIES &&
             windowIndexInner < int'(recoveryInput.liveCount)) begin
           if (robInput[0].replayRasWindow[laneInner].robTag == replayTagInner) begin
-            replayRdLinkInner = (robInput[0].replayRasWindow[laneInner].rd == 5'd1) ||
-                              (robInput[0].replayRasWindow[laneInner].rd == 5'd5);
-            replayRs1LinkInner = (robInput[0].replayRasWindow[laneInner].rs1 == 5'd1) ||
-                               (robInput[0].replayRasWindow[laneInner].rs1 == 5'd5);
-            replayCallInner = ((robInput[0].replayRasWindow[laneInner].opcode == OPCODE_JAL) ||
-                            ((robInput[0].replayRasWindow[laneInner].opcode == OPCODE_JALR) &&
-                             (robInput[0].replayRasWindow[laneInner].funct3 == 3'b000))) && replayRdLinkInner;
-            replayRetInner = (robInput[0].replayRasWindow[laneInner].opcode == OPCODE_JALR) &&
-                           (robInput[0].replayRasWindow[laneInner].funct3 == 3'b000) && replayRs1LinkInner &&
-              robInput[0].replayRasWindow[laneInner].rd != robInput[0].replayRasWindow[laneInner].rs1;
+            replayCallInner = robInput[0].replayRasWindow[laneInner].rasAction[0];
+            replayRetInner = robInput[0].replayRasWindow[laneInner].rasAction[1];
             if (replayRetInner && (specRasTopNext != '0))
               specRasTopNext = specRasTopNext - RAS_TOP_W'(1);
             if (replayCallInner && specRasTopNext < RAS_TOP_W'(RAS_STORAGE_ENTRIES)) begin

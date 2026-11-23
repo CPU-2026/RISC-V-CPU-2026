@@ -62,7 +62,7 @@ module rv32_icache #(
   logic headReadReadyInner, responseFireInner, requestFireInner;
   logic refillFoundInner, fillFireInner;
   logic [SLOT_W-1:0] refillSlotInner;
-  logic sramEnableInner;
+  logic sramEnableInner, sramWriteModeInner;
   logic [INDEX_W-1:0] sramAddressInner;
   logic [CACHE_LINE_BITS-1:0] sramRdataInner;
   logic [CACHE_LINE_BITS-1:0] wayRdataInner [WAYS];
@@ -244,9 +244,12 @@ module rv32_icache #(
   assign sramAddressInner = fillFireInner ? memResponseInput.address[INDEX_W+OFFSET_W-1:OFFSET_W] :
     (freezeInput && readValidInner) ? requestAddressInner[readIndexInner][INDEX_W+OFFSET_W-1:OFFSET_W] :
     cpuRequestInput.address[INDEX_W+OFFSET_W-1:OFFSET_W];
+  // CE owns access. Inactive WE can differ from the queue handshake;
+  // a frozen pending synchronous read must still select read mode.
+  assign sramWriteModeInner = refillFoundInner && !(freezeInput && readValidInner);
   for (genvar way = 0; way < WAYS; way++) begin : g_way
     sram_fakeram #(.DEPTH(SETS), .WIDTH(CACHE_LINE_BITS), .WRITE_GRANULARITY(32)) u_data (
-      .clk(clkInput), .en(sramEnableInner), .we(fillFireInner && fillWayInner == WAY_W'(way)),
+      .clk(clkInput), .en(sramEnableInner), .we(sramWriteModeInner && fillWayInner == WAY_W'(way)),
       .addr(sramAddressInner), .wdata(memResponseInput.data),
       .wmask({(CACHE_LINE_BYTES >> 2){1'b1}}), .rdata(wayRdataInner[way])
     );

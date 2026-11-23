@@ -87,13 +87,14 @@ module dual_commit_tb;
   logic memoryReady;
   data_transaction_t transaction;
   logic [3:0] loads, queuedStores;
-  rv32_lsu #(.COMMIT_WIDTH(2), .WRITEBACK_PORTS(2)) lsu (
+  rv32_lsu #(.LQ_DEPTH(8), .SQ_DEPTH(8), .COMMIT_WIDTH(2), .WRITEBACK_PORTS(2)) lsu (
+    .storeHeadSetPreviewOutput(),
     .clkInput(clk), .rstNInput(rst), .coreStoppedInput(1'b0), .flushInfoInput(flush),
     .loadAllocationInput(lqAlloc), .loadAllocReadyOutput(lqReady), .loadAllocIndexOutput(lqIndex),
     .storeAllocationInput(sqAlloc), .storeAllocReadyOutput(sqReady), .storeAllocIndexOutput(sqIndex),
     .storeDataInput(storeData), .storeDataIndexInput(storeDataIndex),
     .addressInput(addressPort), .addressIndexInput(addressIndex), .writebackInput(wb),
-    .loadResultOutput(loadResult), .loadResultReadyInput(1'b1), .robRetireInput(retirePort),
+    .loadResultOutput(loadResult), .loadResultReadyInput(1'b1), .loadIdentityInput('0), .loadWinnerIdentityOutput(), .robRetireInput(retirePort),
     .storeCompleteOutput(storeCompletion), .storeCommitInput(storePort), .storeCommitIndexInput(storeIndex),
     .storeCommitReadyOutput(storeReady), .storeRetirementOutput(storePayload),
     .dmemRequestOutput(request), .dmemReqReadyInput(memoryReady), .dmemResponseInput(response),

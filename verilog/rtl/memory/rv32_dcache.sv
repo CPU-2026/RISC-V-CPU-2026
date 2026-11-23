@@ -9,10 +9,12 @@ module rv32_dcache #(
   parameter int unsigned WAYS = rv32_pkg::DCACHE_WAYS,
   parameter bit EARLY_WORD_RETURN = 1'b0,
   parameter int unsigned STORE_LOCATION_ENTRIES = 4,
-  parameter bit LOAD_PREFETCH = 1'b0
+  parameter bit LOAD_PREFETCH = 1'b0,
+  parameter bit STORE_SET_PREVIEW = 1'b0
 ) (
   input logic clkInput, rstNInput,
   input rv32_pkg::dcache_cpu_request_input_t cpuRequestInput,
+  input logic [$clog2(rv32_pkg::DCACHE_SETS)-1:0] storeSetPreviewInput,
   output logic cpuReqReadyOutput,
   output rv32_pkg::dcache_cpu_response_output_t cpuResponseOutput,
   output rv32_pkg::data_transaction_t [1:0] responsePreviewTransactionOutput,
@@ -87,6 +89,7 @@ module rv32_dcache #(
   logic [INDEX_W-1:0] dataAddressBankInner [WAYS][WORDS_PER_LINE];
   logic [INDEX_W-1:0] metaAddressInner [WAYS];
   logic [INDEX_W-1:0] lookupAddressInner;
+  logic [REQUEST_DEPTH-1:0] lookupWinnerInner;
 `ifndef SYNTHESIS
   // Logical grant address retained for existing read-only test probes. It is
   // not a hardware broadcast: every enabled physical port is checked below.
@@ -116,6 +119,19 @@ module rv32_dcache #(
   logic [REQUEST_DEPTH-1:0] demandLookupMaskInner;
   logic [2:0] prefetchMissCountInner;
   logic prefetchStoreConflictInner;
+  // Only an actually accepted Store consumes this early data-only set hint.
+  // Standalone or differently sized caches retain the original CPU-address path.
+  wire [INDEX_W-1:0] storeCancelSetInner;
+  if (STORE_SET_PREVIEW && SETS == DCACHE_SETS) begin : g_store_set_preview
+    assign storeCancelSetInner = INDEX_W'(storeSetPreviewInput);
+  end else begin : g_store_set_original
+    assign storeCancelSetInner = set_of(cpuRequestInput.address);
+  end
+`ifndef SYNTHESIS
+  always @(posedge clkInput) if (rstNInput && acceptInner && cpuRequestInput.write)
+    assert (storeCancelSetInner == set_of(cpuRequestInput.address))
+      else $fatal(1,"DCache Store preview boundary mismatch");
+`endif
   for(genvar p=0;p<REQUEST_DEPTH;p++)begin : g_prefetch_type
     assign prefetchMaskInner[p]=requestInner[p].active && requestInner[p].prefetch;
   end
@@ -147,7 +163,7 @@ module rv32_dcache #(
               set_of(requestInner[st].request.address)==set_of(requestInner[row].request.address))
             prefetchAbortInner[row]=1'b1;
         if(acceptInner && cpuRequestInput.write &&
-            set_of(cpuRequestInput.address)==set_of(requestInner[row].request.address))
+            storeCancelSetInner==set_of(requestInner[row].request.address))
           prefetchAbortInner[row]=1'b1;
       end
     end
@@ -328,6 +344,28 @@ module rv32_dcache #(
       if (mask[i] && !prior) oldest_request = i;
     end
   endfunction
+  // Same per-row age test as oldest_request. A higher eligible row
+  // wins a tie, matching the original loop's last assignment.
+  function automatic logic [REQUEST_DEPTH-1:0] lookup_winner(input logic [REQUEST_DEPTH-1:0] mask);
+    logic [REQUEST_DEPTH-1:0] eligible;
+    logic prior;
+    eligible = REQUEST_DEPTH'(0);
+    for (int row = 0; row < REQUEST_DEPTH; row++) begin
+      prior = 1'b0;
+      for (int peer = 0; peer < REQUEST_DEPTH; peer++)
+        if (mask[peer] && olderInner[peer][row]) prior = 1'b1;
+      if (mask[row] && !prior) eligible[row] = 1'b1;
+    end
+    for (int row = 0; row < REQUEST_DEPTH; row++)
+      lookup_winner[row] = eligible[row] && !(|(eligible >> (row + 1)));
+  endfunction
+  function automatic int lookup_index(input logic [REQUEST_DEPTH-1:0] winner);
+    logic [REQUEST_W-1:0] indexBits;
+    indexBits = REQUEST_W'(0);
+    for (int row = 0; row < REQUEST_DEPTH; row++)
+      indexBits |= REQUEST_W'(row) & {REQUEST_W{winner[row]}};
+    return (|winner) ? int'(indexBits) : -1;
+  endfunction
   function automatic int oldest_miss(input logic [3:0] mask);
     logic [REQUEST_DEPTH-1:0] owners;
     int owner;
@@ -440,9 +478,15 @@ module rv32_dcache #(
   // An enabled queued read always has a candidate; an enabled accepted read
   // has none (read edge available, no fill or Store). Disabled SRAM addresses
   // are unobserved. Keep all enables, arbitration and state updates unchanged.
-  assign lookupAddressInner=lookupCandidateInner >= 0 ?
-    set_of(requestInner[REQUEST_W'(lookupCandidateInner)].request.address) :
-    set_of(cpuRequestInput.address);
+  // The set address and the control slot index share the exact winner;
+  // the SRAM address need not wait for a binary encode/decode round trip.
+  always_comb begin : lookup_set
+    logic [INDEX_W-1:0] selectedSet;
+    selectedSet = INDEX_W'(0);
+    for (int row = 0; row < REQUEST_DEPTH; row++)
+      selectedSet |= set_of(requestInner[row].request.address) & {INDEX_W{lookupWinnerInner[row]}};
+    lookupAddressInner = (|lookupWinnerInner) ? selectedSet : set_of(cpuRequestInput.address);
+  end
   assign idleOutput = rstNInput && countInner == 0 && !readValidInner && !prefetchPendingInner;
   // Compare each old physical request's tag in parallel with its index
   // decode. No tag/address snapshot and no new state on the synchronous read.
@@ -664,7 +708,8 @@ module rv32_dcache #(
     demandLookupMaskInner=candidates & ~prefetchMaskInner;
     if(|demandLookupMaskInner)candidates=demandLookupMaskInner;
     else if(cpuRequestInput.valid)candidates='0;
-    lookupCandidateInner = oldest_request(candidates);
+    lookupWinnerInner = lookup_winner(candidates);
+    lookupCandidateInner = lookup_index(lookupWinnerInner);
     lookupInner = (!readValidInner || continueHit) && !fillBeatInner && storeInner < 0 ? lookupCandidateInner : -1;
     // Only lookupInner authorizes a read. With no candidate the truncated -1
     // selects a legal, inactive request row; its address is never consumed.
@@ -836,6 +881,45 @@ module rv32_dcache #(
 `endif
   end
 
+  // Use the existing synchronous read edge. Sample both halves of the OLD
+  // valid table at the same low six set bits, then select the captured half.
+  // The port arbitration and the set actually sent to SRAM are unchanged.
+  if (SETS == 128) begin : g_read_mask_banks
+    logic [WAYS-1:0] readWayMaskLowInner, readWayMaskHighInner;
+    logic readWayMaskSetHiInner;
+    assign readWayMaskInner = readWayMaskSetHiInner ? readWayMaskHighInner : readWayMaskLowInner;
+    always_ff @(posedge clkInput or negedge rstNInput) begin
+      if (!rstNInput) begin
+        readWayMaskLowInner <= {WAYS{1'b0}};
+        readWayMaskHighInner <= {WAYS{1'b0}};
+        readWayMaskSetHiInner <= 1'b0;
+      end else if (acceptLookupInner) begin
+        for (int w = 0; w < WAYS; w++) begin
+          readWayMaskLowInner[w] <= validInner[{1'b0, 6'(set_of(cpuRequestInput.address))}][w];
+          readWayMaskHighInner[w] <= validInner[{1'b1, 6'(set_of(cpuRequestInput.address))}][w];
+        end
+        readWayMaskSetHiInner <= cpuRequestInput.address[OFFSET_W+6];
+      end else if (lookupInner >= 0) begin
+        for (int w = 0; w < WAYS; w++) begin
+          readWayMaskLowInner[w] <= validInner[{1'b0, 6'(set_of(requestInner[lookupInner].request.address))}][w];
+          readWayMaskHighInner[w] <= validInner[{1'b1, 6'(set_of(requestInner[lookupInner].request.address))}][w];
+        end
+        readWayMaskSetHiInner <= requestInner[lookupInner].request.address[OFFSET_W+6];
+      end
+    end
+  end else begin : g_read_mask_original
+    always_ff @(posedge clkInput or negedge rstNInput) begin
+      if (!rstNInput) readWayMaskInner <= 0;
+      else if (acceptLookupInner) begin
+        for (int w = 0; w < WAYS; w++)
+          readWayMaskInner[w] <= validInner[set_of(cpuRequestInput.address)][w];
+      end else if (lookupInner >= 0) begin
+        for (int w = 0; w < WAYS; w++)
+          readWayMaskInner[w] <= validInner[set_of(requestInner[lookupInner].request.address)][w];
+      end
+    end
+  end
+
   always_ff @(posedge clkInput or negedge rstNInput) begin
     if (!rstNInput) begin
       countInner <= 0;
@@ -844,7 +928,6 @@ module rv32_dcache #(
       readValidInner <= 0;
       readLookupAddressInner <= '0;
       readLookupSizeInner <= '0;
-      readWayMaskInner <= 0;
       for (int i = 0; i < REQUEST_DEPTH; i++) begin
         requestInner[i] <= '0;
         olderInner[i] <= 0;
@@ -863,16 +946,12 @@ module rv32_dcache #(
         readIndexInner <= REQUEST_W'(allocationInner);
         readLookupAddressInner <= cpuRequestInput.address[OFFSET_W-1:0];
         readLookupSizeInner <= cpuRequestInput.size;
-        for (int w = 0; w < WAYS; w++)
-          readWayMaskInner[w] <= validInner[set_of(cpuRequestInput.address)][w];
       end else if (lookupInner >= 0) begin
         readIndexInner <= REQUEST_W'(lookupInner);
         // Candidate index is independent of the late grant qualification;
         // lookupInner>=0 guarantees it names this same old active request.
         readLookupAddressInner <= requestInner[REQUEST_W'(lookupCandidateInner)].request.address[OFFSET_W-1:0];
         readLookupSizeInner <= requestInner[REQUEST_W'(lookupCandidateInner)].request.size;
-        for (int w = 0; w < WAYS; w++)
-          readWayMaskInner[w] <= validInner[set_of(requestInner[lookupInner].request.address)][w];
       end
       for (int i = 0; i < REQUEST_DEPTH; i++) begin
         if (i == allocationInner) begin

@@ -38,13 +38,15 @@ module tb_lsu_forward_narrow;
   logic [31:0] digest = 32'h811c9dc5;
   int unsigned randomState = 32'h126fa937;
 
-  rv32_lsu #(.TAGGED_DMEM(1'b1)) dut (
+  // The FIFO oracle below deliberately exercises an eight-slot wrap.
+  rv32_lsu #(.LQ_DEPTH(8), .SQ_DEPTH(8), .TAGGED_DMEM(1'b1)) dut (
+    .storeHeadSetPreviewOutput(),
     .clkInput(clk), .rstNInput(rstN), .coreStoppedInput(1'b0), .flushInfoInput('0),
     .loadAllocationInput(loadAlloc), .loadAllocReadyOutput(loadAllocReady), .loadAllocIndexOutput(loadAllocIndex),
     .storeAllocationInput(storeAlloc), .storeAllocReadyOutput(storeAllocReady), .storeAllocIndexOutput(storeAllocIndex),
     .storeDataInput(storeData), .storeDataIndexInput(storeDataIndex),
     .addressInput(addressPort), .addressIndexInput(addressIndex), .writebackInput('0),
-    .loadResultOutput(loadResult), .loadResultReadyInput(1'b0), .robRetireInput(retire),
+    .loadResultOutput(loadResult), .loadResultReadyInput(1'b0), .loadIdentityInput('0), .loadWinnerIdentityOutput(), .robRetireInput(retire),
     .storeCompleteOutput(), .storeCommitInput(storeCommit), .storeCommitIndexInput(commitIndex),
     .storeCommitReadyOutput(commitReady), .storeRetirementOutput(),
     .dmemRequestOutput(request), .dmemReqReadyInput(memoryReady), .dmemResponseInput('0),

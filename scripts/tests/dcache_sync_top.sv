@@ -54,6 +54,7 @@ module dcache_sync_top (
   assign readConsume = directMemory ? directReadConsume : cacheReadConsume;
   assign writeConsume = directMemory ? directWriteConsume : cacheWriteConsume;
   rv32_dcache cache (
+    .storeSetPreviewInput('0),
     .clkInput(clock), .rstNInput(!reset), .cpuRequestInput(cpuRequest), .cpuReqReadyOutput(cpuReady),
     .cpuResponseOutput(cpuResponse), .memRequestOutput(cacheRequest), .memReadReadyInput(readReady),
     .memWriteReadyInput(writeReady), .memResponseInput(directMemory ? dcache_line_response_input_t'('0) : response),

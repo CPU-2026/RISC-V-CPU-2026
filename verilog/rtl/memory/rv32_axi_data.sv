@@ -17,7 +17,8 @@ module rv32_axi_data (
   output logic exitReadyOutput,
   output rv32_pkg::axi_master_t masterOutput,
   input rv32_pkg::axi_slave_t slaveInput,
-  output logic [1:0] readHeadTransactionOutput, writeHeadTransactionOutput
+  output logic [1:0] readHeadTransactionOutput, writeHeadTransactionOutput,
+  output logic [31:0] writeHeadAddressOutput
 );
   import rv32_pkg::*;
   localparam int DEPTH = 8;
@@ -56,8 +57,10 @@ module rv32_axi_data (
   logic [SLOT_W-1:0] readHeadOwnerInner, writeHeadOwnerInner;
   logic [1:0] readHeadTxnInner;
   logic [1:0] writeHeadTxnInner;
+  logic [31:0] writeHeadAddressInner;
   assign readHeadTransactionOutput=readHeadTxnInner;
   assign writeHeadTransactionOutput=writeHeadTxnInner;
+  assign writeHeadAddressOutput=writeHeadAddressInner;
   // Mirror the ring head at its update edge, avoiding order->descriptor
   // indirection in every completion/payload consumer, including empty state.
 /* verilator lint_off UNUSEDSIGNAL */   wire [SLOT_W-1:0] readHeadSlotInner = SLOT_W'(4'(readHeadOwnerInner)); /* verilator lint_on UNUSEDSIGNAL */
@@ -346,10 +349,26 @@ module rv32_axi_data (
     else if (popWriteInner)
       writeHeadTxnInner <= entriesInner[followingWriteOwnerInner].transaction;
   end
+  // Mirror the selected descriptor's complete address at the same edge as
+  // the write head, including descriptor writes while the queue is empty.
+  // The write-first precedence matches the entriesInner nonblocking updates.
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) writeHeadAddressInner <= '0;
+    else if (writeBecomesHeadInner ||
+             (pushWriteInner && SLOT_W'(writeSlotInner) == writeHeadTxnNextOwnerInner))
+      writeHeadAddressInner <= exitValidInput ? AXI_EXIT_ADDR : requestInput.writeAddress;
+    else if (pushReadInner && SLOT_W'(readSlotInner) == writeHeadTxnNextOwnerInner)
+      writeHeadAddressInner <= requestInput.readAddress;
+    else if (popWriteInner)
+      writeHeadAddressInner <= entriesInner[followingWriteOwnerInner].address;
+  end
 `ifndef SYNTHESIS
-  always @(posedge clkInput) if (rstNInput)
+  always @(posedge clkInput) if (rstNInput) begin
     assert (writeHeadTxnInner == entriesInner[writeHeadSlotInner].transaction)
       else $fatal(1, "AXI write-head transaction differs from original descriptor");
+    assert (writeHeadAddressInner == entriesInner[writeHeadSlotInner].address)
+      else $fatal(1, "AXI write-head address differs from original descriptor");
+  end
 `endif
   // Payload state is held by the SRAM helper; all descriptor FSMs are unchanged.
 `ifndef SYNTHESIS

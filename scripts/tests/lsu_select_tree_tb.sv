@@ -19,13 +19,14 @@ module tb_lsu_select_tree #(
   logic [LQ_DEPTH-1:0] eligible, rowValid, addressReady, sent, resultReady;
   logic [ROB_TAG_W+INDEX_W:0] selected;
 
-  rv32_lsu #(.LQ_DEPTH(LQ_DEPTH)) dut (
+  rv32_lsu #(.LQ_DEPTH(LQ_DEPTH), .SQ_DEPTH(8)) dut (
+    .storeHeadSetPreviewOutput(),
     .clkInput(clk), .rstNInput(resetN), .coreStoppedInput(1'b0), .flushInfoInput(flush),
     .loadAllocationInput('0), .loadAllocReadyOutput(), .loadAllocIndexOutput(),
     .storeAllocationInput('0), .storeAllocReadyOutput(), .storeAllocIndexOutput(),
     .storeDataInput(storeData), .storeDataIndexInput(storeDataIndex),
     .addressInput('0), .addressIndexInput('0), .writebackInput(wb),
-    .loadResultOutput(), .loadResultReadyInput(1'b0), .robRetireInput('0),
+    .loadResultOutput(), .loadResultReadyInput(1'b0), .loadIdentityInput('0), .loadWinnerIdentityOutput(), .robRetireInput('0),
     .storeCompleteOutput(), .storeCommitInput('0), .storeCommitIndexInput('0),
     .storeCommitReadyOutput(), .storeRetirementOutput(),
     .dmemRequestOutput(request), .dmemReqReadyInput(1'b0), .dmemResponseInput('0),

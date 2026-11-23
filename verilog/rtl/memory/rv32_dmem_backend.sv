@@ -5,6 +5,7 @@ module rv32_dmem_backend (
   input logic clkInput,
   input logic rstNInput,
   input rv32_pkg::dcache_cpu_request_input_t cpuRequestInput,
+  input logic [$clog2(rv32_pkg::DCACHE_SETS)-1:0] storeSetPreviewInput,
   output logic cpuReqReadyOutput,
   output rv32_pkg::dcache_cpu_response_output_t cpuResponseOutput,
   output rv32_pkg::data_transaction_t [1:0] responsePreviewTransactionOutput,
@@ -22,9 +23,10 @@ module rv32_dmem_backend (
   output logic [31:0] exitValueOutput
 );
   logic unusedIdleInner;
-  rv32_dcache #(.SETS(128),.EARLY_WORD_RETURN(1'b1),.LOAD_PREFETCH(1'b1)) cache (
+  rv32_dcache #(.SETS(128),.EARLY_WORD_RETURN(1'b1),.LOAD_PREFETCH(1'b1),.STORE_SET_PREVIEW(1'b1)) cache (
     .clkInput(clkInput), .rstNInput(rstNInput),
     .cpuRequestInput(cpuRequestInput), .cpuReqReadyOutput(cpuReqReadyOutput),
+    .storeSetPreviewInput(storeSetPreviewInput),
     .cpuResponseOutput(cpuResponseOutput), .memRequestOutput(memRequestOutput),
     .responsePreviewTransactionOutput,.responsePreviewSelectOutput,
     .memReadReadyInput(memReadReadyInput), .memWriteReadyInput(memWriteReadyInput),

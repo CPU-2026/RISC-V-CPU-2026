@@ -43,6 +43,8 @@ module rv32_lsu #(
 
   output rv32_pkg::load_result_output_t loadResultOutput,
   input  logic                   loadResultReadyInput,
+  input logic [(1<<rv32_pkg::ROB_TAG_W)-1:0] loadIdentityInput,
+  output logic loadWinnerIdentityOutput,
   input  rv32_pkg::rob_retirement_input_t [COMMIT_WIDTH-1:0] robRetireInput,
 
   output rv32_pkg::store_completion_output_t storeCompleteOutput,
@@ -53,6 +55,8 @@ module rv32_lsu #(
   // ROB-head payload, independent of the older Store selected for memory.
   output rv32_pkg::data_memory_request_output_t [COMMIT_WIDTH-1:0] storeRetirementOutput,
 
+  // Old SQ head set is a data-only hint; request/grant is unchanged.
+  output logic [$clog2(rv32_pkg::DCACHE_SETS)-1:0] storeHeadSetPreviewOutput,
   output rv32_pkg::data_memory_request_output_t dmemRequestOutput,
   input  logic                   dmemReqReadyInput,
   input  rv32_pkg::data_memory_response_input_t dmemResponseInput,
@@ -85,14 +89,19 @@ module rv32_lsu #(
   localparam int unsigned LQ_INDEX_W = $clog2(LQ_DEPTH);
   localparam int unsigned SQ_INDEX_W = $clog2(SQ_DEPTH);
 
+  // The shared AGU still carries every SQ index. Keep the full address
+  // identity for qualification; the narrow alias is only used for LQ arrays.
+  wire [LQ_INDEX_W-1:0] loadAddressIndexInner = LQ_INDEX_W'(addressIndexInput);
+  wire loadAddressInRangeInner = int'(addressIndexInput) < LQ_DEPTH;
+
   // Redundant facts describe the SAME OLD LQ state as the original fields.
   // Their D inputs replay the original NBA writer order, not last-cycle facts.
   logic [LQ_DEPTH-1:0] loadRequestBaseInner, loadInsertableInner, loadPendingAddressInner;
   logic [LQ_DEPTH-1:0] loadRequestBaseNextInner, loadInsertableNextInner, loadPendingAddressNextInner;
   rob_tag_t [LQ_DEPTH-1:0] summaryTagNextInner;
   wire [LQ_DEPTH-1:0][LQ_DEPTH-1:0] loadPairOlderCachedInner;
-  wire loadSummaryTagEventInner=addressInput.valid && !addressInput.isStore &&
-    lqTagInner[addressIndexInput]==addressInput.robTag &&
+  wire loadSummaryTagEventInner=addressInput.valid && !addressInput.isStore && loadAddressInRangeInner &&
+    lqTagInner[loadAddressIndexInner]==addressInput.robTag &&
     (!flushInfoInput.valid || rob_is_older(addressInput.robTag,flushInfoInput.robTag));
   logic lqValidInner [LQ_DEPTH];
   rob_tag_t lqTagInner [LQ_DEPTH];
@@ -353,9 +362,9 @@ module rv32_lsu #(
   // Preserve the old ready-row candidate even when the new address forwards.
   // No event, flush/identity rejection, or suppressed insertion uses baseTree.
   // I=0 makes the inserted tree byte-identical to base, even for no winner.
-  assign loadSelectWinnerInner=loadSummaryTagEventInner && loadInsertableInner[addressIndexInput] &&
-    (lqBroadcastedInner[addressIndexInput] || !addressedForwardValidInner) ?
-    loadInsertWinnerInner[addressIndexInput] : loadInsertBaseWinnerInner;
+  assign loadSelectWinnerInner=loadSummaryTagEventInner && loadInsertableInner[loadAddressIndexInner] &&
+    (lqBroadcastedInner[loadAddressIndexInner] || !addressedForwardValidInner) ?
+    loadInsertWinnerInner[loadAddressIndexInner] : loadInsertBaseWinnerInner;
 `ifndef SYNTHESIS
   always_comb begin
     assert(loadSelectWinnerInner==select_oldest_load(loadSelectCandidatesInner,loadSelectTagsInner))
@@ -366,7 +375,7 @@ module rv32_lsu #(
   assign loadSelectIndexInner = loadSelectWinnerInner.index;
   assign loadSelectTagInner = loadSelectWinnerInner.tag;
   // P includes OLD validity, preserving even row0 inactive payload selection.
-  assign loadRequestUsesAddressInner = loadSummaryTagEventInner && loadPendingAddressInner[addressIndexInput] &&
+  assign loadRequestUsesAddressInner = loadSummaryTagEventInner && loadPendingAddressInner[loadAddressIndexInner] &&
     addressIndexInput == $bits(addressIndexInput)'(loadSelectIndexInner);
   assign loadSelectAddressInner = loadRequestUsesAddressInner ?
     addressInput.address : lqAddressInner[loadSelectIndexInner];
@@ -379,13 +388,20 @@ module rv32_lsu #(
   assign resultSelectFoundInner = resultSelectWinnerInner.valid;
   assign resultSelectIndexInner = resultSelectWinnerInner.index;
   assign resultSelectTagInner = resultSelectWinnerInner.tag;
+  // ROB identity is not an eligibility input to the result tournament.
+  // Read every old-row identity before the chosen row is available.
+  logic [LQ_DEPTH-1:0] resultRowIdentity;
+  for(genvar row=0;row<LQ_DEPTH;row++)begin : g_result_row_identity
+    assign resultRowIdentity[row]=loadIdentityInput[lqTagInner[row]];
+  end
+  assign loadWinnerIdentityOutput=resultRowIdentity[resultSelectIndexInner];
 
   // Normal address results name an existing reserved row. The standalone LSU
   // interface also permits a matching same-cycle allocation/address pair;
   // preserve that priority without authenticating an old result as a new row.
   generate if (RENAME_WIDTH != 4) begin : g_legacy_address_match
   assign loadAddressMatchInner =
-    (lqValidInner[addressIndexInput] && lqTagInner[addressIndexInput] == addressInput.robTag) ||
+    (loadAddressInRangeInner && lqValidInner[loadAddressIndexInner] && lqTagInner[loadAddressIndexInner] == addressInput.robTag) ||
     (loadAllocationInput.valid && loadAllocReadyOutput &&
      addressIndexInput == $bits(addressIndexInput)'(loadAllocIndexOutput) &&
       loadAllocationInput.robTag == addressInput.robTag) ||
@@ -401,7 +417,7 @@ module rv32_lsu #(
        storeAllocationSecondInput.robTag == addressInput.robTag);
   end else begin : g_four_address_match
     always_comb begin
-      loadAddressMatchInner=lqValidInner[addressIndexInput] && lqTagInner[addressIndexInput]==addressInput.robTag;
+      loadAddressMatchInner=loadAddressInRangeInner && lqValidInner[loadAddressIndexInner] && lqTagInner[loadAddressIndexInner]==addressInput.robTag;
       storeAddressMatchInner=sqValidInner[addressIndexInput] && !sqCommittedInner[addressIndexInput] &&
         sqTagInner[addressIndexInput]==addressInput.robTag;
       for (int lane=0;lane<4;lane++) begin
@@ -416,6 +432,14 @@ module rv32_lsu #(
   end endgenerate
 
   assign sqHeadIndexInner = sqHeadSeqInner[SQ_INDEX_W-1:0];
+  assign storeHeadSetPreviewOutput =
+    sqAddressInner[sqHeadIndexInner][$clog2(DCACHE_LINE_BYTES)+:$clog2(DCACHE_SETS)];
+`ifndef SYNTHESIS
+  always @(posedge clkInput) if (rstNInput && dmemRequestOutput.valid && dmemRequestOutput.write)
+    assert (storeHeadSetPreviewOutput ==
+      dmemRequestOutput.address[$clog2(DCACHE_LINE_BYTES)+:$clog2(DCACHE_SETS)])
+      else $fatal(1,"LSU Store preview boundary mismatch");
+`endif
   for (genvar lane = 0; lane < COMMIT_WIDTH; lane++) begin : g_store_commit
     assign storeCommitMatchInner[lane] = storeCommitInput[lane].valid &&
       sqValidInner[storeCommitIndexInput[lane]] && !sqCommittedInner[storeCommitIndexInput[lane]] &&
@@ -534,8 +558,8 @@ module rv32_lsu #(
     sqValidInner[addressIndexInput] && !sqCommittedInner[addressIndexInput] &&
     sqTagInner[addressIndexInput] == addressInput.robTag &&
     (!flushInfoInput.valid || rob_is_older(addressInput.robTag, flushInfoInput.robTag));
-  assign loadAddressEventInner = addressInput.valid && !addressInput.isStore &&
-    lqValidInner[addressIndexInput] && lqTagInner[addressIndexInput] == addressInput.robTag &&
+  assign loadAddressEventInner = addressInput.valid && !addressInput.isStore && loadAddressInRangeInner &&
+    lqValidInner[loadAddressIndexInner] && lqTagInner[loadAddressIndexInner] == addressInput.robTag &&
     (!flushInfoInput.valid || rob_is_older(addressInput.robTag, flushInfoInput.robTag));
   for (genvar lane = 0; lane < STORE_DATA_LANES; lane = lane + 1) begin : g_store_event
     assign storeDataEventInner[lane] = storeDataInput[lane].valid &&
@@ -907,14 +931,14 @@ module rv32_lsu #(
   // the full old LQ tag against this registered AGU tag. Keep invalid query
   // differences internal; no validity, writer, packet or grant changes.
   assign addressedForwardValidInner = query_store_forward_valid(addressInput.robTag,
-    addressInput.address, lqSizeInner[addressIndexInput]);
+    addressInput.address, lqSizeInner[loadAddressIndexInner]);
 
   // One query for the LQ row named by addressIndexInput. The per-row loop below
   // consumes it only on the matching iteration, so eight identical scans (they
   // differ solely in lqTag/lqSize) collapse into this single instance.
   always_comb
     addressedForwardInner = query_store_forward(
-      lqTagInner[addressIndexInput], addressInput.address, lqSizeInner[addressIndexInput]);
+      lqTagInner[loadAddressIndexInner], addressInput.address, lqSizeInner[loadAddressIndexInner]);
 
   // Keep the exact original mask, including actual same-edge retirement.
   // Separate this producer from its consumers to preserve true acyclic deps.
@@ -930,7 +954,7 @@ module rv32_lsu #(
       !sqDataReadyInner[scanStore] || !yield_ram_access(sqAddressInner[scanStore],sqSizeInner[scanStore]);
     assign incomingPostedBlockInner[scanStore]=postedStoreMaskInner[scanStore] &&
       (postedStoreUnsafeInner[scanStore] ||
-       byte_overlap(addressInput.address,lqSizeInner[addressIndexInput],
+       byte_overlap(addressInput.address,lqSizeInner[loadAddressIndexInner],
                     sqAddressInner[scanStore],sqSizeInner[scanStore]));
   end
   for(genvar scanLoad=0;scanLoad<LQ_DEPTH;scanLoad++)begin : g_old_request_scan
@@ -946,7 +970,7 @@ module rv32_lsu #(
     end
     assign oldPostedStoreBlocksInner[scanLoad]=|postedBlocks;
   end
-  assign incomingRequestYieldsInner=yield_ram_access(addressInput.address,lqSizeInner[addressIndexInput]);
+  assign incomingRequestYieldsInner=yield_ram_access(addressInput.address,lqSizeInner[loadAddressIndexInner]);
   assign selectedRequestYieldsInner=loadRequestUsesAddressInner ?
     incomingRequestYieldsInner : oldRequestYieldsInner[loadSelectIndexInner];
 
@@ -1565,7 +1589,7 @@ module rv32_lsu #(
           sqAddressInner[addressIndexInput] <= addressInput.address;
           sqAddressReadyInner[addressIndexInput] <= 1'b1;
         end else begin
-          lqAddressReadyInner[addressIndexInput] <= 1'b1;
+          lqAddressReadyInner[loadAddressIndexInner] <= 1'b1;
         end
       end
 
@@ -1643,7 +1667,7 @@ module rv32_lsu #(
     if (rstNInput && !coreStoppedInput && addressInput.valid && !addressInput.isStore &&
         loadAddressMatchInner &&
         (!flushInfoInput.valid || rob_is_older(addressInput.robTag, flushInfoInput.robTag)))
-      lqAddressInner[addressIndexInput] <= addressInput.address;
+      lqAddressInner[loadAddressIndexInner] <= addressInput.address;
   end
 `ifndef SYNTHESIS
   always @(posedge clkInput) if(rstNInput) begin
@@ -1678,8 +1702,8 @@ module rv32_lsu #(
       else $fatal(1, "dual Store allocations share a row");
     assert (int'(sqUsedInner) + int'(storeAllocCountInner) <= SQ_DEPTH)
       else $fatal(1, "Store allocation exceeds old SQ capacity");
-    if (loadAddressEventInner && !lqResultReadyInner[addressIndexInput] && !lqBroadcastedInner[addressIndexInput])
-      assert (addressedForwardValidInner == lqEarlyForwardInner[addressIndexInput])
+    if (loadAddressEventInner && !lqResultReadyInner[loadAddressIndexInner] && !lqBroadcastedInner[loadAddressIndexInner])
+      assert (addressedForwardValidInner == lqEarlyForwardInner[loadAddressIndexInner])
         else $fatal(1, "early address-forward eligibility differs from original intent");
     if (responseResultIdentityLiveInner)
       assert (responseForwardPriorityInner == lqEarlyForwardInner[responseResultIndexInner])

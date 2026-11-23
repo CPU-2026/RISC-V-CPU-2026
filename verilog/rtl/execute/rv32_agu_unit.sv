@@ -7,10 +7,10 @@ module rv32_agu_unit (
   input logic freezeInput,
   input  rv32_pkg::rob_flush_input_t flushInfoInput,
 /* verilator lint_off UNUSEDSIGNAL */   input  rv32_pkg::rs_issue_output_t executeInput, /* verilator lint_on UNUSEDSIGNAL */
-  input  logic [3:0] auxiliaryInput,
+  input  logic [rv32_pkg::LSQ_SLOT_W:0] auxiliaryInput,
   output logic inReadyOutput,
   output rv32_pkg::lsu_address_input_t addressOutput,
-  output logic [3:0] auxiliaryOutput,
+  output logic [rv32_pkg::LSQ_SLOT_W:0] auxiliaryOutput,
   output rv32_pkg::rob_tag_t robTagOutput
 );
   import rv32_pkg::*;
@@ -22,7 +22,7 @@ module rv32_agu_unit (
   /* verilator lint_on UNUSEDSIGNAL */
   logic validInner;
   logic [31:0] addressInner;
-  logic [3:0] auxiliaryInner;
+  logic [LSQ_SLOT_W:0] auxiliaryInner;
   rob_tag_t robTagInner;
 
   // Carry-independent half sums; finish selection before the old edge.
@@ -52,7 +52,7 @@ module rv32_agu_unit (
   assign addressOutput = '{
     valid: validInner && (!flushInfoInput.valid ||
                          rob_is_older(robTagInner, flushInfoInput.robTag)),
-    isStore: auxiliaryInner[3],
+    isStore: auxiliaryInner[LSQ_SLOT_W],
     robTag: robTagInner,
     address: addressInner
   };

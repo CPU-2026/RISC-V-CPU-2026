@@ -33,6 +33,7 @@ module tb_dcache_frontend;
   logic [31:0] randomState = 32'hcace1234;
 
   rv32_dcache original (
+    .storeSetPreviewInput('0),
     .clkInput(clock), .rstNInput(resetN), .cpuRequestInput(cpuRequest),
     .cpuReqReadyOutput(readyOriginal), .cpuResponseOutput(responseOriginal),
     .memRequestOutput(requestOriginal), .memReadReadyInput(readReady),
@@ -41,6 +42,7 @@ module tb_dcache_frontend;
     .memWriteRspReadyOutput(writeReplyReadyOriginal), .initializedOutput(initOriginal), .idleOutput(idleOriginal)
   );
   rv32_dcache_converted converted (
+    .storeSetPreviewInput('0),
     .clkInput(clock), .rstNInput(resetN), .cpuRequestInput(cpuRequest),
     .cpuReqReadyOutput(readyConverted), .cpuResponseOutput(responseConverted),
     .memRequestOutput(requestConverted), .memReadReadyInput(readReady),

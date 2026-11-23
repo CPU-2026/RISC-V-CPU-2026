@@ -57,6 +57,7 @@ module student_top #(
     icache_line_response_input_t fetchResponseInner;
     logic fetchReadyInner, fetchResponseReadyInner, fetchFlushInner;
     logic dmemValidInner, dmemWriteInner, dmemReadyInner;
+    logic [$clog2(DCACHE_SETS)-1:0] dmemStoreSetPreviewInner;
     logic [31:0] dmemAddressInner, dmemDataInner;
     logic [3:0] dmemStrobeInner;
     logic [1:0] dmemSizeInner;
@@ -78,6 +79,7 @@ module student_top #(
     dcache_word_response_input_t dataWordResponseInner;
     dcache_write_response_input_t dataWriteResponseInner, cacheWriteResponseInner;
     logic [1:0] dataWriteHeadTransactionInner;
+    logic [31:0] dataWriteHeadAddressInner;
     logic dataReadReadyInner, dataWriteReadyInner, dataResponseReadyInner, dataWriteResponseReadyInner;
     logic exitReadyInner, exitValidInner;
     logic [31:0] exitValueInner;
@@ -107,6 +109,7 @@ module student_top #(
       .imemFlushOutput(imemFlushInner),
       .dmemReqValidOutput(dmemValidInner), .dmemReqReadyInput(dmemReadyInner),
       .dmemReqWriteOutput(dmemWriteInner), .dmemReqAddrOutput(dmemAddressInner),
+      .dmemStoreSetPreviewOutput(dmemStoreSetPreviewInner),
       .dmemReqWdataOutput(dmemDataInner), .dmemReqWstrbOutput(dmemStrobeInner),
       .dmemReqSizeOutput(dmemSizeInner), .dmemReqTransactionOutput(dmemTransactionInner),
       .dmemRspValidInput(dcacheResponseInner.valid), .dmemRspRdataInput(dcacheResponseInner.readData),
@@ -143,15 +146,19 @@ module student_top #(
       address:dmemAddressInner, writeData:dmemDataInner, writeStrobe:dmemStrobeInner,
       size:dmemSizeInner, transaction:dmemTransactionInner};
     assign cacheWriteResponseInner = '{valid:dataWriteResponseInner.valid &&
-      dataWriteResponseInner.address != AXI_EXIT_ADDR, address:dataWriteResponseInner.address,
+      dataWriteHeadAddressInner != AXI_EXIT_ADDR, address:dataWriteHeadAddressInner,
       transaction:dataWriteHeadTransactionInner};
 `ifndef SYNTHESIS
-    always @(posedge clock) if (!reset)
+    always @(posedge clock) if (!reset) begin
       assert(cacheWriteResponseInner.transaction == dataWriteResponseInner.transaction)
         else $fatal(1,"AXI write reply transaction changed");
+      assert(dataWriteHeadAddressInner == dataWriteResponseInner.address)
+        else $fatal(1,"AXI write reply address sideband changed");
+    end
 `endif
     rv32_dmem_backend u_dmem_backend (
       .clkInput(clock), .rstNInput(resetNInner), .cpuRequestInput(dcacheRequestInner),
+      .storeSetPreviewInput(dmemStoreSetPreviewInner),
       .cpuReqReadyOutput(dmemReadyInner), .cpuResponseOutput(dcacheResponseInner),
       .responsePreviewTransactionOutput(responsePreviewTransaction),.responsePreviewSelectOutput(responsePreviewSelect),
       .memRequestOutput(dataRequestInner), .memReadReadyInput(dataReadReadyInner),
@@ -165,7 +172,8 @@ module student_top #(
       .readReadyOutput(dataReadReadyInner), .writeReadyOutput(dataWriteReadyInner),
       .responseOutput(dataResponseInner), .readHeadTransactionOutput(dataHeadTransactionInner), .wordResponseOutput(dataWordResponseInner), .responseReadyInput(dataResponseReadyInner),
       .writeResponseOutput(dataWriteResponseInner), .writeHeadTransactionOutput(dataWriteHeadTransactionInner),
-      .writeResponseReadyInput(dataWriteResponseReadyInner || dataWriteResponseInner.address == AXI_EXIT_ADDR),
+      .writeHeadAddressOutput(dataWriteHeadAddressInner),
+      .writeResponseReadyInput(dataWriteResponseReadyInner || dataWriteHeadAddressInner == AXI_EXIT_ADDR),
       .exitValidInput(exitValidInner), .exitValueInput(exitValueInner), .exitReadyOutput(exitReadyInner),
       .masterOutput(dataMasterInner), .slaveInput(dataSlaveInner)
     );

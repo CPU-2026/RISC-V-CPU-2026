@@ -30,6 +30,7 @@ module rv32_core #(
   output logic             dmemReqValidOutput,
   input  logic             dmemReqReadyInput,
   output logic             dmemReqWriteOutput,
+  output logic [$clog2(rv32_pkg::DCACHE_SETS)-1:0] dmemStoreSetPreviewOutput,
   output logic [31:0]      dmemReqAddrOutput,
   output logic [31:0]      dmemReqWdataOutput,
   output logic [3:0]       dmemReqWstrbOutput,
@@ -78,7 +79,7 @@ module rv32_core #(
   rs_issue_output_t unusedBranchIssueLaneInner [1], unusedLoadIssueLaneInner [1], unusedSaIssueLaneInner [1];
   logic [0:0] unusedMulIssueLaneAuxInner [1], unusedDivIssueLaneAuxInner [1];
   logic [2:0] unusedBranchIssueLaneAuxInner [1];
-  logic [3:0] unusedLoadIssueLaneAuxInner [1], unusedSaIssueLaneAuxInner [1];
+  logic [LSQ_SLOT_W:0] unusedLoadIssueLaneAuxInner [1], unusedSaIssueLaneAuxInner [1];
   rob_tag_t unusedAguRobTagInner;
   logic [$clog2(LQ_ENTRIES+1)-1:0] unusedLqCountInner;
   if (ALU_LANES!=1 && ALU_LANES!=2) begin : g_invalid_alu_count
@@ -142,13 +143,14 @@ module rv32_core #(
   load_allocation_input_t lsuLoadAllocationSecondInputInner;
   store_allocation_input_t lsuStoreAllocationSecondInputInner;
 /* verilator lint_off UNUSEDSIGNAL */   logic lqAllocSecondReadyInner, sqAllocSecondReadyInner; /* verilator lint_on UNUSEDSIGNAL */
-  logic [2:0] lqAllocSecondIndexInner, sqAllocSecondIndexInner;
+  logic [$clog2(LQ_ENTRIES)-1:0] lqAllocSecondIndexInner;
+  logic [SQ_SLOT_W-1:0] sqAllocSecondIndexInner;
 
 /* verilator lint_off UNUSEDSIGNAL */   decoded_uop_t [3:0] wideDecodedInner; /* verilator lint_on UNUSEDSIGNAL */
 /* verilator lint_off UNUSEDSIGNAL */   logic [3:0] wideValidInner,wideFireInner; /* verilator lint_on UNUSEDSIGNAL */
   logic [2:0] wideIssueCountInner;
   rs_allocation_input_t [6:0][3:0] wideRsAllocInner;
-  logic [6:0][3:0][3:0] wideRsAuxInner;
+  logic [6:0][3:0][LSQ_SLOT_W:0] wideRsAuxInner;
   logic [6:0][3:0] wideRsFireInner;
 /* verilator lint_off UNUSEDSIGNAL */   logic [6:0][$clog2(ROB_ENTRIES+1)-1:0] wideRsCreditsInner; /* verilator lint_on UNUSEDSIGNAL */
   logic [$clog2(INT_RS_ENTRIES+1)-1:0] wideIntCreditsInner;
@@ -160,8 +162,9 @@ module rv32_core #(
   logic [$clog2(STORE_ADDR_RS_ENTRIES+1)-1:0] wideSaCreditsInner;
   logic [$clog2(STORE_VALUE_RS_ENTRIES+1)-1:0] wideSvCreditsInner;
   logic [3:0] wideIntAuxInner,wideMulAuxInner,wideDivAuxInner;
-  logic [3:0][2:0] wideBranchAuxInner,wideSvAuxInner;
-  logic [3:0][3:0] wideLoadAuxInner,wideSaAuxInner;
+  logic [3:0][2:0] wideBranchAuxInner;
+  logic [3:0][SQ_SLOT_W-1:0] wideSvAuxInner;
+  logic [3:0][LSQ_SLOT_W:0] wideLoadAuxInner,wideSaAuxInner;
   load_allocation_input_t [3:0] wideLoadAllocInner;
   store_allocation_input_t [3:0] wideStoreAllocInner;
   logic [3:0] wideLoadFireInner,wideStoreFireInner;
@@ -181,9 +184,9 @@ module rv32_core #(
     assign wideMulAuxInner[lane]=wideRsAuxInner[1][lane][0];
     assign wideDivAuxInner[lane]=wideRsAuxInner[2][lane][0];
     assign wideBranchAuxInner[lane]=wideRsAuxInner[3][lane][2:0];
-    assign wideLoadAuxInner[lane]=wideRsAuxInner[4][lane];
-    assign wideSaAuxInner[lane]=wideRsAuxInner[5][lane];
-    assign wideSvAuxInner[lane]=wideRsAuxInner[6][lane][2:0];
+    assign wideLoadAuxInner[lane]=wideRsAuxInner[4][lane][LSQ_SLOT_W:0];
+    assign wideSaAuxInner[lane]=wideRsAuxInner[5][lane][LSQ_SLOT_W:0];
+    assign wideSvAuxInner[lane]=wideRsAuxInner[6][lane][SQ_SLOT_W-1:0];
   end
 
   phy_tag_t ratRs1PhyInner, ratRs2PhyInner, ratOldPhyInner;
@@ -197,7 +200,7 @@ module rv32_core #(
   rv32_pkg::rob_retirement_input_t [COMMIT_WIDTH-1:0] retirementInputInner;
   rv32_pkg::store_commit_input_t [COMMIT_WIDTH-1:0] retirementStoreInputInner;
   rv32_pkg::data_memory_request_output_t [COMMIT_WIDTH-1:0] retirementMemoryInner;
-  logic [COMMIT_WIDTH-1:0][2:0] retirementSqIndexInner;
+  logic [COMMIT_WIDTH-1:0][SQ_SLOT_W-1:0] retirementSqIndexInner;
   logic [COMMIT_WIDTH-1:0] retirementReadyInner, retirementFireInner, retirementStoreInner;
   logic [COMMIT_WIDTH-1:0] retirementStoreReadyInner;
   phy_tag_t prfAllocPhyInner;
@@ -224,6 +227,8 @@ module rv32_core #(
   rv32_pkg::rob_tag_t sharedCdbTagInner;
   logic [1:0] sharedCdbGrantInner;
   logic loadResultEligibleInner, mulResultEligibleInner, divResultEligibleInner;
+  logic [(1<<ROB_TAG_W)-1:0] loadIdentityInner;
+  logic loadWinnerIdentityInner;
   rv32_pkg::prf_read_input_t [COMMIT_WIDTH+3:0] prfReadInputInner;
 /* verilator lint_off UNUSEDSIGNAL */   rv32_pkg::prf_read_output_t [COMMIT_WIDTH+3:0] prfReadOutputInner; /* verilator lint_on UNUSEDSIGNAL */
 
@@ -248,7 +253,7 @@ module rv32_core #(
 /* verilator lint_off UNUSEDSIGNAL */   phy_tag_t robCommitNewPhyInner, robCommitOldPhyInner; /* verilator lint_on UNUSEDSIGNAL */
   logic robCommitStoreInner;
 /* verilator lint_off UNUSEDSIGNAL */   logic robCommitIsCallInner, robCommitIsRetInner; /* verilator lint_on UNUSEDSIGNAL */
-/* verilator lint_off UNUSEDSIGNAL */   logic [2:0] robCommitSqIndexInner; /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   logic [SQ_SLOT_W-1:0] robCommitSqIndexInner; /* verilator lint_on UNUSEDSIGNAL */
 /* verilator lint_off UNUSEDSIGNAL */   logic robCommitHaltInner; /* verilator lint_on UNUSEDSIGNAL */
 /* verilator lint_off UNUSEDSIGNAL */   logic robEmptyInner, robFullInner; /* verilator lint_on UNUSEDSIGNAL */
   logic [$clog2(ROB_ENTRIES+1)-1:0] robCountInner;
@@ -337,7 +342,7 @@ module rv32_core #(
 /* verilator lint_off UNUSEDSIGNAL */   logic [2:0] branchIssueAuxInner; /* verilator lint_on UNUSEDSIGNAL */
 
   logic memIssueReadyInner;
-  logic [3:0] memIssueAuxInner;
+  logic [LSQ_SLOT_W:0] memIssueAuxInner;
   rs_allocation_input_t loadRsAllocInputInner, saRsAllocInputInner, svRsAllocInputInner;
 /* verilator lint_off UNUSEDSIGNAL */   rs_issue_output_t loadRsIssueOutputInner, saRsIssueOutputInner, svRsIssueOutputInner; /* verilator lint_on UNUSEDSIGNAL */
   logic loadRsAllocReadyInner, saRsAllocReadyInner, svRsAllocReadyInner;
@@ -346,13 +351,13 @@ module rv32_core #(
   // longer drains one per cycle.
   logic [STORE_VALUE_RS_ENTRIES-1:0] svRsIssueLaneValidInner;
   rs_issue_output_t svRsIssueLaneInner [STORE_VALUE_RS_ENTRIES];
-  logic [2:0] svRsIssueLaneAuxInner [STORE_VALUE_RS_ENTRIES];
+  logic [SQ_SLOT_W-1:0] svRsIssueLaneAuxInner [STORE_VALUE_RS_ENTRIES];
   store_data_input_t svRsStoreDataInner [STORE_VALUE_RS_ENTRIES];
-  logic [2:0] svRsStoreDataIndexInner [STORE_VALUE_RS_ENTRIES];
+  logic [SQ_SLOT_W-1:0] svRsStoreDataIndexInner [STORE_VALUE_RS_ENTRIES];
   logic chooseLoadInner, loadRsIssueReadyInner, saRsIssueReadyInner;
-  logic [3:0] loadAuxInner, saAuxInner;
-/* verilator lint_off UNUSEDSIGNAL */   logic [2:0] svAuxInner; /* verilator lint_on UNUSEDSIGNAL */
-/* verilator lint_off UNUSEDSIGNAL */   logic [3:0] aguResultAuxInner; /* verilator lint_on UNUSEDSIGNAL */
+  logic [LSQ_SLOT_W:0] loadAuxInner, saAuxInner;
+/* verilator lint_off UNUSEDSIGNAL */   logic [SQ_SLOT_W-1:0] svAuxInner; /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   logic [LSQ_SLOT_W:0] aguResultAuxInner; /* verilator lint_on UNUSEDSIGNAL */
 
   logic bruValidInner, bruTakenInner, bruConditionalInner, bruMispredictInner;
   rob_tag_t bruTagInner;
@@ -365,7 +370,8 @@ module rv32_core #(
 /* verilator lint_off UNUSEDSIGNAL */   logic bruRobIsRetInner, jumpRobIsRetInner; /* verilator lint_on UNUSEDSIGNAL */
 
   logic lqAllocReadyInner, sqAllocReadyInner;
-  logic [2:0] lqAllocIndexInner, sqAllocIndexInner;
+  logic [$clog2(LQ_ENTRIES)-1:0] lqAllocIndexInner;
+  logic [SQ_SLOT_W-1:0] sqAllocIndexInner;
 /* verilator lint_off UNUSEDSIGNAL */   logic lsuStoreCommitReadyInner; /* verilator lint_on UNUSEDSIGNAL */
   rv32_pkg::load_allocation_input_t lsuLoadAllocationInputInner;
   rv32_pkg::store_allocation_input_t lsuStoreAllocationInputInner;
@@ -377,7 +383,7 @@ module rv32_core #(
   rv32_pkg::data_memory_request_output_t lsuDmemRequestOutputInner;
 /* verilator lint_off UNUSEDSIGNAL */   rv32_pkg::data_memory_request_output_t lsuStoreRetirementOutputInner; /* verilator lint_on UNUSEDSIGNAL */
   rv32_pkg::data_memory_response_input_t lsuDmemResponseInputInner;
-/* verilator lint_off UNUSEDSIGNAL */   logic [3:0] sqCountInner; /* verilator lint_on UNUSEDSIGNAL */
+/* verilator lint_off UNUSEDSIGNAL */   logic [$clog2(SQ_ENTRIES+1)-1:0] sqCountInner; /* verilator lint_on UNUSEDSIGNAL */
 
   logic haltedInner;
   logic bootDoneInner;
@@ -439,9 +445,24 @@ module rv32_core #(
     assign aluResultGrantInner[0]=aluResultLiveInner;
     assign aluPopReadyInner[0]=1'b1;
   end endgenerate
+  generate if(ISSUE_WIDTH==4 && TAGGED_DMEM)begin : g_early_load_identity
+`ifndef SYNTHESIS
+    logic faultIdentity;
+    initial faultIdentity=$test$plusargs("BAD_REGISTERED_IDENTITY");
+    always @(posedge clkInput) if(rstNInput)
+      assert(loadResultEligibleInner == (!recoveryBusyInner && loadCdbValidInner && loadRobLiveInner &&
+         (!globalFlushInner || rob_is_older(wbLoadTagInner,globalFlushTagInner))))
+        else $fatal(1,"actual Load grant disagrees with exact late identity");
+    assign loadResultEligibleInner=!recoveryBusyInner && loadCdbValidInner &&
+      (loadWinnerIdentityInner ^ faultIdentity);
+`else
+    assign loadResultEligibleInner=!recoveryBusyInner && loadCdbValidInner && loadWinnerIdentityInner;
+`endif
+  end else begin : g_late_load_identity
   assign loadResultEligibleInner = !recoveryBusyInner && loadCdbValidInner && loadRobLiveInner &&
                          (!globalFlushInner ||
                           rob_is_older(wbLoadTagInner, globalFlushTagInner));
+  end endgenerate
   assign mulResultEligibleInner = !recoveryBusyInner && mulCdbValidInner && mulRobLiveInner &&
                         (!globalFlushInner ||
                          rob_is_older(wbMulTagInner, globalFlushTagInner));
@@ -834,6 +855,7 @@ module rv32_core #(
 
   generate if (ISSUE_WIDTH != 4) begin : g_legacy_rename_state
   assign loadLookupSeparateInner='0;
+  assign loadIdentityInner=(1<<ROB_TAG_W)'(0);
   logic [$clog2(PRF_ENTRIES+1)-1:0] unusedPrfFreeCountInner;
   assign wideFireInner='0;
   assign wideIssueCountInner='0;
@@ -928,7 +950,7 @@ module rv32_core #(
       .writebackInput(writebackInputInner),.completionInput(robCompletionInputInner),.storeReadyInput(lsuStoreCompleteOutputInner),
       .flushInput('{valid:globalFlushInner,robTag:globalFlushTagInner}),.recoveryInput(recoveryStepInner),
       .lookupInput(independentLookup),.lookupOutput(independentResult),
-      .lookupLoadInput('{robTag:wbLoadTagInner}),.lookupLoadOutput(loadLookupSeparateInner),
+      .lookupLoadInput('{robTag:wbLoadTagInner}),.lookupLoadOutput(loadLookupSeparateInner),.loadIdentityOutput(loadIdentityInner),
       .commitOutput(robCommitOutputInner),.commitStoreOutput(retirementStoreInner),
       .commitReadyInput(retirementReadyInner),.commitFireOutput(retirementFireInner),
       .statusOutput(robStatusOutputInner),.robCountOutput(robCountInner),.nextTagOutput(robAllocTagInner),
@@ -1161,15 +1183,15 @@ module rv32_core #(
   assign branchIssuePredInner = branchRsIssueOutputInner.predictedProgramCounter;
   assign branchIssueUseImmInner = branchRsIssueOutputInner.useImmediate;
 
-  rv32_rs #(.DEPTH(LOAD_RS_ENTRIES), .AUX_W(4), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH),
+  rv32_rs #(.DEPTH(LOAD_RS_ENTRIES), .AUX_W(LSQ_SLOT_W+1), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH),
             .REUSE_ON_ISSUE(1'b0), .WB_ISSUE_BYPASS(1'b1), .SELECTIVE_WAKE_PIPE(1'b1)) u_load_rs (
     .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(loadRsAllocInputInner), .allocReadyOutput(loadRsAllocReadyInner),
-    .allocAuxInput({1'b0, lqAllocIndexInner}),
+    .allocAuxInput({1'b0, LSQ_SLOT_W'(lqAllocIndexInner)}),
     .allocSecondInput(loadRsAllocSecondInputInner), .allocSecondReadyOutput(loadRsAllocSecondReadyInner),
-    .allocSecondAuxInput({1'b0, lqAllocSecondIndexInner}),
+    .allocSecondAuxInput({1'b0, LSQ_SLOT_W'(lqAllocSecondIndexInner)}),
     .allocLanesInput(wideRsAllocInner[4]),.allocLanesAuxInput(wideLoadAuxInner),
     .allocLanesFireOutput(wideRsFireInner[4]),.allocCreditsOutput(wideLoadRsCreditsInner),.allocCreditFitsOutput(unusedCreditFitsInner[4]),
     .writebackInput(writebackInputInner),
@@ -1179,15 +1201,15 @@ module rv32_core #(
     .issueLaneValidOutput(unusedLoadIssueLaneValidInner), .issueLaneOutput(unusedLoadIssueLaneInner),
     .issueLaneAuxOutput(unusedLoadIssueLaneAuxInner), .issueLaneReadyInput('0)
   );
-  rv32_rs #(.DEPTH(STORE_ADDR_RS_ENTRIES), .AUX_W(4), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH), .REUSE_ON_ISSUE(1'b0), .WB_ISSUE_BYPASS(1'b1), .SELECTIVE_WAKE_PIPE(1'b1)) u_store_addr_rs (
+  rv32_rs #(.DEPTH(STORE_ADDR_RS_ENTRIES), .AUX_W(LSQ_SLOT_W+1), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH), .REUSE_ON_ISSUE(1'b0), .WB_ISSUE_BYPASS(1'b1), .SELECTIVE_WAKE_PIPE(1'b1)) u_store_addr_rs (
     .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
     .flushInfoInput('{valid: globalFlushInner, robTag: globalFlushTagInner}),
     .allocInput(saRsAllocInputInner), .allocReadyOutput(saRsAllocReadyInner),
-    .allocAuxInput({1'b1, sqAllocIndexInner}), .writebackInput(writebackInputInner),
+    .allocAuxInput({1'b1, LSQ_SLOT_W'(sqAllocIndexInner)}), .writebackInput(writebackInputInner),
     .issueWritebackInput(writebackInputInner),
     .allocSecondInput(saRsAllocSecondInputInner), .allocSecondReadyOutput(saRsAllocSecondReadyInner),
-    .allocSecondAuxInput({1'b1, sqAllocSecondIndexInner}),
+    .allocSecondAuxInput({1'b1, LSQ_SLOT_W'(sqAllocSecondIndexInner)}),
     .allocLanesInput(wideRsAllocInner[5]),.allocLanesAuxInput(wideSaAuxInner),
     .allocLanesFireOutput(wideRsFireInner[5]),.allocCreditsOutput(wideSaCreditsInner),.allocCreditFitsOutput(unusedCreditFitsInner[5]),
     .issueOutput(saRsIssueOutputInner), .issueReadyInput(saRsIssueReadyInner),
@@ -1195,7 +1217,7 @@ module rv32_core #(
     .issueLaneValidOutput(unusedSaIssueLaneValidInner), .issueLaneOutput(unusedSaIssueLaneInner),
     .issueLaneAuxOutput(unusedSaIssueLaneAuxInner), .issueLaneReadyInput('0)
   );
-  rv32_rs #(.DEPTH(STORE_VALUE_RS_ENTRIES), .AUX_W(3),
+  rv32_rs #(.DEPTH(STORE_VALUE_RS_ENTRIES), .AUX_W(SQ_SLOT_W),
              .ISSUE_WIDTH(STORE_VALUE_RS_ENTRIES), .WRITEBACK_PORTS(WRITEBACK_PORTS), .RENAME_WIDTH(ISSUE_WIDTH), .REUSE_ON_ISSUE(1'b0), .WB_ISSUE_BYPASS(1'b1), .WB_ISSUE_PORTS(ALU_CDB_PORTS)) u_store_value_rs (
     .freezeInput(pipelineFrozenInner),
     .clkInput(clkInput), .rstNInput(rstNInput),
@@ -1358,15 +1380,17 @@ module rv32_core #(
     .loadCreditsOutput(wideLoadCreditsInner),.storeCreditsOutput(wideStoreCreditsInner),
     .storeDataInput(svRsStoreDataInner),
     .storeDataIndexInput(svRsStoreDataIndexInner),
-    .addressInput(lsuAddressInputInner), .addressIndexInput(aguResultAuxInner[2:0]),
+    .addressInput(lsuAddressInputInner), .addressIndexInput(aguResultAuxInner[LSQ_SLOT_W-1:0]),
     .writebackInput(writebackInputInner),
     .loadResultOutput(lsuLoadResultOutputInner), .loadResultReadyInput(wbLoadValidInner),
+    .loadIdentityInput(loadIdentityInner), .loadWinnerIdentityOutput(loadWinnerIdentityInner),
     .robRetireInput(retirementInputInner),
     .storeCompleteOutput(lsuStoreCompleteOutputInner),
     .storeCommitInput(retirementStoreInputInner),
     .storeCommitIndexInput(retirementSqIndexInner),
     .storeCommitReadyOutput(retirementStoreReadyInner),
     .storeRetirementOutput(retirementMemoryInner),
+    .storeHeadSetPreviewOutput(dmemStoreSetPreviewOutput),
     .dmemRequestOutput(lsuDmemRequestOutputInner), .dmemReqReadyInput(dmemReqReadyInput),
     .dmemResponseInput(lsuDmemResponseInputInner),
     .dmemReqTransactionOutput(dmemReqTransactionOutput), .dmemRspTransactionInput(dmemRspTransactionInput),

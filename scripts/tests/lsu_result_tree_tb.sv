@@ -21,12 +21,13 @@ module tb_lsu_result_tree;
   int sends = 0, broadcasts = 0, checks = 0, rounds = 0;
   int ages [8];
 
-  rv32_lsu #(.TAGGED_DMEM(1'b1)) dut (
+  rv32_lsu #(.LQ_DEPTH(8), .SQ_DEPTH(8), .TAGGED_DMEM(1'b1)) dut (
+    .storeHeadSetPreviewOutput(),
     .clkInput(clock), .rstNInput(resetN), .coreStoppedInput(1'b0), .flushInfoInput(flush),
     .loadAllocationInput(allocation), .loadAllocReadyOutput(allocationReady), .loadAllocIndexOutput(allocationIndex),
     .storeAllocationInput('0), .storeAllocReadyOutput(), .storeAllocIndexOutput(),
     .storeDataInput(storeData), .storeDataIndexInput(storeIndex), .addressInput(address), .addressIndexInput(addressIndex),
-    .writebackInput('0), .loadResultOutput(result), .loadResultReadyInput(resultReady), .robRetireInput('0),
+    .writebackInput('0), .loadResultOutput(result), .loadResultReadyInput(resultReady), .loadIdentityInput('0), .loadWinnerIdentityOutput(), .robRetireInput('0),
     .storeCompleteOutput(), .storeCommitInput('0), .storeCommitIndexInput('0), .storeCommitReadyOutput(),
     .storeRetirementOutput(), .dmemRequestOutput(request), .dmemReqReadyInput(memoryReady),
     .dmemResponseInput(response), .dmemReqTransactionOutput(requestId), .dmemRspTransactionInput(responseId),

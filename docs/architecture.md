@@ -10,8 +10,8 @@ SystemVerilog RV32IM 乱序核，顺序重命名和分配，乱序执行，按�
 | FQ／IQ／ROB／PRF | 8 / 8 / 16 / 48 项 |
 | Integer／Multiply／Divide／Branch／Load／StoreAddr／StoreValue RS | 4 / 1 / 1 / 4 / 2 / 2 / 2 |
 | 执行与写回 | 双 ALU、单 AGU；四路 CDB：两个 ALU 各一路，MUL/DIV 共享一路，Load 独占一路 |
-| LQ／SQ／Load 运输 owner | 各 8 项 |
-| 分支预测 | Tournament、BTB 32 项、RAS 4 项、checkpoint 64 项 |
+| LQ／SQ／Load 运输 owner | 4 / 4 / 8 项 |
+| 分支预测 | Tournament、BTB 32 项、RAS 3 项、checkpoint 64 项 |
 | 恢复 | 先同步读取已提交基线，再每拍重放 8 个 ROB 槽，最多 2 拍重放 |
 
 ## 前端与预测
@@ -26,7 +26,7 @@ SystemVerilog RV32IM 乱序核，顺序重命名和分配，乱序执行，按�
 - Integer、Branch、Load、StoreAddr、StoreValue RS 只按拍初空位分配，不借当拍离站释放的槽。Load 与 StoreAddr 共用 AGU，采用选择性晚唤醒；Branch 保留完整写回捕获，但不以 Load 当拍旁路派发，仍可用 ALU 和 MUL/DIV 当拍结果。
 - MUL/DIV 共享写回按最老合格结果仲裁，未获准者保留。条件分支走 BRU，JAL/JALR 走 ALU。ROB 在各 bank 预译码退休行，由队首选择；仍只退休拍初 ready 的连续前缀。`retirementOutput` 覆盖全部退休通道，旧标量 `commit*` 只覆盖通道 0。
 - Flush 选最老候选，取消严格年轻项。恢复时 RAT/RAS 重放存活前缀，自由队列另外遍历取消项以回收物理号；分配、执行、退休和 CDB 暂停，LSU/Cache/AXI 继续排空。
-- [RAS 恢复](../verilog/rtl/predictor/rv32_bpu_ras.sv)从已提交栈重建完整投机栈。默认深度为 4，每拍仍按程序顺序处理最多 8 个 ROB 槽；仅恢复宽度和栈深均为 8 时选用独热深度重放。
+- [RAS 恢复](../verilog/rtl/predictor/rv32_bpu_ras.sv)从已提交栈重建完整投机栈。默认深度为 3，每拍仍按程序顺序处理最多 8 个 ROB 槽；仅恢复宽度和栈深均为 8 时选用独热深度重放。
 
 ## 访存与缓存
 
@@ -38,8 +38,10 @@ SystemVerilog RV32IM 乱序核，顺序重命名和分配，乱序执行，按�
 - LQ 广播后保留至退休，SQ 退休后保留至内存实际接受。Load 只从最年轻的重叠 Store 转发，要求该 Store 就绪且单独覆盖全部字节；未知地址或未解决的重叠会阻塞缓存请求。
 - 数据请求每拍至多一个，通常 Store 优先。SQ 拍初占用不超过 4 且无在途 Load 时，合格 Load 可越过不重叠的普通 RAM Store 一次，随后须先接受 Store。
 - 已发出的 Load 被取消时保留运输身份至响应返回。D$ 支持 hit-under-miss、同行 Load 合并和下一行预取（需求优先）。完整行到达后，可在 SRAM 填充结束前应答 Load；默认也允许通过身份、地址和 Store 冲突检查的逐字 AXI 回包应答 Load。逐字应答不提前发布缓存行，也不提前释放该缺失槽。
-- D$ 对物理请求槽并行比较命中标签；可提前按队首选 Store 写载荷，但实际写入仍由原仲裁授权。AXI 读、写队首切换时同拍保存各自的内部缺失号，不改变外部 AXI 握手。
+- D$ 对物理请求槽并行比较命中标签；查询胜者直接选择 SRAM 的 set，槽号另路编码。在实际读沿按低六位同时采样两组旧有效位和 `set[6]`，沿后选组，不加拍。Store 可按队首预选写载荷，实际写入仍由原仲裁授权。
+- I$ 将 SRAM 的写使能与逻辑握手分开，片选和读写优先级不变。AXI 读、写队首切换时同拍保存各自的缺失号；写侧另存应答地址，外部 AXI 握手不变。
 - 默认 LSU 按在途返回槽提前生成 Load 候选，包括身份、转发与写回优先级。只有实际有效回包才能选通对应候选，保留同拍 Load 写回／唤醒，不增加流水拍。
+- ROB 寄存完整 tag 的有效位图，与原 ROB 状态同沿更新。LSU 在仲裁期间并行预查各行身份，最后只取原胜者的资格；失败不改选次名，flush 和恢复边界保持。
 - SRAM 数据不复位，以有效控制屏蔽旧内容。读写边界见 [SRAM 模型](sram.md)，行运输与 MMIO 退出见 [AXI4-Lite 协议](axi4-lite.md)。
 
 ## 编译参数

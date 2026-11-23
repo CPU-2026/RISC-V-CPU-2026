@@ -52,6 +52,7 @@ module student_top (
   logic [31:0] coreImemReqAddrInner;
   icache_cpu_request_input_t coreImemRequestInner;
   logic coreDmemReqValidInner, coreDmemReqReadyInner, coreDmemReqWriteInner;
+  logic [$clog2(rv32_pkg::DCACHE_SETS)-1:0] storeSetPreviewInner;
   logic [31:0] coreDmemReqAddrInner, coreDmemReqDataInner;
   logic [3:0] coreDmemReqStrobeInner;
   logic [1:0] coreDmemReqSizeInner;
@@ -70,6 +71,7 @@ module student_top (
     .TAGGED_DMEM(1'b1)
 `endif
   ) u_core (
+    .dmemStoreSetPreviewOutput(storeSetPreviewInner),
     .clkInput(clock), .rstNInput(coreResetNInner),
     .imemReqValidOutput(coreImemReqValidInner),
     .imemReqReadyInput(coreImemReadyInner),
@@ -177,6 +179,7 @@ module student_top (
   assign dmemWriteStrobeOutput = 4'b1111;
   assign dmemSizeOutput = 2'b10;
   rv32_dmem_backend u_dmem_backend (
+    .storeSetPreviewInput(storeSetPreviewInner),
     .exitReadyInput(1'b0), .exitValidOutput(), .exitValueOutput(),
     .clkInput(clock), .rstNInput(!reset),
     .cpuRequestInput(dcacheRequestInner), .cpuReqReadyOutput(coreDmemReqReadyInner),

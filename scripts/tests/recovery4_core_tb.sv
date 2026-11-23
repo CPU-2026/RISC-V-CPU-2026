@@ -34,6 +34,7 @@ module tb_recovery4_core;
   assign dmemResponseValid = pendingRead && dut.recoveryStepInner.active &&
     dut.recoveryStepInner.offset == 4;
   rv32_core #(.FETCH_WIDTH(1)) dut (
+    .dmemStoreSetPreviewOutput(),
     .clkInput(clock), .rstNInput(resetN),
     .imemReqValidOutput(imemValid), .imemReqReadyInput(imemReady), .imemReqAddrOutput(imemAddress),
     .imemRspValidInput(imemResponseValid), .imemRspDataInput(imemResponseData),

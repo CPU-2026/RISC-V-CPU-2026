@@ -82,6 +82,7 @@ module tb_rename_width;
   data_memory_request_output_t request;
   logic memoryReady;
   rv32_lsu #(.LQ_DEPTH(2), .SQ_DEPTH(2), .COMMIT_WIDTH(2), .RENAME_WIDTH(2), .WRITEBACK_PORTS(2)) lsu (
+    .storeHeadSetPreviewOutput(),
     .clkInput(clk), .rstNInput(rst), .coreStoppedInput(1'b0), .flushInfoInput(memFlush),
     .loadAllocationInput(la0), .loadAllocReadyOutput(lr0), .loadAllocIndexOutput(li0),
     .loadAllocationSecondInput(la1), .loadAllocSecondReadyOutput(lr1), .loadAllocSecondIndexOutput(li1),
@@ -89,7 +90,7 @@ module tb_rename_width;
     .storeAllocationSecondInput(st1), .storeAllocSecondReadyOutput(str1), .storeAllocSecondIndexOutput(si1),
     .storeDataInput(storeData), .storeDataIndexInput(storeDataIndex),
     .addressInput(address), .addressIndexInput(addressIndex), .writebackInput(wb),
-    .loadResultOutput(), .loadResultReadyInput(1'b0), .robRetireInput(retirement), .storeCompleteOutput(),
+    .loadResultOutput(), .loadResultReadyInput(1'b0), .loadIdentityInput('0), .loadWinnerIdentityOutput(), .robRetireInput(retirement), .storeCompleteOutput(),
     .storeCommitInput(storeCommit), .storeCommitIndexInput(storeCommitIndex), .storeCommitReadyOutput(),
     .storeRetirementOutput(), .dmemRequestOutput(request), .dmemReqReadyInput(memoryReady), .dmemResponseInput('0),
     .dmemReqTransactionOutput(), .dmemRspTransactionInput('0), .lqCountOutput(lqCount), .sqCountOutput(sqCount)

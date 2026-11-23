@@ -17,7 +17,7 @@ module rv32_rename_four #(
   input logic [3:0][$clog2(rv32_pkg::LQ_ENTRIES)-1:0] loadPreviewInput,
   input logic [3:0][$clog2(rv32_pkg::SQ_ENTRIES)-1:0] storePreviewInput,
   output rv32_pkg::rs_allocation_input_t [6:0][3:0] rsOutput,
-  output logic [6:0][3:0][3:0] rsAuxOutput,
+  output logic [6:0][3:0][rv32_pkg::LSQ_SLOT_W:0] rsAuxOutput,
   output rv32_pkg::load_allocation_input_t [3:0] loadOutput,
   output rv32_pkg::store_allocation_input_t [3:0] storeOutput,
   input rv32_pkg::rat_commit_input_t [COMMIT_WIDTH-1:0] mapCommitInput,
@@ -36,6 +36,7 @@ module rv32_rename_four #(
   input rv32_pkg::rob_lookup_input_t [LOOKUP_PORTS-1:0] lookupInput,
   input rv32_pkg::rob_lookup_input_t lookupLoadInput,
   output rv32_pkg::rob_lookup_output_t lookupLoadOutput,
+  output logic [(1<<rv32_pkg::ROB_TAG_W)-1:0] loadIdentityOutput,
   output rv32_pkg::rob_lookup_output_t [LOOKUP_PORTS-1:0] lookupOutput,
   output rv32_pkg::rob_commit_output_t [COMMIT_WIDTH-1:0] commitOutput,
   output logic [COMMIT_WIDTH-1:0] commitStoreOutput,
@@ -100,7 +101,7 @@ module rv32_rename_four #(
     .clkInput,.rstNInput,.freezeInput(freezeInput || recoveryInput.active),
     .allocationInput(allocations),.allocationFireOutput(robFire),
     .allocationTagOutput(allocatedTags),.creditsOutput(robCredits),.nextTagOutput,
-    .completionInput,.storeReadyInput,.flushInput,.lookupInput,.lookupOutput,.lookupLoadInput,.lookupLoadOutput,
+    .completionInput,.storeReadyInput,.flushInput,.lookupInput,.lookupOutput,.lookupLoadInput,.lookupLoadOutput,.loadIdentityOutput,
     .commitOutput,.commitStoreOutput,.commitReadyInput,.commitFireOutput,.statusOutput,.countOutput(robCountOutput),
     .replayOffsetInput(recoveryInput.offset),.replayNarrowOutput,.replayRasOutput
   );
@@ -142,7 +143,7 @@ module rv32_rename_four #(
           rsOutput[4][lane].source2Tag='0;
           rsOutput[4][lane].source2Value='0;
           rsOutput[4][lane].useImmediate=1;
-          rsAuxOutput[4][lane]={1'b0,loadIndices[lane]};
+          rsAuxOutput[4][lane][LSQ_SLOT_W:0]={1'b0,LSQ_SLOT_W'(loadIndices[lane])};
         end
         UOP_STORE: begin
           rsOutput[5][lane]=base[lane];
@@ -150,7 +151,7 @@ module rv32_rename_four #(
           rsOutput[5][lane].source2Tag='0;
           rsOutput[5][lane].source2Value='0;
           rsOutput[5][lane].useImmediate=1;
-          rsAuxOutput[5][lane]={1'b1,storeIndices[lane]};
+          rsAuxOutput[5][lane][LSQ_SLOT_W:0]={1'b1,LSQ_SLOT_W'(storeIndices[lane])};
           rsOutput[6][lane]=base[lane];
           rsOutput[6][lane].source1Ready=base[lane].source2Ready;
           rsOutput[6][lane].source1Tag=base[lane].source2Tag;
@@ -159,7 +160,7 @@ module rv32_rename_four #(
           rsOutput[6][lane].source2Tag='0;
           rsOutput[6][lane].source2Value='0;
           rsOutput[6][lane].useImmediate=0;
-          rsAuxOutput[6][lane]={1'b0,storeIndices[lane]};
+          rsAuxOutput[6][lane][SQ_SLOT_W-1:0]=storeIndices[lane];
         end
         default: begin end
       endcase

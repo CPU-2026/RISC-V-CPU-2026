@@ -50,7 +50,7 @@ module rv32_rob #(
   phy_tag_t newPhyInner [DEPTH];
   phy_tag_t oldPhyInner [DEPTH];
   logic storeInner [DEPTH];
-  logic [2:0] sqIndexInner [DEPTH];
+  logic [SQ_SLOT_W-1:0] sqIndexInner [DEPTH];
   logic haltInner [DEPTH];
   logic [31:0] predictedPcInner [DEPTH];
   bpu_ckpt_id_t predictorCkptIdInner [DEPTH];
@@ -165,10 +165,7 @@ module rv32_rob #(
       assign replayRasOutput[replayIndexInner] = '{
         robTag: tagInner[replaySlotInner],
         programCounter: pcInner[replaySlotInner],
-        opcode: instrInner[replaySlotInner][6:0],
-        rd: instrInner[replaySlotInner][11:7],
-        funct3: instrInner[replaySlotInner][14:12],
-        rs1: instrInner[replaySlotInner][19:15]
+        rasAction: ras_replay_actions(instrInner[replaySlotInner][19:0])
       };
     end
   endgenerate

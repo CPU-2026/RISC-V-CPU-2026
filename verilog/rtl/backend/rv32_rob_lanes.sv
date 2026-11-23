@@ -19,6 +19,7 @@ module rv32_rob_lanes #(
   input rv32_pkg::rob_lookup_input_t [LOOKUP_PORTS-1:0] lookupInput,
   input rv32_pkg::rob_lookup_input_t lookupLoadInput,
   output rv32_pkg::rob_lookup_output_t lookupLoadOutput,
+  output logic [(1<<rv32_pkg::ROB_TAG_W)-1:0] loadIdentityOutput,
   output rv32_pkg::rob_lookup_output_t [LOOKUP_PORTS-1:0] lookupOutput,
   output rv32_pkg::rob_commit_output_t [COMMIT_WIDTH-1:0] commitOutput,
   output logic [COMMIT_WIDTH-1:0] commitStoreOutput,
@@ -258,9 +259,14 @@ module rv32_rob_lanes #(
     logic [4:0] archRd;
     phy_tag_t newPhy;
     logic [31:0] programCounter;
-    logic [19:0] instruction;
+    logic [1:0] rasAction;
   } replay_read_t;
   replay_read_t replayReadInner[RECOVERY_WIDTH];
+  logic [1:0] replayActionRawInner [DEPTH];
+  wire [1:0] replayActionRow [DEPTH];
+  for (genvar row=0; row<DEPTH; row++) begin : g_replay_predecode
+    assign replayActionRow[row] = payloadInitializedInner[row] ? replayActionRawInner[row] : 2'b00;
+  end
   if (DEPTH>=RECOVERY_WIDTH && RECOVERY_WIDTH>1 &&
       (RECOVERY_WIDTH&(RECOVERY_WIDTH-1))==0) begin : g_replay_banked
     localparam int BANK_W=$clog2(RECOVERY_WIDTH);
@@ -292,7 +298,7 @@ module rv32_rob_lanes #(
             archRd:payloadInner[row*RECOVERY_WIDTH+bank].architecturalRegister,
             newPhy:payloadInner[row*RECOVERY_WIDTH+bank].newPhysicalRegister,
             programCounter:payloadInner[row*RECOVERY_WIDTH+bank].programCounter,
-            instruction:payloadInner[row*RECOVERY_WIDTH+bank].instruction[19:0]} &
+            rasAction:replayActionRow[row*RECOVERY_WIDTH+bank]} &
             {$bits(replay_read_t){selectRow[row]}};
         end
       end
@@ -331,7 +337,7 @@ module rv32_rob_lanes #(
             archRd:payloadInner[row].architecturalRegister,
             newPhy:payloadInner[row].newPhysicalRegister,
             programCounter:payloadInner[row].programCounter,
-            instruction:payloadInner[row].instruction[19:0]} &
+            rasAction:replayActionRow[row]} &
             {$bits(replay_read_t){selectRow[row]}};
         end
       end
@@ -343,8 +349,7 @@ module rv32_rob_lanes #(
       archRd:replayReadInner[lane].archRd,newPhy:replayReadInner[lane].newPhy};
     assign replayRasOutput[lane]='{robTag:replayReadInner[lane].robTag,
       programCounter:replayReadInner[lane].programCounter,
-      opcode:replayReadInner[lane].instruction[6:0],rd:replayReadInner[lane].instruction[11:7],
-      funct3:replayReadInner[lane].instruction[14:12],rs1:replayReadInner[lane].instruction[19:15]};
+      rasAction:replayReadInner[lane].rasAction};
   end
   // Wide write-data selection is grouped instead of replicated per row. Lane
   // `lane` can only ever target rows whose low log2(LANES) bits equal
@@ -406,12 +411,32 @@ module rv32_rob_lanes #(
       for (int lane=0;lane<COMMIT_WIDTH;lane++)
         retired|=commitFireOutput[lane] && SLOT_W'(headInner+rob_tag_t'(lane))==SLOT_W'(row);
     end
+    // An exact next-state mirror of {valid, full tag}, decoded before the edge.
+    // The allocation writer has the same priority over flush and retire as the ROB.
+    for(genvar epoch=0;epoch<(1<<(ROB_TAG_W-SLOT_W));epoch++)begin : g_load_identity
+      localparam rob_tag_t FULL_TAG=rob_tag_t'((epoch<<SLOT_W)|row);
+      always_ff @(posedge clkInput or negedge rstNInput) begin
+        if(!rstNInput)loadIdentityOutput[FULL_TAG]<=1'b0;
+        else if(!freezeInput)begin
+          if(writeHit) loadIdentityOutput[FULL_TAG]<=writeGroupTag[row&(LANES-1)]==FULL_TAG;
+          else if(retired || (flushInput.valid && validInner[row] &&
+                  rob_is_younger(tagInner[row],flushInput.robTag))) loadIdentityOutput[FULL_TAG]<=1'b0;
+        end
+      end
+`ifndef SYNTHESIS
+      always @(posedge clkInput) if(rstNInput)
+        assert(loadIdentityOutput[FULL_TAG]==(validInner[row] && tagInner[row]==FULL_TAG))
+          else $fatal(1,"ROB registered identity mirror disagrees with old row");
+`endif
+    end
     // Reset representation remains ZERO even on invalid ports/replay.
     // The marker is NOT validInner: canceled and retired payloads stay readable.
     assign payloadInner[row]=payloadInitializedInner[row] ? payloadRawInner[row] : rob_allocation_input_t'(0);
     always_ff @(posedge clkInput) begin
-      if (rstNInput && !freezeInput && writeHit)
+      if (rstNInput && !freezeInput && writeHit) begin
         payloadRawInner[row]<=writeGroupPayload[row&(LANES-1)];
+        replayActionRawInner[row]<=ras_replay_actions(writeGroupPayload[row&(LANES-1)].instruction[19:0]);
+      end
     end
     always_ff @(posedge clkInput or negedge rstNInput) begin
       if (!rstNInput) payloadInitializedInner[row]<=1'b0;

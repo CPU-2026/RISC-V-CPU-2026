@@ -58,6 +58,7 @@ module student_top (
   assign writeDataOutput = lineRequestInner.writeData;
 
   rv32_dcache cache (
+    .storeSetPreviewInput('0),
     .clkInput(clock), .rstNInput(!reset), .cpuRequestInput(cpuRequestInner),
     .cpuReqReadyOutput(cpuReadyOutput), .cpuResponseOutput(cpuResponseInner),
     .memRequestOutput(lineRequestInner), .memReadReadyInput(readReadyInput),
