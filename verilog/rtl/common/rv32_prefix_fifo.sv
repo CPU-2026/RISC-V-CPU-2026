@@ -20,12 +20,18 @@ module rv32_prefix_fifo #(
   output logic [POP_W-1:0] outCountOutput,
   output logic [POP_WIDTH-1:0][WIDTH-1:0] outDataOutput,
   input logic [POP_W-1:0] outReadyCountInput,
-  output logic [SEQ_W-1:0] countOutput
+  output logic [SEQ_W-1:0] countOutput,
+  output logic emptyOutput
 );
   logic [SEQ_W-1:0] headInner, tailInner;
   logic [WIDTH-1:0] entriesInner [DEPTH];
   logic [POP_W-1:0] popInner;
   logic [PUSH_W-1:0] pushInner;
+  // Registered empty flag: the bypass consumers (zero-latency ingress) only
+  // ever need the OLD empty state, which equals head==tail at the end of the
+  // previous cycle. Exposing it as a flop removes the occupancy subtract and
+  // the empty-reduction from the late ingress select path.
+  logic emptyInner;
 
   assign countOutput = tailInner - headInner;
   assign outCountOutput = flushInput ? '0 :
@@ -72,14 +78,18 @@ module rv32_prefix_fifo #(
     if (!rstNInput) begin
       headInner <= '0;
       tailInner <= '0;
+      emptyInner <= 1'b1;
     end else if (!freezeInput && flushInput) begin
       headInner <= '0;
       tailInner <= '0;
+      emptyInner <= 1'b1;
     end else if (!freezeInput) begin
       headInner <= headInner + SEQ_W'(popInner);
       tailInner <= tailInner + SEQ_W'(pushInner);
+      emptyInner <= (headInner + SEQ_W'(popInner)) == (tailInner + SEQ_W'(pushInner));
     end
   end
+  assign emptyOutput = emptyInner;
 
   generate if (PUSH_WIDTH == 2) begin : g_banked_write
     logic [1:0][WIDTH-1:0] bankDataInner;

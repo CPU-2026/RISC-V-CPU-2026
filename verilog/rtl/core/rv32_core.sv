@@ -200,6 +200,7 @@ module rv32_core #(
   rv32_pkg::rob_retirement_input_t [COMMIT_WIDTH-1:0] retirementInputInner;
   rv32_pkg::store_commit_input_t [COMMIT_WIDTH-1:0] retirementStoreInputInner;
   rv32_pkg::data_memory_request_output_t [COMMIT_WIDTH-1:0] retirementMemoryInner;
+  logic [COMMIT_WIDTH-1:0] retirementExitInner;
   logic [COMMIT_WIDTH-1:0][SQ_SLOT_W-1:0] retirementSqIndexInner;
   logic [COMMIT_WIDTH-1:0] retirementReadyInner, retirementFireInner, retirementStoreInner;
   logic [COMMIT_WIDTH-1:0] retirementStoreReadyInner;
@@ -675,6 +676,7 @@ module rv32_core #(
     architecturalRegister: decodedInner.rd,
     newPhysicalRegister: issueDestPhyInner,
     oldPhysicalRegister: ratOldPhyInner,
+    freesPhysicalRegister: decodedInner.writesRd && ratOldPhyInner != '0,
     ready: decodedInner.halt,
     isStore: decodedInner.uopClass == rv32_pkg::UOP_STORE,
     storeQueueIndex: sqAllocIndexInner,
@@ -726,7 +728,7 @@ module rv32_core #(
       assign prefix = 1'b1;
     end else begin : g_following
       assign prefix = !(retirementStoreInner[lane-1] &&
-        retirementMemoryInner[lane-1].address == AXI_EXIT_ADDR);
+        retirementExitInner[lane-1]);
     end
     assign retirementReadyInner[lane] = bootDoneInner && !pipelineFrozenInner && !globalFlushInner &&
       prefix && (retirementStoreInner[lane] ? retirementStoreReadyInner[lane] : 1'b1);
@@ -734,7 +736,7 @@ module rv32_core #(
     assign ratCommitInputInner[lane] = '{valid: retirementFireInner[lane] && robCommitOutputInner[lane].writesArchitecturalRegister,
       architecturalRegister: robCommitOutputInner[lane].architecturalRegister,
       physicalRegister: robCommitOutputInner[lane].newPhysicalRegister};
-    assign retirementFreeInner[lane] = '{valid: retirementFireInner[lane] && robCommitOutputInner[lane].writesArchitecturalRegister,
+    assign retirementFreeInner[lane] = '{valid: retirementFireInner[lane] && robCommitOutputInner[lane].freesPhysicalRegister,
       physicalRegister: robCommitOutputInner[lane].oldPhysicalRegister};
     assign retirementStoreInputInner[lane] = '{valid: robCommitOutputInner[lane].valid && retirementStoreInner[lane] &&
       !globalFlushInner && !pipelineFrozenInner, robTag: robCommitOutputInner[lane].robTag};
@@ -1390,6 +1392,7 @@ module rv32_core #(
     .storeCommitIndexInput(retirementSqIndexInner),
     .storeCommitReadyOutput(retirementStoreReadyInner),
     .storeRetirementOutput(retirementMemoryInner),
+    .storeRetirementExitOutput(retirementExitInner),
     .storeHeadSetPreviewOutput(dmemStoreSetPreviewOutput),
     .dmemRequestOutput(lsuDmemRequestOutputInner), .dmemReqReadyInput(dmemReqReadyInput),
     .dmemResponseInput(lsuDmemResponseInputInner),
@@ -1457,6 +1460,7 @@ module rv32_core #(
       programCounter:decodedSecondInner.programCounter, instruction:decodedSecondInner.instruction,
       writesArchitecturalRegister:decodedSecondInner.writesRd, architecturalRegister:decodedSecondInner.rd,
       newPhysicalRegister:issueSecondDestPhyInner, oldPhysicalRegister:ratSecondOldPhyInner,
+      freesPhysicalRegister:decodedSecondInner.writesRd && ratSecondOldPhyInner != '0,
       ready:decodedSecondInner.halt, isStore:decodedSecondInner.uopClass == UOP_STORE,
       storeQueueIndex:sqAllocSecondIndexInner, isHalt:decodedSecondInner.halt, hasException:1'b0,
       predictedProgramCounter:decodedSecondInner.predictedNextProgramCounter,
@@ -1541,7 +1545,7 @@ module rv32_core #(
       for (int lane = 0; lane < COMMIT_WIDTH; lane++) begin
         if (retirementFireInner[lane]) begin
           if (robCommitOutputInner[lane].isHalt || (retirementStoreInner[lane] &&
-              retirementMemoryInner[lane].address == AXI_EXIT_ADDR)) haltedInner <= 1'b1;
+              retirementExitInner[lane])) haltedInner <= 1'b1;
         end
       end
     end

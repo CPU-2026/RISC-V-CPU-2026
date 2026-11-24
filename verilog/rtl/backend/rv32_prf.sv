@@ -107,6 +107,15 @@ module rv32_prf #(
   // Replay is ordered oldest->youngest, at most RECOVERY_WIDTH appends per
   // beat. Retirement is stalled throughout recovery, so normal oldPhy recycling
   // is a separate path. Selection always uses the old FIFO.
+  // Retirement recycling computes its slots in PARALLEL with prefix popcounts
+  // instead of a serial free_seq_next chain: each lane's slot only needs the
+  // number of valid free events before it, never the previous lane's sum.
+  logic [RECYCLE_W-1:0] retireCountInner;
+  logic [COMMIT_WIDTH-1:0] retireValidInner;
+  logic [SLOT_W-1:0] retireSlotInner [COMMIT_WIDTH];
+  phy_tag_t retirePhyInner [COMMIT_WIDTH];
+  logic [SLOT_W-1:0] retireTailSlotInner;
+  logic retireTailWrapInner;
   always_comb begin
     recycleCountInner = '0;
     recycleTailInner = freeTailInner;
@@ -131,13 +140,31 @@ module rv32_prf #(
         end
       end
     end
-    for (int lane = 0; lane < COMMIT_WIDTH; lane++) begin
-     if (!restoreInput.valid && !recoveryInput.active && freeInput[lane].valid && freeInput[lane].physicalRegister != '0) begin
-      recyclePhyInner[recycle_index_t'(recycleCountInner)] = freeInput[lane].physicalRegister;
-      recycleSlotInner[recycle_index_t'(recycleCountInner)] = recycleTailInner[SLOT_W-1:0];
-      recycleTailInner = free_seq_next(recycleTailInner);
-      recycleCountInner = recycleCountInner + RECYCLE_W'(1);
-     end
+    // Retirement recycling: identical events, lanes keep their own index.
+    // The four possible wrapped slots are computed in parallel from the OLD
+    // free tail (47 + 3 = 50 < 64, so the wrap is a single compare), and the
+    // late popcount prefix only selects one of them through a 4:1 mux.
+    begin
+      logic [RECYCLE_W-1:0] prefix;
+      logic [SLOT_W-1:0] preWrapped [COMMIT_WIDTH+1];
+      logic preWrapFlag [COMMIT_WIDTH+1];
+      prefix = '0;
+      for (int k = 0; k <= COMMIT_WIDTH; k++) begin
+        preWrapped[k] = SLOT_W'(freeTailSlotInner) + SLOT_W'(k);
+        preWrapFlag[k] = preWrapped[k] >= SLOT_W'(PRF_DEPTH);
+        if (preWrapFlag[k])
+          preWrapped[k] = preWrapped[k] - SLOT_W'(PRF_DEPTH);
+      end
+      for (int lane = 0; lane < COMMIT_WIDTH; lane++) begin
+        retireValidInner[lane] = !restoreInput.valid && !recoveryInput.active &&
+          freeInput[lane].valid;
+        retireSlotInner[lane] = preWrapped[prefix];
+        retirePhyInner[lane] = freeInput[lane].physicalRegister;
+        prefix = prefix + RECYCLE_W'(retireValidInner[lane]);
+      end
+      retireCountInner = prefix;
+      retireTailSlotInner = preWrapped[retireCountInner];
+      retireTailWrapInner = preWrapFlag[retireCountInner];
     end
   end
 
@@ -197,11 +224,16 @@ module rv32_prf #(
     end else if (!freezeInput) begin
       if (allocationFireInner || allocationSecondFireInner)
         freeHeadInner <= allocatedHeadInner;
-      if (recycleCountInner != 0)
+      if (recoveryInput.active && recycleCountInner != 0)
         freeTailInner <= recycleTailInner;
+      else if (!recoveryInput.active && retireCountInner != 0)
+        freeTailInner <= {freeTailInner[SEQ_W-1] ^ retireTailWrapInner, retireTailSlotInner};
       for (int k = 0; k < RECOVERY_WIDTH; k++)
-        if (k < int'(recycleCountInner))
+        if (recoveryInput.active && k < int'(recycleCountInner))
           freeListInner[recycleSlotInner[k]] <= recyclePhyInner[k];
+      for (int lane = 0; lane < COMMIT_WIDTH; lane++)
+        if (retireValidInner[lane])
+          freeListInner[retireSlotInner[lane]] <= retirePhyInner[lane];
 
     end
   end
@@ -230,7 +262,7 @@ module rv32_prf #(
     assert (!allocationSecondFireInner || !allocationFireInner || allocSecondPhyOutput != selectedPhyInner)
       else $fatal(1, "PRF allocated one physical register twice");
     assert (int'(freeCountOutput) - int'(allocationFireInner) - int'(allocationSecondFireInner) +
-            int'(recycleCountInner) <= PRF_DEPTH)
+            int'(recycleCountInner) + int'(retireCountInner) <= PRF_DEPTH)
       else $fatal(1, "PRF FIFO overflow");
     for (int k = 0; k < RECOVERY_WIDTH; k++) if (k < int'(recycleCountInner)) begin
       assert (recyclePhyInner[k] != 0 && int'(recyclePhyInner[k]) < PRF_DEPTH &&
@@ -238,6 +270,13 @@ module rv32_prf #(
       for (int j = 0; j < k; j++)
         assert (recyclePhyInner[k] != recyclePhyInner[j])
           else $fatal(1, "PRF duplicate batch release");
+    end
+    for (int lane = 0; lane < COMMIT_WIDTH; lane++) if (retireValidInner[lane]) begin
+      assert (retirePhyInner[lane] != 0 && int'(retirePhyInner[lane]) < PRF_DEPTH &&
+              !freeMembership[retirePhyInner[lane]]) else $fatal(1, "PRF duplicate/invalid retire release");
+      for (int j = 0; j < lane; j++)
+        assert (!retireValidInner[j] || retirePhyInner[lane] != retirePhyInner[j])
+          else $fatal(1, "PRF duplicate retire batch release");
     end
   end
 `endif

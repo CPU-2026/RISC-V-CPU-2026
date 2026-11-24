@@ -748,31 +748,28 @@ module rv32_rs #(
   logic [DEPTH-1:0] rowAllocationFireInner;
   generate if (RENAME_WIDTH==4 && DEPTH>1) begin : g_static_allocation_write
     for (genvar row=0;row<DEPTH;row++) begin : g_row
-      logic [3:0] hit,winner;
+      logic [3:0] hit;
       for (genvar lane=0;lane<4;lane++) begin : g_hit
         assign hit[lane]=allocLanesFireOutput[lane] && allocLanesIndexInner[lane]==INDEX_W'(row);
       end
       assign rowAllocationFireInner[row]=|hit;
       always_comb begin
-        logic later;
         rs_allocation_input_t resolved;
-        later=1'b0;
-        winner='0;
-        for (int lane=3;lane>=0;lane--) begin
-          winner[lane]=hit[lane] && !later;
-          later|=hit[lane];
-        end
         rowAllocationInner[row]='0;
         rowAllocationAuxInner[row]='0;
         resolved='0;
+        // Allocation lanes always target distinct rows (asserted below), so at
+        // most one hit is set per row and a plain masked OR equals the original
+        // youngest-lane priority. Dropping the priority chain shortens the
+        // late capture mux.
         for (int lane=0;lane<4;lane++) begin
           resolved=allocLanesInput[lane];
           resolved.source1Ready=allocLanesS1ReadyInner[lane];
           resolved.source2Ready=allocLanesS2ReadyInner[lane];
           resolved.source1Value=allocLanesS1ValueInner[lane];
           resolved.source2Value=allocLanesS2ValueInner[lane];
-          rowAllocationInner[row]|=resolved & {$bits(rs_allocation_input_t){winner[lane]}};
-          rowAllocationAuxInner[row]|=allocLanesAuxInput[lane] & {AUX_W{winner[lane]}};
+          rowAllocationInner[row]|=resolved & {$bits(rs_allocation_input_t){hit[lane]}};
+          rowAllocationAuxInner[row]|=allocLanesAuxInput[lane] & {AUX_W{hit[lane]}};
         end
       end
     end
@@ -793,13 +790,8 @@ module rv32_rs #(
         destPhyInner[seqIndexInner] <= '0;
         src1ReadyInner[seqIndexInner] <= 1'b0;
         src1TagInner[seqIndexInner] <= '0;
-        src1ValueInner[seqIndexInner] <= '0;
         src2ReadyInner[seqIndexInner] <= 1'b0;
         src2TagInner[seqIndexInner] <= '0;
-        src2ValueInner[seqIndexInner] <= '0;
-        immInner[seqIndexInner] <= '0;
-        pcInner[seqIndexInner] <= '0;
-        predictedPcInner[seqIndexInner] <= '0;
         useImmInner[seqIndexInner] <= 1'b0;
         auxInner[seqIndexInner] <= '0;
       end
@@ -812,13 +804,11 @@ module rv32_rs #(
           if (!src1ReadyInner[seqIndexInner]) begin
             if (src1WbInner[seqIndexInner].valid) begin
               src1ReadyInner[seqIndexInner] <= 1'b1;
-              src1ValueInner[seqIndexInner] <= src1WbInner[seqIndexInner].value;
             end
           end
           if (!src2ReadyInner[seqIndexInner]) begin
             if (src2WbInner[seqIndexInner].valid) begin
               src2ReadyInner[seqIndexInner] <= 1'b1;
-              src2ValueInner[seqIndexInner] <= src2WbInner[seqIndexInner].value;
             end
           end
         end
@@ -843,13 +833,8 @@ module rv32_rs #(
           destPhyInner[allocIndexInner] <= allocInput.destinationPhy;
           src1ReadyInner[allocIndexInner] <= allocSrc1ReadyResolvedInner;
           src1TagInner[allocIndexInner] <= allocInput.source1Tag;
-          src1ValueInner[allocIndexInner] <= allocSrc1ValueResolvedInner;
           src2ReadyInner[allocIndexInner] <= allocSrc2ReadyResolvedInner;
           src2TagInner[allocIndexInner] <= allocInput.source2Tag;
-          src2ValueInner[allocIndexInner] <= allocSrc2ValueResolvedInner;
-          immInner[allocIndexInner] <= allocInput.immediate;
-          pcInner[allocIndexInner] <= allocInput.programCounter;
-          predictedPcInner[allocIndexInner] <= allocInput.predictedProgramCounter;
           useImmInner[allocIndexInner] <= allocInput.useImmediate;
           auxInner[allocIndexInner] <= allocAuxInput;
         end
@@ -860,13 +845,8 @@ module rv32_rs #(
           destPhyInner[allocSecondIndexInner] <= allocSecondInput.destinationPhy;
           src1ReadyInner[allocSecondIndexInner] <= allocSecondSrc1ReadyInner;
           src1TagInner[allocSecondIndexInner] <= allocSecondInput.source1Tag;
-          src1ValueInner[allocSecondIndexInner] <= allocSecondSrc1ValueInner;
           src2ReadyInner[allocSecondIndexInner] <= allocSecondSrc2ReadyInner;
           src2TagInner[allocSecondIndexInner] <= allocSecondInput.source2Tag;
-          src2ValueInner[allocSecondIndexInner] <= allocSecondSrc2ValueInner;
-          immInner[allocSecondIndexInner] <= allocSecondInput.immediate;
-          pcInner[allocSecondIndexInner] <= allocSecondInput.programCounter;
-          predictedPcInner[allocSecondIndexInner] <= allocSecondInput.predictedProgramCounter;
           useImmInner[allocSecondIndexInner] <= allocSecondInput.useImmediate;
           auxInner[allocSecondIndexInner] <= allocSecondAuxInput;
         end
@@ -878,13 +858,8 @@ module rv32_rs #(
             destPhyInner[row]<=rowAllocationInner[row].destinationPhy;
             src1ReadyInner[row]<=rowAllocationInner[row].source1Ready;
             src1TagInner[row]<=rowAllocationInner[row].source1Tag;
-            src1ValueInner[row]<=rowAllocationInner[row].source1Value;
             src2ReadyInner[row]<=rowAllocationInner[row].source2Ready;
             src2TagInner[row]<=rowAllocationInner[row].source2Tag;
-            src2ValueInner[row]<=rowAllocationInner[row].source2Value;
-            immInner[row]<=rowAllocationInner[row].immediate;
-            pcInner[row]<=rowAllocationInner[row].programCounter;
-            predictedPcInner[row]<=rowAllocationInner[row].predictedProgramCounter;
             useImmInner[row]<=rowAllocationInner[row].useImmediate;
             auxInner[row]<=rowAllocationAuxInner[row];
           end
@@ -897,17 +872,65 @@ module rv32_rs #(
             destPhyInner[allocLanesIndexInner[lane]]<=allocLanesInput[lane].destinationPhy;
             src1ReadyInner[allocLanesIndexInner[lane]]<=allocLanesS1ReadyInner[lane];
             src1TagInner[allocLanesIndexInner[lane]]<=allocLanesInput[lane].source1Tag;
-            src1ValueInner[allocLanesIndexInner[lane]]<=allocLanesS1ValueInner[lane];
             src2ReadyInner[allocLanesIndexInner[lane]]<=allocLanesS2ReadyInner[lane];
             src2TagInner[allocLanesIndexInner[lane]]<=allocLanesInput[lane].source2Tag;
-            src2ValueInner[allocLanesIndexInner[lane]]<=allocLanesS2ValueInner[lane];
-            immInner[allocLanesIndexInner[lane]]<=allocLanesInput[lane].immediate;
-            pcInner[allocLanesIndexInner[lane]]<=allocLanesInput[lane].programCounter;
-            predictedPcInner[allocLanesIndexInner[lane]]<=allocLanesInput[lane].predictedProgramCounter;
             useImmInner[allocLanesIndexInner[lane]]<=allocLanesInput[lane].useImmediate;
             auxInner[allocLanesIndexInner[lane]]<=allocLanesAuxInput[lane];
           end
         end
+        end
+      end
+    end
+  end
+  // Operand payload registers carry no async reset: they are read only
+  // through the busy-gated issue selection, so their reset values are
+  // unreachable don't-cares. A plain DFF (DFFHQN) has a smaller D-pin setup
+  // than the async-reset DFFASRHQN, shortening the late issue-capture path.
+  // The write ordering mirrors the original block: WB wakeup first, then the
+  // allocation writes (NBA last-write wins exactly as before).
+  always_ff @(posedge clkInput) begin
+    if (!freezeInput) begin
+      for (seqIndexInner = 0; seqIndexInner < DEPTH; seqIndexInner = seqIndexInner + 1) begin
+        if (busyInner[seqIndexInner]) begin
+          if (!src1ReadyInner[seqIndexInner] && src1WbInner[seqIndexInner].valid)
+            src1ValueInner[seqIndexInner] <= src1WbInner[seqIndexInner].value;
+          if (!src2ReadyInner[seqIndexInner] && src2WbInner[seqIndexInner].valid)
+            src2ValueInner[seqIndexInner] <= src2WbInner[seqIndexInner].value;
+        end
+      end
+      if (!flushInfoInput.valid) begin
+        if (RENAME_WIDTH != 4 && allocInput.valid && allocReadyOutput) begin
+          src1ValueInner[allocIndexInner] <= allocSrc1ValueResolvedInner;
+          src2ValueInner[allocIndexInner] <= allocSrc2ValueResolvedInner;
+          immInner[allocIndexInner] <= allocInput.immediate;
+          pcInner[allocIndexInner] <= allocInput.programCounter;
+          predictedPcInner[allocIndexInner] <= allocInput.predictedProgramCounter;
+        end
+        if (allocSecondFireInner) begin
+          src1ValueInner[allocSecondIndexInner] <= allocSecondSrc1ValueInner;
+          src2ValueInner[allocSecondIndexInner] <= allocSecondSrc2ValueInner;
+          immInner[allocSecondIndexInner] <= allocSecondInput.immediate;
+          pcInner[allocSecondIndexInner] <= allocSecondInput.programCounter;
+          predictedPcInner[allocSecondIndexInner] <= allocSecondInput.predictedProgramCounter;
+        end
+        if (RENAME_WIDTH == 4 && DEPTH>1) begin
+          for (int row=0;row<DEPTH;row++) if (rowAllocationFireInner[row]) begin
+            src1ValueInner[row]<=rowAllocationInner[row].source1Value;
+            src2ValueInner[row]<=rowAllocationInner[row].source2Value;
+            immInner[row]<=rowAllocationInner[row].immediate;
+            pcInner[row]<=rowAllocationInner[row].programCounter;
+            predictedPcInner[row]<=rowAllocationInner[row].predictedProgramCounter;
+          end
+        end else begin
+          if (RENAME_WIDTH == 4) begin
+            for (int lane=0;lane<4;lane++) if (allocLanesFireOutput[lane]) begin
+              src1ValueInner[allocLanesIndexInner[lane]]<=allocLanesS1ValueInner[lane];
+              src2ValueInner[allocLanesIndexInner[lane]]<=allocLanesS2ValueInner[lane];
+              immInner[allocLanesIndexInner[lane]]<=allocLanesInput[lane].immediate;
+              pcInner[allocLanesIndexInner[lane]]<=allocLanesInput[lane].programCounter;
+              predictedPcInner[allocLanesIndexInner[lane]]<=allocLanesInput[lane].predictedProgramCounter;
+            end
+          end
         end
       end
     end

@@ -63,6 +63,10 @@ module rv32_dcache #(
     logic valid, dirty, readSent, writeSent, writeDone, responded;
   } miss_entry_t;
   request_entry_t requestInner [REQUEST_DEPTH];
+  // Registered exit-address match per row. Request addresses are immutable
+  // after allocation, so the 32-bit AXI_EXIT_ADDR compare is evaluated once at
+  // allocation and every late consumer reads this bit instead.
+  logic [REQUEST_DEPTH-1:0] exitInner;
   miss_entry_t missesInner [MSHR_DEPTH];
   logic [31:0] rawInner [REQUEST_DEPTH];
   logic [DCACHE_LINE_BITS-1:0] victimPayloadInner [MSHR_DEPTH];
@@ -467,7 +471,7 @@ module rv32_dcache #(
     for(int row=0;row<REQUEST_DEPTH;row++)
       queuedStoreInner|=requestInner[row].active && requestInner[row].request.write &&
         (requestInner[row].request.address[31:OFFSET_W]==cpuRequestInput.address[31:OFFSET_W] ||
-         requestInner[row].request.address==AXI_EXIT_ADDR);
+         exitInner[row]);
   end
   assign readEdgeAvailableInner=!readValidInner ||
     (hitWayInner>=0 && !requestInner[readIndexInner].request.write && responseInner==int'(readIndexInner));
@@ -549,7 +553,7 @@ module rv32_dcache #(
       end
     exitValidOutput = rstNInput && firstInner >= 0 &&
       requestInner[firstInner].request.write &&
-      requestInner[firstInner].request.address == AXI_EXIT_ADDR && exitReadyInput;
+      exitInner[firstInner] && exitReadyInput;
     exitValueOutput = firstInner >= 0 ? requestInner[firstInner].request.writeData : 32'b0;
     for (int w = 0; w < WAYS; w++)
       if (hitWayInner < 0 && readHitWayInner[w])
@@ -657,7 +661,7 @@ module rv32_dcache #(
     end
     storeHintFireInner = rstNInput && !fillBeatInner && firstInner >= 0 &&
       requestInner[firstInner].request.write &&
-      requestInner[firstInner].request.address != AXI_EXIT_ADDR &&
+      !exitInner[firstInner] &&
       !requestInner[firstInner].ready && !requestInner[firstInner].hasMiss &&
       !requestInner[firstInner].deferred && storeHintMatchInner &&
       !set_locked(requestInner[firstInner].request.address) &&
@@ -686,15 +690,21 @@ module rv32_dcache #(
     // old hit; misses, held results, fills and Store writes keep old priority.
     continueHit = readValidInner && hitWayInner >= 0 && !fillBeatInner &&
       !requestInner[readIndexInner].request.write && responseInner == int'(readIndexInner);
+    // The response-row exclusion only shifts lookupFirst when a NORMAL
+    // (buffered/hit) response wins. Early/word returns happen only while a
+    // miss is outstanding, when the (anyMiss || ...) candidacy gate already
+    // passes for every row, so zeroing their owner would be irrelevant; the
+    // normal winner is OLD state, which keeps both AXI response inputs off
+    // this late lookup path entirely.
     lookupActive = activeInner;
-    if (!fillBeatInner && responseInner >= 0) lookupActive[responseInner] = 1'b0;
+    if (normalResponseInner >= 0) lookupActive[normalResponseInner] = 1'b0;
     lookupFirst = oldest_request(lookupActive & ~prefetchMaskInner);
     candidates = 0;
     for (int i = 0; i < REQUEST_DEPTH; i++)
-      if (requestInner[i].active && !prefetchAbortInner[i] &&
+      if (requestInner[i].active &&
            !(readValidInner && int'(readIndexInner) == i) &&
            !requestInner[i].ready && !requestInner[i].hasMiss && i != mergeSlotInner &&
-           requestInner[i].request.address != AXI_EXIT_ADDR &&
+           !exitInner[i] &&
           (!requestInner[i].request.write || !set_locked(requestInner[i].request.address)) && !storeHazardInner[i] &&
           find_miss(line_of(requestInner[i].request.address)) < 0 &&
           (!requestInner[i].request.write || i == firstInner) &&
@@ -705,10 +715,21 @@ module rv32_dcache #(
     // can therefore hit another valid way while that set is locked.
     // A failed probe becomes deferred until the set unlocks; Stores
     // and new miss allocation retain the original whole-set lock.
+    // The demand winner only needs OLD request state; the prefetchAbort
+    // (accepted-Store) and CPU-request-preemption gates are folded into the
+    // no-demand fallback. At most one prefetch row exists, so its winner is
+    // the row mask itself and no age arbitration waits for the late grant.
     demandLookupMaskInner=candidates & ~prefetchMaskInner;
-    if(|demandLookupMaskInner)candidates=demandLookupMaskInner;
-    else if(cpuRequestInput.valid)candidates='0;
-    lookupWinnerInner = lookup_winner(candidates);
+    if(|demandLookupMaskInner)begin
+      lookupWinnerInner = lookup_winner(demandLookupMaskInner);
+    end else begin
+      // Prefetch-only fallback: all non-grant candidate conditions still
+      // apply; only the accepted-Store abort gate is deferred past the
+      // (trivially single-row) age arbitration.
+      lookupWinnerInner = '0;
+      if (!cpuRequestInput.valid)
+        lookupWinnerInner = (candidates & prefetchMaskInner) & ~prefetchAbortInner;
+    end
     lookupCandidateInner = lookup_index(lookupWinnerInner);
     lookupInner = (!readValidInner || continueHit) && !fillBeatInner && storeInner < 0 ? lookupCandidateInner : -1;
     // Only lookupInner authorizes a read. With no candidate the truncated -1
@@ -899,12 +920,16 @@ module rv32_dcache #(
           readWayMaskHighInner[w] <= validInner[{1'b1, 6'(set_of(cpuRequestInput.address))}][w];
         end
         readWayMaskSetHiInner <= cpuRequestInput.address[OFFSET_W+6];
-      end else if (lookupInner >= 0) begin
+      end else if (lookupCandidateInner >= 0) begin
+        // Candidate index is independent of the late grant qualification;
+        // whenever lookupInner fires it equals lookupCandidateInner (asserted).
+        // A sampled value without a read launch is ignored next cycle because
+        // readValidInner then falls, so the enable may track the candidate.
         for (int w = 0; w < WAYS; w++) begin
-          readWayMaskLowInner[w] <= validInner[{1'b0, 6'(set_of(requestInner[lookupInner].request.address))}][w];
-          readWayMaskHighInner[w] <= validInner[{1'b1, 6'(set_of(requestInner[lookupInner].request.address))}][w];
+          readWayMaskLowInner[w] <= validInner[{1'b0, 6'(set_of(requestInner[lookupCandidateInner].request.address))}][w];
+          readWayMaskHighInner[w] <= validInner[{1'b1, 6'(set_of(requestInner[lookupCandidateInner].request.address))}][w];
         end
-        readWayMaskSetHiInner <= requestInner[lookupInner].request.address[OFFSET_W+6];
+        readWayMaskSetHiInner <= requestInner[lookupCandidateInner].request.address[OFFSET_W+6];
       end
     end
   end else begin : g_read_mask_original
@@ -932,6 +957,7 @@ module rv32_dcache #(
         requestInner[i] <= '0;
         olderInner[i] <= 0;
         byteEndInner[i] <= '0;
+        exitInner[i] <= 1'b0;
       end
       for (int m = 0; m < MSHR_DEPTH; m++) missesInner[m] <= '0;
       for (int s = 0; s < SETS; s++) begin
@@ -960,10 +986,11 @@ module rv32_dcache #(
               writeData:'0,writeStrobe:'0,size:MEM_WORD,transaction:'0} : cpuRequestInput,
             active:1'b1,prefetch:prefetchEnqueueInner,default:'0};
           // Request address/size are immutable until this slot is reallocated.
-          // Compute its inclusive byte end on the SAME allocation edge, not
-          // on the critical response/Store-hazard qualification path.
+          // Compute its inclusive byte end and the exit-address match on the
+          // SAME allocation edge, not on late critical qualification paths.
           byteEndInner[i] <= (OFFSET_W+1)'(cpuRequestInput.address[OFFSET_W-1:0]) +
             (OFFSET_W+1)'(bytes_for_size(cpuRequestInput.size)-1);
+          exitInner[i] <= !prefetchEnqueueInner && cpuRequestInput.address == AXI_EXIT_ADDR;
         end
         else begin
           requestInner[i].active <= requestInner[i].active && !releasedInner[i];

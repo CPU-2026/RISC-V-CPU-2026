@@ -260,6 +260,7 @@ module rv32_rob #(
       commitOutput[lane].architecturalRegister = archRdInner[slot];
       commitOutput[lane].newPhysicalRegister = newPhyInner[slot];
       commitOutput[lane].oldPhysicalRegister = oldPhyInner[slot];
+      commitOutput[lane].freesPhysicalRegister = writesRdInner[slot] && oldPhyInner[slot] != phy_tag_t'(0);
       commitStoreOutput[lane] = storeInner[slot];
       commitOutput[lane].storeQueueIndex = sqIndexInner[slot];
       commitOutput[lane].isHalt = haltInner[slot];

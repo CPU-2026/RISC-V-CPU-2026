@@ -34,6 +34,16 @@ module rv32_rob_lanes #(
   import rv32_pkg::*;
   localparam int SLOT_W=$clog2(DEPTH);
   localparam int COUNT_W=$clog2(DEPTH+1);
+  // Windowed distance from the commit head to the flush point. The ROB tags
+  // are a plain 5-bit counter and the flush always names an in-flight entry,
+  // so (flushTag - head) mod 32 lies in [0,15] and equals the true distance.
+  // rob_is_older(head+lane, flushTag) is then exactly (distance > lane): the
+  // "younger" window is (boundary, boundary+15], so lane l passes iff the
+  // flush sits more than l entries after the head. This replaces one 5-bit
+  // carry-lookahead per lane inside the serial commit chain with a single
+  // shared subtract plus a per-lane 2-bit compare.
+  rob_tag_t commitFlushDistanceInner;
+  assign commitFlushDistanceInner=flushInput.robTag-headInner;
   if ((LANES!=1 && LANES!=2 && LANES!=4) || (COMMIT_WIDTH!=1 && COMMIT_WIDTH!=2 && COMMIT_WIDTH!=4)) begin : g_invalid_width
     initial $fatal(1,"array ROB allocation/commit width unsupported");
   end
@@ -62,7 +72,24 @@ module rv32_rob_lanes #(
     logic valid;
     logic ready;
   } commit_read_t;
+  // Retire-critical narrow fields read through their own small muxes so the
+  // retirement/free-list/RAT-commit select path does not carry the wide
+  // instruction/PC trace payload. Values are the same rows as the full read.
+  typedef struct packed {
+    rob_tag_t tag;
+    logic valid;
+    logic ready;
+    logic writesArchitecturalRegister;
+    logic [4:0] architecturalRegister;
+    phy_tag_t newPhysicalRegister;
+    phy_tag_t oldPhysicalRegister;
+    logic freesPhysicalRegister;
+    logic isStore;
+    logic [SQ_SLOT_W-1:0] storeQueueIndex;
+    logic isHalt;
+  } commit_read_narrow_t;
   commit_read_t commitReadInner[COMMIT_WIDTH];
+  commit_read_narrow_t commitReadNarrowInner[COMMIT_WIDTH];
   if (DEPTH>=COMMIT_WIDTH && COMMIT_WIDTH>1) begin : g_commit_banked
     localparam int BANK_W=$clog2(COMMIT_WIDTH);
     localparam int ROWS=DEPTH/COMMIT_WIDTH;
@@ -76,6 +103,7 @@ module rv32_rob_lanes #(
     for (genvar bank=0;bank<COMMIT_WIDTH;bank++) begin : g_bank
       logic [ROWS-1:0] selectRow;
       commit_read_t selected;
+      commit_read_narrow_t narrowSelected;
       // Decode both neighboring rows using constant comparisons. The low head
       // bits only choose between the two decodes, rather than feeding an adder.
       for (genvar row=0;row<ROWS;row++) begin : g_decode
@@ -90,52 +118,82 @@ module rv32_rob_lanes #(
       end
       always_comb begin
         selected='0;
+        narrowSelected='0;
         for (int row=0;row<ROWS;row++) begin
           selected|=commit_read_t'{payload:payloadInner[row*COMMIT_WIDTH+bank],
             tag:tagInner[row*COMMIT_WIDTH+bank],valid:validInner[row*COMMIT_WIDTH+bank],
             ready:readyInner[row*COMMIT_WIDTH+bank]} & {$bits(commit_read_t){selectRow[row]}};
+          narrowSelected|=commit_read_narrow_t'{tag:tagInner[row*COMMIT_WIDTH+bank],
+            valid:validInner[row*COMMIT_WIDTH+bank],ready:readyInner[row*COMMIT_WIDTH+bank],
+            writesArchitecturalRegister:payloadInner[row*COMMIT_WIDTH+bank].writesArchitecturalRegister,
+            architecturalRegister:payloadInner[row*COMMIT_WIDTH+bank].architecturalRegister,
+            newPhysicalRegister:payloadInner[row*COMMIT_WIDTH+bank].newPhysicalRegister,
+            oldPhysicalRegister:payloadInner[row*COMMIT_WIDTH+bank].oldPhysicalRegister,
+            freesPhysicalRegister:payloadInner[row*COMMIT_WIDTH+bank].freesPhysicalRegister,
+            isStore:payloadInner[row*COMMIT_WIDTH+bank].isStore,
+            storeQueueIndex:payloadInner[row*COMMIT_WIDTH+bank].storeQueueIndex,
+            isHalt:payloadInner[row*COMMIT_WIDTH+bank].isHalt} & {$bits(commit_read_narrow_t){selectRow[row]}};
         end
       end
     end
     for (genvar stage=0;stage<BANK_W;stage++) begin : g_rotate
       logic [COMMIT_WIDTH-1:0][$bits(commit_read_t)-1:0] value;
+      logic [COMMIT_WIDTH-1:0][$bits(commit_read_narrow_t)-1:0] narrowValue;
       for (genvar lane=0;lane<COMMIT_WIDTH;lane++) begin : g_lane
         if (stage==0) begin : g_first
           assign value[lane]=firstBank[stage] ?
             g_bank[(lane+(1<<stage))%COMMIT_WIDTH].selected : g_bank[lane].selected;
+          assign narrowValue[lane]=firstBank[stage] ?
+            g_bank[(lane+(1<<stage))%COMMIT_WIDTH].narrowSelected : g_bank[lane].narrowSelected;
         end else begin : g_later
           assign value[lane]=firstBank[stage] ?
             g_rotate[stage-1].value[(lane+(1<<stage))%COMMIT_WIDTH] : g_rotate[stage-1].value[lane];
+          assign narrowValue[lane]=firstBank[stage] ?
+            g_rotate[stage-1].narrowValue[(lane+(1<<stage))%COMMIT_WIDTH] : g_rotate[stage-1].narrowValue[lane];
         end
       end
     end
     for (genvar lane=0;lane<COMMIT_WIDTH;lane++) begin : g_result
       assign commitReadInner[lane]=commit_read_t'(g_rotate[BANK_W-1].value[lane]);
+      assign commitReadNarrowInner[lane]=commit_read_narrow_t'(g_rotate[BANK_W-1].narrowValue[lane]);
     end
   end else begin : g_commit_small
     for (genvar lane=0;lane<COMMIT_WIDTH;lane++) begin : g_lane
       logic [SLOT_W-1:0] slot;
       logic [DEPTH-1:0] selectRow;
       commit_read_t selected;
+      commit_read_narrow_t narrowSelected;
       assign slot=SLOT_W'(headInner+rob_tag_t'(lane));
       for (genvar row=0;row<DEPTH;row++) begin : g_decode
         assign selectRow[row]=slot==SLOT_W'(row);
       end
       always_comb begin
         selected='0;
+        narrowSelected='0;
         for (int row=0;row<DEPTH;row++) begin
           selected|=commit_read_t'{payload:payloadInner[row],tag:tagInner[row],
             valid:validInner[row],ready:readyInner[row]} & {$bits(commit_read_t){selectRow[row]}};
+          narrowSelected|=commit_read_narrow_t'{tag:tagInner[row],
+            valid:validInner[row],ready:readyInner[row],
+            writesArchitecturalRegister:payloadInner[row].writesArchitecturalRegister,
+            architecturalRegister:payloadInner[row].architecturalRegister,
+            newPhysicalRegister:payloadInner[row].newPhysicalRegister,
+            oldPhysicalRegister:payloadInner[row].oldPhysicalRegister,
+            freesPhysicalRegister:payloadInner[row].freesPhysicalRegister,
+            isStore:payloadInner[row].isStore,
+            storeQueueIndex:payloadInner[row].storeQueueIndex,
+            isHalt:payloadInner[row].isHalt} & {$bits(commit_read_narrow_t){selectRow[row]}};
         end
       end
       assign commitReadInner[lane]=selected;
+      assign commitReadNarrowInner[lane]=narrowSelected;
     end
   end
   for (genvar lane=0;lane<COMMIT_WIDTH;lane++) begin : g_commit_read_outputs
     assign commitPayloadInner[lane]=commitReadInner[lane].payload;
-    assign commitTagInner[lane]=commitReadInner[lane].tag;
-    assign commitValidInner[lane]=commitReadInner[lane].valid;
-    assign commitReadyInner[lane]=commitReadInner[lane].ready;
+    assign commitTagInner[lane]=commitReadNarrowInner[lane].tag;
+    assign commitValidInner[lane]=commitReadNarrowInner[lane].valid;
+    assign commitReadyInner[lane]=commitReadNarrowInner[lane].ready;
   end
   for (genvar portIndex=COMMIT_WIDTH;portIndex<SHARED_READ_PORTS;portIndex++) begin : g_shared_read
     logic [SLOT_W-1:0] slot;
@@ -195,20 +253,36 @@ module rv32_rob_lanes #(
       commitOutput[lane]='0;
       commitOutput[lane].valid=open && int'(countInner)>lane && commitValidInner[lane] &&
         commitTagInner[lane]==headInner+rob_tag_t'(lane) && commitReadyInner[lane] &&
-        (!flushInput.valid || rob_is_older(commitTagInner[lane],flushInput.robTag));
+        (!flushInput.valid || commitFlushDistanceInner>rob_tag_t'(lane));
       commitOutput[lane].robTag=commitTagInner[lane];
       commitOutput[lane].programCounter=commitPayloadInner[lane].programCounter;
       commitOutput[lane].instruction=commitPayloadInner[lane].instruction;
-      commitOutput[lane].writesArchitecturalRegister=commitPayloadInner[lane].writesArchitecturalRegister;
-      commitOutput[lane].architecturalRegister=commitPayloadInner[lane].architecturalRegister;
-      commitOutput[lane].newPhysicalRegister=commitPayloadInner[lane].newPhysicalRegister;
-      commitOutput[lane].oldPhysicalRegister=commitPayloadInner[lane].oldPhysicalRegister;
-      commitOutput[lane].storeQueueIndex=commitPayloadInner[lane].storeQueueIndex;
-      commitOutput[lane].isHalt=commitPayloadInner[lane].isHalt;
-      commitStoreOutput[lane]=commitPayloadInner[lane].isStore;
-      open=commitOutput[lane].valid && !commitPayloadInner[lane].isHalt;
+      commitOutput[lane].writesArchitecturalRegister=commitReadNarrowInner[lane].writesArchitecturalRegister;
+      commitOutput[lane].architecturalRegister=commitReadNarrowInner[lane].architecturalRegister;
+      commitOutput[lane].newPhysicalRegister=commitReadNarrowInner[lane].newPhysicalRegister;
+      commitOutput[lane].oldPhysicalRegister=commitReadNarrowInner[lane].oldPhysicalRegister;
+      commitOutput[lane].freesPhysicalRegister=commitReadNarrowInner[lane].freesPhysicalRegister;
+      commitOutput[lane].storeQueueIndex=commitReadNarrowInner[lane].storeQueueIndex;
+      commitOutput[lane].isHalt=commitReadNarrowInner[lane].isHalt;
+      commitStoreOutput[lane]=commitReadNarrowInner[lane].isStore;
+      open=commitOutput[lane].valid && !commitReadNarrowInner[lane].isHalt;
     end
   end
+`ifndef SYNTHESIS
+  // Runtime oracle: the distance reformulation must match the original
+  // windowed age check whenever the lane's tag matches head+lane. A stale
+  // row (ring wrap) fails that match, its valid is already zero, and its
+  // flush term is a don't-care, so the raw terms may differ there.
+  always @(posedge clkInput) if (rstNInput) begin
+    for (int lane=0;lane<COMMIT_WIDTH;lane++) begin
+      if (commitTagInner[lane]==headInner+rob_tag_t'(lane)) begin
+        assert ((!flushInput.valid || commitFlushDistanceInner>rob_tag_t'(lane)) ==
+                (!flushInput.valid || rob_is_older(commitTagInner[lane],flushInput.robTag)))
+          else $fatal(1,"commit flush distance reformulation mismatch");
+      end
+    end
+  end
+`endif
   always_comb begin : commit_acceptance
     bit open;
     open=1;

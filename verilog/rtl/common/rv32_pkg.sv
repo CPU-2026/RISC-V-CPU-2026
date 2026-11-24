@@ -624,6 +624,7 @@ package rv32_pkg;
     logic [4:0] architecturalRegister;
     phy_tag_t newPhysicalRegister;
     phy_tag_t oldPhysicalRegister;
+    logic freesPhysicalRegister;
     logic ready;
     logic isStore;
     logic [SQ_SLOT_W-1:0] storeQueueIndex;
@@ -655,6 +656,7 @@ package rv32_pkg;
     logic [4:0] architecturalRegister;
     phy_tag_t newPhysicalRegister;
     phy_tag_t oldPhysicalRegister;
+    logic freesPhysicalRegister;
     logic [SQ_SLOT_W-1:0] storeQueueIndex;
     logic isHalt;
     logic hasException; // Compatibility output, always zero.

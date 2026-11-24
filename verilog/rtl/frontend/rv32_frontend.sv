@@ -388,6 +388,7 @@ module rv32_frontend #(
       )'(iqReadyInput) + $clog2(
           RENAME_WIDTH + 1
       )'(RENAME_WIDTH == 2 && iqSecondReadyInput);
+      logic unusedFqEmptyInner, unusedIqEmptyInner;
       rv32_prefix_fifo #(
           .DEPTH(FQ_DEPTH),
           .WIDTH($bits(decode_context_t))
@@ -404,7 +405,8 @@ module rv32_frontend #(
           .outCountOutput(availableWordsInner),
           .outDataOutput(fqWordsInner),
           .outReadyCountInput(decodeCountInner),
-          .countOutput(fqOccupancyInner)
+          .countOutput(fqOccupancyInner),
+          .emptyOutput(unusedFqEmptyInner)
       );
       for (genvar lane = 0; lane < 2; lane++) begin : g_decoder
         if (lane < DECODE_WIDTH) begin : g_enabled
@@ -435,7 +437,8 @@ module rv32_frontend #(
           .outCountOutput(iqAvailableInner),
           .outDataOutput(iqWordsInner),
           .outReadyCountInput(issueCountInner),
-          .countOutput(iqOccupancyInner)
+          .countOutput(iqOccupancyInner),
+          .emptyOutput(unusedIqEmptyInner)
       );
       assign decodedOutput = decoded_uop_t'(iqWordsInner[0]);
       assign instructionOutput.valid = iqAvailableInner != 0;

@@ -54,6 +54,10 @@ module rv32_lsu #(
   output logic [COMMIT_WIDTH-1:0] storeCommitReadyOutput,
   // ROB-head payload, independent of the older Store selected for memory.
   output rv32_pkg::data_memory_request_output_t [COMMIT_WIDTH-1:0] storeRetirementOutput,
+  // Registered per-row exit-address match: SQ addresses are immutable after
+  // arrival, so the 32-bit AXI_EXIT_ADDR compare is done once at the address
+  // event and the commit/halt paths read this precomputed bit instead.
+  output logic [COMMIT_WIDTH-1:0] storeRetirementExitOutput,
 
   // Old SQ head set is a data-only hint; request/grant is unchanged.
   output logic [$clog2(rv32_pkg::DCACHE_SETS)-1:0] storeHeadSetPreviewOutput,
@@ -126,6 +130,7 @@ module rv32_lsu #(
   phy_tag_t sqDataTagInner [SQ_DEPTH];
   logic [31:0] sqDataInner [SQ_DEPTH];
   logic sqCommittedInner [SQ_DEPTH];
+  logic sqIsExitInner [SQ_DEPTH];
   // SQ order outlives the ROB age window. Allocation/acceptance advance these
   // epoch pointers; recovery rewinds only the uncommitted suffix.
   logic [SQ_INDEX_W:0] sqHeadSeqInner, sqTailSeqInner;
@@ -431,6 +436,9 @@ module rv32_lsu #(
     end
   end endgenerate
 
+  for (genvar exitLane = 0; exitLane < COMMIT_WIDTH; exitLane++) begin : g_exit_output
+    assign storeRetirementExitOutput[exitLane] = sqIsExitInner[storeCommitIndexInput[exitLane]];
+  end
   assign sqHeadIndexInner = sqHeadSeqInner[SQ_INDEX_W-1:0];
   assign storeHeadSetPreviewOutput =
     sqAddressInner[sqHeadIndexInner][$clog2(DCACHE_LINE_BYTES)+:$clog2(DCACHE_SETS)];
@@ -1436,6 +1444,7 @@ module rv32_lsu #(
         sqDataTagInner[seqIndexInner] <= '0;
         sqDataInner[seqIndexInner] <= '0;
         sqCommittedInner[seqIndexInner] <= 1'b0;
+        sqIsExitInner[seqIndexInner] <= 1'b0;
       end
     end else if (coreStoppedInput) begin
       // Software freezes LQ/core at retirement, but continues ticking SQ/cache.
@@ -1588,6 +1597,7 @@ module rv32_lsu #(
         if (addressInput.isStore) begin
           sqAddressInner[addressIndexInput] <= addressInput.address;
           sqAddressReadyInner[addressIndexInput] <= 1'b1;
+          sqIsExitInner[addressIndexInput] <= addressInput.address == AXI_EXIT_ADDR;
         end else begin
           lqAddressReadyInner[loadAddressIndexInner] <= 1'b1;
         end

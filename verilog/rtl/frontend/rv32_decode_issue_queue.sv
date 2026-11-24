@@ -39,8 +39,9 @@ module rv32_decode_issue_queue #(
   // Only BOTH old queues empty: the IQ can hold the complete new packet even
   // if rename rejects it. Ready in this mode is independent of incoming valid
   // and backend ready. No partial packet consumption, extra slot, or new level.
+  logic fqEmptyInner, iqEmptyInner;
   assign emptyIngressInner=DECODE_WIDTH==4 && ISSUE_WIDTH==4 && FETCH_WIDTH<=4 &&
-    fqOccupancy==0 && iqOccupancy==0;
+    fqEmptyInner && iqEmptyInner;
   assign directIngressInner=emptyIngressInner && rstNInput && !freezeInput && !flushInput && inValidInput;
   assign availableDecode=directIngressInner ? DCW'(inCountInput) : storedDecodeInner;
   for(genvar word=0;word<DECODE_WIDTH;word++)begin : g_ingress_word
@@ -53,7 +54,7 @@ module rv32_decode_issue_queue #(
   // Proposal is based solely on OLD queue state, never on backend ready.
   // The backend must either accept every proposed valid lane or none.
   assign wholeGroupOutput = rstNInput && !freezeInput && !flushInput &&
-    DECODE_WIDTH==4 && ISSUE_WIDTH==4 && iqOccupancy==0 && availableDecode!=0;
+    DECODE_WIDTH==4 && ISSUE_WIDTH==4 && iqEmptyInner && availableDecode!=0;
   assign wholeGroupFireInner = wholeGroupOutput &&
     readyCountInput==ICW'(availableDecode);
   assign availableCountOutput = wholeGroupOutput ? ICW'(availableDecode) : iqAvailableInner;
@@ -121,7 +122,8 @@ module rv32_decode_issue_queue #(
     .inCreditInput(fqBackwardReadyInner), .inValidInput(inValidInput && !emptyIngressInner), .inCountInput, .inDataInput,
     .inReadyOutput(fqReady), .inCapacityOutput(fqCapacity),
     .outCountOutput(storedDecodeInner), .outDataOutput(storedWordsInner),
-    .outReadyCountInput(emptyIngressInner ? DCW'(0) : decodeCount), .countOutput(fqOccupancy)
+    .outReadyCountInput(emptyIngressInner ? DCW'(0) : decodeCount), .countOutput(fqOccupancy),
+    .emptyOutput(fqEmptyInner)
   );
   for (genvar lane=0; lane<DECODE_WIDTH; lane++) begin : g_decoder
     rv32_decoder #(.LEGACY_HALT(LEGACY_HALT)) u_decoder (
@@ -134,7 +136,8 @@ module rv32_decode_issue_queue #(
     .inCreditInput(1'b0), .inValidInput(decodeCount!=0 && !wholeGroupFireInner), .inCountInput(decodeCount), .inDataInput(decodedWords),
     .inReadyOutput(iqReady), .inCapacityOutput(iqCapacity),
     .outCountOutput(iqAvailableInner), .outDataOutput(iqWords),
-    .outReadyCountInput(wholeGroupOutput ? ICW'(0) : readyCountInput), .countOutput(iqOccupancy)
+    .outReadyCountInput(wholeGroupOutput ? ICW'(0) : readyCountInput), .countOutput(iqOccupancy),
+    .emptyOutput(iqEmptyInner)
   );
   for (genvar lane=0; lane<ISSUE_WIDTH; lane++) begin : g_output
     assign validOutput[lane]=int'(availableCountOutput)>lane;
