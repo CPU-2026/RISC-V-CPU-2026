@@ -1,6 +1,6 @@
 # AXI4-Lite 协议与内存约定
 
-课程顶层：[`student_top.sv`](../verilog/rtl/student_top.sv)；外部从机：[`scripts/sim.cpp`](../scripts/sim.cpp)。退出冻结流程见 [验证与评估](assessment.md#计时与事件边界)，架构探索与关键测量见 [架构探索总结](架构探索总结.md)。
+课程顶层：[`student_top.sv`](../verilog/rtl/student_top.sv)；外部从机：[`scripts/sim.cpp`](../scripts/sim.cpp)。退出冻结流程见 [验证与评估](assessment.md#计时与事件边界)，课程接口沿革见 [架构演进史](架构探索总结.md)。
 
 ## 当前主机结构
 
