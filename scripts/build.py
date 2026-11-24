@@ -2,7 +2,6 @@
 """Build a Verilator simulator from the RTL files in a file list."""
 import argparse
 import os
-import shlex
 from pathlib import Path
 import shutil
 import subprocess
@@ -47,8 +46,25 @@ def verilator_command(override=None):
                      "or configure VERILATOR / APPIMAGE in config.mk")
 
 
+def build_environment(out):
+    environment = os.environ.copy()
+    # This build has its own job limit, not the parent Make's jobserver.
+    for name in ("MAKEFLAGS", "GNUMAKEFLAGS", "MFLAGS"):
+        environment.pop(name, None)
+    tmp = environment.get("TMPDIR")
+    if not tmp or not Path(tmp).is_dir() or not os.access(tmp, os.W_OK | os.X_OK):
+        tmp = out / "tmp"
+        tmp.mkdir(exist_ok=True)
+    tmp = str(Path(tmp).resolve())
+    environment.update(TMPDIR=tmp, TMP=tmp, TEMP=tmp)
+    return environment
+
+
 def build_simulator(sources, out, args):
     verilator = verilator_command(args.verilator)
+    make = executable(args.make)
+    cxx = executable(args.cxx)
+    ar = executable(args.ar)
     out = out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     binary = out / "sim"
@@ -60,21 +76,27 @@ def build_simulator(sources, out, args):
         objects.unlink()
     elif objects.exists():
         shutil.rmtree(objects)
-    environment = os.environ.copy()
-    environment["MAKE"] = executable(args.make)
-    make_flags = " ".join(shlex.quote(f"{key}={value}") for key, value in {
-        "CXX": executable(args.cxx), "LINK": executable(args.cxx),
-        "AR": executable(args.ar), "PYTHON3": sys.executable,
-    }.items())
+    environment = build_environment(out)
+    # Passing -j to newer Verilator versions regroups the split C++ files
+    # into larger translation units. Apply the job limit only to GNU Make.
     subprocess.run([
-        verilator, "--cc", "--exe", "--build", "--trace", "--assert",
+        verilator, "--cc", "--exe", "--trace", "--assert",
         "--unroll-count", "1024", "--unroll-stmts", "100000",
+        "--output-split", "10000",
         "-Wall", "-Wno-fatal", "--top-module", "student_top",
-        "--Mdir", str(objects), "-o", str(binary), "-j", str(args.jobs),
-        "-MAKEFLAGS", make_flags,
+        "--Mdir", str(objects), "-o", str(binary),
         "-CFLAGS", "-std=c++17",
         *[str(path) for path in with_ram_source(sources)],
         str(Path(__file__).resolve().with_name("sim.cpp")),
+    ], check=True, env=environment)
+    make_command = [make, "-C", str(objects), "-f", "Vstudent_top.mk", "-j", str(args.jobs)]
+    if args.jobs > 1:
+        # GNU Make 4.4 defaults to FIFOs, which some sandboxes and DrvFS lack.
+        help_text = subprocess.check_output([make, "--help"], env=environment)
+        if b"--jobserver-style" in help_text:
+            make_command.append("--jobserver-style=pipe")
+    subprocess.run([
+        *make_command, f"CXX={cxx}", f"LINK={cxx}", f"AR={ar}", f"PYTHON3={sys.executable}",
     ], check=True, env=environment)
     return binary
 
@@ -88,7 +110,7 @@ def main():
     parser.add_argument("--cxx", default="g++")
     parser.add_argument("--ar", default="ar")
     parser.add_argument("--make", default="make")
-    parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--jobs", type=int, default=1, help="parallel C++ compile jobs (default: 1)")
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error("--jobs must be positive")

@@ -28,7 +28,7 @@ FILELIST ?= verilog/filelist.f
 PROGRAM ?= program.bin
 EXPECTED ?=
 Case ?=
-JOBS ?= 4
+JOBS ?= 1
 MAX_CYCLES ?= 1000000
 LATENCY ?= 10
 WAVE ?=
@@ -48,7 +48,7 @@ code:
 help:
 	@echo 'Host prerequisites: Python 3.10+, GNU Make, G++ (C++17), and binutils. No Docker required.'
 	@echo 'Configure APPIMAGE or native VERILATOR/YOSYS/SV2V/ABC/STA/ASAP7_LIB in config.mk.'
-	@echo 'make build [FILELIST=verilog/filelist.f BUILD=build JOBS=4]'
+	@echo 'make build [FILELIST=verilog/filelist.f BUILD=build JOBS=1]'
 	@echo 'make run PROGRAM=program.bin EXPECTED=186 [WAVE=trace.vcd] [LOG=run.log]'
 	@echo 'make test [Case=correctness_add_to_100] [SIM=/path/to/prebuilt/sim]'
 	@echo 'make perf [Case=perf_median] [SIM=/path/to/prebuilt/sim]'

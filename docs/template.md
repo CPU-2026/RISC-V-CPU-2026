@@ -259,7 +259,7 @@ module student_top (
 | `CLOCK_PERIOD_NS` | `2.0` | 综合与时序分析的目标时钟周期，单位 ns |
 | `ABC_DRIVING_CELL` | `INVx1_ASAP7_75t_R` | ABC 组合逻辑输入边界的驱动单元模型 |
 | `ABC_LOAD_FF` | `5.0` | ABC 组合逻辑输出边界的负载电容，单位 fF |
-| `JOBS` | `4` | 多线程并行编译任务数 |
+| `JOBS` | `1` | C++ 编译并发数；内存充足时可调高 |
 | `MAX_CYCLES` | `1000000` | 单测试点最大仿真周期数限制 |
 | `LATENCY` | `10` | 内存访问响应周期延迟 |
 | `WAVE` | *(空)* | 输出 VCD 波形文件路径 |
@@ -277,10 +277,10 @@ module student_top (
 
 ```sh
 make build
-make build JOBS=8
+make build JOBS=4  # 内存充足时再开启并行
 ```
 
-编译产物将生成在 `build/sim`。
+编译产物将生成在 `build/sim`。若 OJ 报错中的 Verilator 命令仍同时包含 `--build` 和 `-j`，说明评测还在使用旧流程；若脚本由平台提供，需在评测端更新。
 
 ### 2. 运行正确性测试
 
