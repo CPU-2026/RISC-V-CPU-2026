@@ -54,7 +54,7 @@ def run_profiles(args, out):
     software = ROOT.parent/'RV32IM_Simulator'
     cmake = software/'CMakeLists.txt'
     cpp = [software/path for path in re.search(r'set\(CPU_SOURCES(.*?)\)', cmake.read_text(), re.S)[1].split()]
-    rtl = with_ram_source(read_sources(ROOT/'verilog/filelist.f'))
+    rtl = with_ram_source(read_sources(ROOT/'verilog/rtl_sources.f'))
     test = ROOT/'scripts/tests'
     interpreter = (test/'course_sync_driver.cpp').read_text().split(
         '// Independent architectural interpreter.', 1)[1].split('struct CourseSyncProbe {', 1)[0]

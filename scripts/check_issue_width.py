@@ -48,7 +48,7 @@ def units(out):
     folder=out/'units';folder.mkdir(parents=True,exist_ok=True)
     pkg=ROOT/'verilog/rtl/common/rv32_pkg.sv';guard=ROOT/'verilog/rtl/common/rv32_issue_config.sv'
     tb=ROOT/'scripts/tests/issue_config_tb.sv';supported_four=ROOT/'scripts/tests/four_issue_config_tb.sv'
-    rtl=with_ram_source(read_sources(ROOT/'verilog/filelist.f'))
+    rtl=with_ram_source(read_sources(ROOT/'verilog/rtl_sources.f'))
     inputs={str(p):sha(p) for p in [*rtl,tb,supported_four,Path(__file__)]};rows=[]
     report=folder/'report.json'
     if report.exists():
@@ -88,7 +88,7 @@ def units(out):
 
 def lint(out):
     folder=out/'lint';folder.mkdir(parents=True,exist_ok=True)
-    rtl=with_ram_source(read_sources(ROOT/'verilog/filelist.f'));inputs={str(p):sha(p) for p in rtl};rows=[]
+    rtl=with_ram_source(read_sources(ROOT/'verilog/rtl_sources.f'));inputs={str(p):sha(p) for p in rtl};rows=[]
     report=folder/'report.json'
     if report.exists():
         old=read(report)

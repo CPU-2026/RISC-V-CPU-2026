@@ -27,7 +27,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     source = args.software.resolve()/'src'
     paths = sorted(p for p in source.rglob('*') if p.is_file())
-    rtl = with_ram_source(read_sources(ROOT/'verilog/filelist.f'))
+    rtl = with_ram_source(read_sources(ROOT/'verilog/rtl_sources.f'))
     cmake = args.software.resolve()/'CMakeLists.txt'
     inputs = paths + rtl + [cmake, ROOT/'scripts/tests/course_sync_top.sv', ROOT/'scripts/tests/course_sync_driver.cpp', Path(__file__).resolve()]
     def identities():

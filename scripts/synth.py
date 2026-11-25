@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
 """Report optimized or hierarchical ASIC area and frequency with Yosys/OpenSTA."""
 import argparse
-from contextlib import nullcontext
 import hashlib
 import json
 import math
 import os
 import re
 from pathlib import Path
-import shutil
 import subprocess
-import sys
 
 from build import read_sources
 from fakeram import MODEL, RAM_SOURCE, prepare_memories
 from toolchain import DEFAULT_APPIMAGE, enter_appimage, executable, packaged_tool
 from synth_report import area_report, format_report
-from synth_profile import WallClockProfile
-from sv_frontend import convert_sources, select_frontend
 from timing import analyze
 
 
@@ -25,70 +20,11 @@ def quote(value):
     return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
-def run_yosys(yosys, out, name, commands, profile=None):
+def run_yosys(yosys, out, name, commands):
     script = out / f"{name}.ys"
-    # Keep Unicode workspace prefixes out of RTLIL identifiers/source attrs.
-    # Relative paths let checkpoints stay in the durable project build folder.
-    def relative_path(match):
-        value = json.loads(match[0])
-        return quote(os.path.relpath(value, out)) if os.path.isabs(value) and not value.isascii() else match[0]
-    commands = [re.sub(r'"(?:[^"\\]|\\.)*"', relative_path, command) for command in commands]
     script.write_text("\n".join(commands) + "\n")
-    command = [str(yosys), "-Q", "-q", "-t", "-d", "-l", str(out / f"{name}.log"),
-               "-s", script.name]
-    measurement = (profile.measure(f"yosys.{name}", command=command,
-                                  script=str(script), log=str(out / f"{name}.log"))
-                   if profile is not None else nullcontext({}))
-    with measurement as record:
-        result = subprocess.run(command, cwd=out, check=True)
-        record["returncode"] = result.returncode
-
-
-def stat_width(out, name):
-    """Read-only statistics at an existing boundary; never split synth passes."""
-    directory = out / "stats"
-    directory.mkdir(exist_ok=True)
-    # tee does not unquote filenames in some Yosys versions. The runner's cwd
-    # is out, so fixed ASCII relative names also avoid spaces/Unicode prefixes.
-    return f"tee -o stats/{name}.rpt stat -width"
-
-
-def read_netlist(path, profile, name):
-    with profile.measure(name, path=str(path)) as record:
-        record["bytes"] = path.stat().st_size
-        return json.loads(path.read_text())
-
-
-def read_yosys_statistics(raw_path, clean_path, profile):
-    """Normalize only stat -json's complete per-line -t prefixes; keep raw.
-
-    This is not a netlist reader and never skips diagnostics/trailing garbage.
-    Plain JSON and all-lines-timestamped Yosys statistics are both accepted.
-    """
-    if raw_path.resolve() == clean_path.resolve():
-        raise ValueError("raw Yosys statistics must be preserved at a distinct path")
-    with profile.measure("python.read_area_stat_json", path=str(raw_path)) as record:
-        text = raw_path.read_text()
-        record["bytes"] = raw_path.stat().st_size
-        count = 0
-        try:
-            statistics = json.loads(text)
-        except json.JSONDecodeError:
-            lines = text.splitlines(keepends=True)
-            prefix = re.compile(r"^\[\d+\.\d+\] ")
-            if not lines or any(line.strip() and not prefix.match(line) for line in lines):
-                raise
-            count = sum(bool(prefix.match(line)) for line in lines)
-            text = "".join(prefix.sub("", line, count=1) for line in lines)
-            statistics = json.loads(text)
-        if not isinstance(statistics, dict):
-            raise ValueError("Yosys statistics must be a JSON object")
-        record["timestamped_lines_removed"] = count
-    with profile.measure("python.write_clean_area_stat_json", path=str(clean_path)):
-        temporary = clean_path.with_name(clean_path.name + ".tmp")
-        temporary.write_text(text)
-        temporary.replace(clean_path)
-    return statistics
+    subprocess.run([yosys, "-Q", "-T", "-q", "-l", str(out / f"{name}.log"),
+                    "-s", str(script)], check=True)
 
 
 def main():
@@ -97,14 +33,6 @@ def main():
     parser.add_argument("--out", type=Path, default=Path("build/synth"),
                         help="output root; results go in its opt/ or diagnose/ subdirectory")
     parser.add_argument("--mode", choices=("opt", "diagnose"), default="opt")
-    parser.add_argument("--no-hieropt", action="store_true",
-                        help="preserve hierarchy without opt_hier (workaround for port-removal bugs)")
-    parser.add_argument("--elaborated-json", type=Path,
-                        help="reuse an existing RTL elaboration snapshot")
-    parser.add_argument("--pre-abc-json", type=Path,
-                        help="resume mapping from an existing pre-ABC snapshot")
-    parser.add_argument("--checkpoints", action="store_true",
-                        help="save the generic synthesis JSON snapshot")
     parser.add_argument("--clock-period", type=float, default=2.0, help="target clock period in ns (default: 2)")
     parser.add_argument("--clock-port", default="clock", help="top-level clock input (default: clock)")
     parser.add_argument("--abc-driving-cell", default="INVx1_ASAP7_75t_R",
@@ -114,9 +42,6 @@ def main():
     parser.add_argument("--blackboxes", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--appimage", default=str(DEFAULT_APPIMAGE))
     parser.add_argument("--yosys", help="custom Yosys executable")
-    parser.add_argument("--frontend", choices=("auto", "yosys", "sv2v"), default="auto",
-                        help="SV frontend: auto prefers sv2v for .sv input; yosys uses its limited native parser")
-    parser.add_argument("--sv2v", help="custom sv2v executable (also selects sv2v in auto mode)")
     parser.add_argument("--abc", help="custom ABC executable")
     parser.add_argument("--sta", help="custom OpenSTA executable")
     parser.add_argument("--asap7-lib", type=Path, help="directory containing the five ASAP7 libraries")
@@ -158,57 +83,23 @@ def main():
     libs = sorted(library_dir.expanduser().resolve().glob("*.lib"))
     if len(libs) != 5:
         parser.error("five ASAP7 RVT TT libraries required; configure APPIMAGE or ASAP7_LIB")
-    # Start after AppImage re-entry so the outer launcher cannot overwrite the
-    # actual tool process's records. PPA report schemas remain unchanged.
-    profile = WallClockProfile(out)
-    # Read the empty SRAM interface first and defer RTLIL generation until
-    # hierarchy knows the actual instance parameters. Preserve -noblackbox so
-    # RAM specializations still reach prepare_memories as normal empty modules.
+    # Elaborate the framework's empty SRAM interface as a normal module so
+    # Yosys resolves parameter expressions, defaults, hierarchy and generates.
     # No RAM array is lowered to flops in this stage.
-    frontend = {"name": "elaboration_snapshot"}
-    if args.elaborated_json:
-        previous = args.elaborated_json.resolve()
-        if previous != out / "elaborated.json":
-            with profile.measure("python.copy_elaboration_snapshot", path=str(previous)):
-                shutil.copyfile(previous, out / "elaborated.json")
-    else:
-        try:
-            selected, sv2v = select_frontend(args.frontend, sources, args.sv2v)
-            frontend = {"name": selected}
-            if selected == "sv2v":
-                with profile.measure("frontend.sv2v"):
-                    converted, frontend = convert_sources(sv2v, [path for path in sources if path != RAM_SOURCE],
-                                                           out / "frontend")
-                reads = ["read_verilog -sv -defer -D SYNTHESIS " + quote(converted)]
-            else:
-                reads = ["read_verilog -sv -defer -D SYNTHESIS " + quote(path) for path in sources if path != RAM_SOURCE]
-        except (ValueError, OSError) as error:
-            parser.error(str(error))
-        print(f"[synth] Frontend: {selected}", flush=True)
-        try:
-            run_yosys(yosys, out, "elaborate", [
-                "read_verilog -sv -defer -noblackbox -D SYNTHESIS " + quote(RAM_SOURCE),
-                *reads,
-                "hierarchy -top student_top",
-                stat_width(out, "elaborate-after-hierarchy"),
-                "proc",
-                stat_width(out, "elaborate-after-proc"),
-                "memory_collect",
-                stat_width(out, "elaborate-after-memory-collect"),
-                "write_json " + quote(out / "elaborated.json"),
-            ], profile=profile)
-        except subprocess.CalledProcessError:
-            if selected == "yosys" and any(path.suffix == ".sv" for path in sources):
-                print("[synth] Native Yosys has limited SystemVerilog support. For packages/struct arrays, "
-                      "install sv2v and use --frontend sv2v [--sv2v /path/to/sv2v].", file=sys.stderr)
-            raise
+    run_yosys(yosys, out, "elaborate", [
+        *["read_verilog -sv -D SYNTHESIS " + quote(path) for path in sources if path != RAM_SOURCE],
+        "read_verilog -sv -noblackbox -D SYNTHESIS " + quote(RAM_SOURCE),
+        "hierarchy -top student_top",
+        "proc",
+        "memory_collect",
+        "write_json " + quote(out / "elaborated.json"),
+    ])
     try:
-        elaborated = read_netlist(out / "elaborated.json", profile, "python.read_elaborated_json")
+        elaborated = json.loads((out / "elaborated.json").read_text())
         clock = elaborated["modules"]["student_top"].get("ports", {}).get(args.clock_port, {})
         if clock.get("direction") != "input" or len(clock.get("bits", [])) != 1:
             raise ValueError(f"student_top must have a one-bit clock input named {args.clock_port}")
-        with profile.measure("python.prepare_memories"):
-            prepared, wrappers, ram_libs, macros = prepare_memories(elaborated, out / "ram", profile=profile)
+        prepared, wrappers, ram_libs, macros = prepare_memories(elaborated, out / "ram")
     except ValueError as error:
         parser.error(str(error))
     library_args = " ".join("-liberty " + quote(lib) for lib in libs)
@@ -223,25 +114,18 @@ def main():
         "read_verilog " + quote(wrappers),
         *library_reads,
         "hierarchy -check -top student_top",
-        stat_width(out, "synth-before-noabc"),
-        "synth -top student_top -noabc " +
-        ("-flatten" if args.mode == "opt" else ("" if args.no_hieropt else "-hieropt")),
-        stat_width(out, "synth-after-noabc"),
+        "synth -top student_top -noabc " + ("-flatten" if args.mode == "opt" else "-hieropt"),
         "check -assert",
         "select -assert-none a:init t:$dlatch* t:$_DLATCH*",
-        *(["write_json " + quote(out / "generic.json")] if args.checkpoints else []),
         "dfflibmap -liberty " + quote(seq),
-        stat_width(out, "synth-before-abc"),
         "abc " + ("-exe " + quote(abc) + " " if abc else "") + library_args
         + " -constr " + quote(abc_constraints) + f" -D {args.clock_period * 1000:.9g}",
-        stat_width(out, "synth-after-abc"),
         "clean",
         "delete t:$scopeinfo",
         "clean -purge",
         "hilomap -hicell TIEHIx1_ASAP7_75t_R H -locell TIELOx1_ASAP7_75t_R L",
         "check -assert -mapped",
-        stat_width(out, "synth-mapped-clean"),
-        f"tee -o stat.raw.json stat -json {all_library_args}",
+        f"tee -o {quote(out / 'stat.json')} stat -json {all_library_args}",
         "write_json " + quote(out / "design.json"),
         "write_verilog -noattr -noexpr " + quote(out / "mapped.v"),
         "design -reset",
@@ -249,50 +133,27 @@ def main():
         "read_verilog " + quote(out / "mapped.v"),
         "hierarchy -check -top student_top",
         "check -assert -mapped",
-        stat_width(out, "synth-mapped-reload"),
     ]
-    if args.pre_abc_json:
-        abc_start = next(index for index, command in enumerate(script) if command.startswith("abc "))
-        script = ["read_json " + quote(args.pre_abc_json.resolve()), *library_reads,
-                   "hierarchy -check -top student_top", "check -assert",
-                   "select -assert-none a:init t:$dlatch* t:$_DLATCH*",
-                   stat_width(out, "synth-before-abc")] + script[abc_start:]
-    run_yosys(yosys, out, "synth", script, profile=profile)
+    run_yosys(yosys, out, "synth", script)
     try:
-        design = read_netlist(out / "design.json", profile, "python.read_mapped_design_json")
-        statistics = read_yosys_statistics(out / "stat.raw.json", out / "stat.json", profile)
-        with profile.measure("python.area_report"):
-            area = area_report(design, statistics, macros)
-        del design, statistics
-        with profile.measure("opensta.analyze"):
-            timing = analyze(sta, out, [*libs, *ram_libs], args.clock_period, args.clock_port)
+        area = area_report(json.loads((out / "design.json").read_text()),
+                           json.loads((out / "stat.json").read_text()), macros)
+        timing = analyze(sta, out, [*libs, *ram_libs], args.clock_period, args.clock_port)
     except (ValueError, OSError) as error:
         parser.error(str(error))
     def identities(paths):
         return [{"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in paths]
-    with profile.measure("python.hash_inputs_and_libraries"):
-        input_identities = identities([*sources, RAM_SOURCE])
-        library_identities = identities([*libs, *ram_libs])
-    with profile.measure("tool_version.yosys"):
-        yosys_version = subprocess.check_output([yosys, "-V"], text=True).strip()
-    with profile.measure("tool_version.opensta"):
-        sta_version = subprocess.check_output([sta, "-version"], text=True).strip()
     report = {"schema_version": 1, "mode": args.mode, "output_directory": str(out),
               "abc_constraints": {"driving_cell": args.abc_driving_cell, "output_load_ff": args.abc_load_ff},
               "area": area, "timing": timing,
-              "inputs": input_identities, "libraries": library_identities,
+              "inputs": identities([*sources, RAM_SOURCE]), "libraries": identities([*libs, *ram_libs]),
               "sram_model": MODEL,
-              "frontend": frontend,
-              "tools": {"yosys": yosys_version, "opensta": sta_version}}
-    if args.elaborated_json:
-        report["elaboration_snapshot"] = identities([args.elaborated_json.resolve()])[0]
-    if args.pre_abc_json:
-        report["pre_abc_snapshot"] = identities([args.pre_abc_json.resolve()])[0]
-    with profile.measure("python.write_reports"):
-        for name, data in (("report.json", report), ("timing.json", timing),
-                           ("area.json", {"mode": args.mode, **area, "sram_model": MODEL, "timing_analyzed": True})):
-            (out / name).write_text(json.dumps(data, indent=2, allow_nan=False) + "\n")
-        (out / "report.txt").write_text(format_report(report, full=True))
+              "tools": {"yosys": subprocess.check_output([yosys, "-V"], text=True).strip(),
+                        "opensta": subprocess.check_output([sta, "-version"], text=True).strip()}}
+    for name, data in (("report.json", report), ("timing.json", timing),
+                       ("area.json", {"mode": args.mode, **area, "sram_model": MODEL, "timing_analyzed": True})):
+        (out / name).write_text(json.dumps(data, indent=2, allow_nan=False) + "\n")
+    (out / "report.txt").write_text(format_report(report, full=True))
     print(format_report(report), end="")
 
 

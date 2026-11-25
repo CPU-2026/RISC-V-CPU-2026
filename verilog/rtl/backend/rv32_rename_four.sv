@@ -68,6 +68,34 @@ module rv32_rename_four #(
   logic [3:0][$clog2(LQ_ENTRIES)-1:0] loadIndices;
   logic [3:0][$clog2(SQ_ENTRIES)-1:0] storeIndices;
   logic [2:0] unusedPhysicalCount, unusedLoadCount, unusedStoreCount;
+  // A flush already opens an architectural SRAM read edge before replay. Use
+  // that edge to record the cancelled slice of the original live ROB window.
+  // The PRF still authenticates the full tag of the payload it receives.
+  logic [ROB_ENTRIES-1:0] recycleWindowInner;
+  rob_tag_t recycleBoundaryAgeInner;
+  rob_tag_t [RECOVERY_WIDTH-1:0] recycleTagsInner;
+  assign recycleBoundaryAgeInner = flushInput.robTag - statusOutput.headTag;
+  always_ff @(posedge clkInput or negedge rstNInput) begin
+    if (!rstNInput) recycleWindowInner <= '0;
+    else if (!freezeInput) begin
+      if (flushInput.valid) begin
+        for (int row = 0; row < ROB_ENTRIES; row++)
+          recycleWindowInner[row] <= rob_tag_t'(row) > recycleBoundaryAgeInner &&
+                                     rob_tag_t'(row) < rob_tag_t'(robCountOutput);
+      end else if (recoveryInput.active) begin
+        recycleWindowInner <= recycleWindowInner >> RECOVERY_WIDTH;
+      end
+    end
+  end
+  for (genvar lane = 0; lane < RECOVERY_WIDTH; lane++) begin : g_recycle_tag
+    always_ff @(posedge clkInput) begin
+      if (!freezeInput) begin
+        if (flushInput.valid) recycleTagsInner[lane] <= statusOutput.headTag + rob_tag_t'(lane);
+        else if (recoveryInput.active)
+          recycleTagsInner[lane] <= recycleTagsInner[lane] + rob_tag_t'(RECOVERY_WIDTH);
+      end
+    end
+  end
   for(genvar lane=0;lane<4;lane++)begin : g_queries
     assign mapQuery[lane]='{source1Arch:decodedInput[lane].rs1,source2Arch:decodedInput[lane].rs2};
     assign destinationQuery[lane]=decodedInput[lane].rd;
@@ -90,12 +118,14 @@ module rv32_rename_four #(
     .restoreInput('{valid:flushInput.valid,squashTag:flushInput.robTag,headTag:statusOutput.headTag}),
     .recoveryInput,.replayInput(replayNarrowOutput),.commitInput(mapCommitInput)
   );
-  rv32_prf_lanes #(.LANES(4),.ALLOCATION_TAG_SIDEBAND(1'b1),.COMMIT_WIDTH(COMMIT_WIDTH),.READ_PORTS(8+COMMIT_WIDTH),.WRITEBACK_PORTS(WRITEBACK_PORTS)) u_prf (
+  rv32_prf_lanes #(.LANES(4),.ALLOCATION_TAG_SIDEBAND(1'b1),.COMMIT_WIDTH(COMMIT_WIDTH),
+    .READ_PORTS(8+COMMIT_WIDTH),.WRITEBACK_PORTS(WRITEBACK_PORTS),.RECYCLE_TICKET_SIDEBAND(1'b1)) u_prf (
     .clkInput,.rstNInput,.freezeInput,.allocationInput(physical),.allocationCandidateInput(destinationPreview),.previewReadyOutput(previewReady),
     .previewPhyOutput(previewPhysical),.allocationFireOutput(physicalFire),.allocationPhyOutput(allocatedPhysical),
     .freeInput,.restoreInput('{valid:flushInput.valid,squashTag:flushInput.robTag}),.recoveryInput,
     .restoreCountInput(robCountOutput),.replayInput(replayNarrowOutput),.readInput(reads),.readOutput(values),
-    .writebackInput,.readyVectorOutput,.freeCountOutput(freeCount)
+    .writebackInput,.readyVectorOutput,.freeCountOutput(freeCount),
+    .recycleWindowInput(recycleWindowInner[RECOVERY_WIDTH-1:0]),.recycleTagsInput(recycleTagsInner)
   );
   rv32_rob_lanes #(.LANES(4),.COMMIT_WIDTH(COMMIT_WIDTH),.LOOKUP_PORTS(LOOKUP_PORTS),.SPLIT_LOAD_LOOKUP(1'b1)) u_rob (
     .clkInput,.rstNInput,.freezeInput(freezeInput || recoveryInput.active),

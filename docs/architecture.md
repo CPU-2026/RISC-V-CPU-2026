@@ -25,7 +25,7 @@ SystemVerilog RV32IM 乱序核，顺序重命名和分配，乱序执行，按�
 - RAT/PRF/ROB/RS/LSQ 共用连续分配前缀；组内 RAW 取最近的实际写者，WAW 取年轻映射。新分配项不当拍执行，回收的物理寄存器下一拍可用。
 - Integer、Branch、Load、StoreAddr、StoreValue RS 只按拍初空位分配，不借当拍离站释放的槽。Load 与 StoreAddr 共用 AGU，采用选择性晚唤醒；Branch 保留完整写回捕获，但不以 Load 当拍旁路派发，仍可用 ALU 和 MUL/DIV 当拍结果。
 - MUL/DIV 共享写回按最老合格结果仲裁，未获准者保留。条件分支走 BRU，JAL/JALR 走 ALU。ROB 在各 bank 预译码退休行，窄退休资格读取与宽跟踪载荷分开；各通道共用从队首计算的 flush 距离，仍只退休拍初 ready 的连续前缀。`retirementOutput` 覆盖全部退休通道，旧标量 `commit*` 只覆盖通道 0。
-- Flush 选最老候选，取消严格年轻项。恢复时 RAT/RAS 重放存活前缀，自由队列另外遍历取消项以回收物理号；分配、执行、退休和 CDB 暂停，LSU/Cache/AXI 继续排空。
+- Flush 选最老候选，取消严格年轻项。四分配路径在 flush 拍保存原 ROB 的可回收窗口和完整 tag；恢复时 RAT/RAS 重放存活前缀，PRF 仅在回收窗口、完整 tag 匹配且目的物理号非零时，按 ROB 顺序归还自由队列。重放拍数不变；分配、执行、退休和 CDB 暂停，LSU/Cache/AXI 继续排空。
 - [RAS 恢复](../verilog/rtl/predictor/rv32_bpu_ras.sv)从已提交栈重建完整投机栈。默认深度为 3，每拍仍按程序顺序处理最多 8 个 ROB 槽；仅恢复宽度和栈深均为 8 时选用独热深度重放。
 
 ## 访存与缓存
@@ -46,7 +46,7 @@ SystemVerilog RV32IM 乱序核，顺序重命名和分配，乱序执行，按�
 
 ## 编译参数
 
-容量会改变公共类型，同次编译须给所有 RTL 统一传宏。定义见 [`rv32_pkg.sv`](../verilog/rtl/common/rv32_pkg.sv)。
+容量会改变公共类型。宏在**导出时**对[全部源 RTL](../verilog/rtl_sources.f)统一生效，例如 `python3 verilog/export_rtl.py -D CPU_ROB_ENTRIES=32 --output /path/to/experiment.sv`；不传 `-D` 则生成默认提交配置。定义见 [`rv32_pkg.sv`](../verilog/rtl/common/rv32_pkg.sv)。
 
 | 宏 | 默认值与约束 |
 |---|---|

@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @unittest.skipUnless(shutil.which('verilator'), 'requires Verilator')
 class RecoveryFourTests(unittest.TestCase):
     def test_core_pending_load(self):
-        filelist = ROOT / 'verilog/filelist.f'
+        filelist = ROOT / 'verilog/rtl_sources.f'
         sources = [ROOT / 'scripts/ram/sram_fakeram.sv']
         sources += [filelist.parent / line.strip() for line in filelist.read_text().splitlines()
                     if line.strip() and not line.lstrip().startswith('#')]

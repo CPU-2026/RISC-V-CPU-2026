@@ -5,11 +5,10 @@ CONFIG ?= config.mk
 
 # Defaults also work when a student omits the optional config.mk.
 PYTHON ?= python3
+SV2V ?= sv2v
 APPIMAGE ?= $(FRAMEWORK_DIR)/cpu2026-tools-x86_64.AppImage
 VERILATOR ?=
 YOSYS ?=
-SV2V ?=
-SYNTH_FRONTEND ?= auto
 ABC ?=
 STA ?=
 ASAP7_LIB ?=
@@ -37,7 +36,7 @@ ifneq ($(strip $(BLACKBOXES)),)
 $(error BLACKBOXES has been removed; instantiate sram_fakeram instead)
 endif
 
-.PHONY: code help build run test perf synth clean
+.PHONY: code help build run test perf export-rtl synth clean
 
 # OJ always builds RTL and collects ./code. SIM affects local run/test/perf only.
 code:
@@ -47,12 +46,15 @@ code:
 
 help:
 	@echo 'Host prerequisites: Python 3.10+, GNU Make, G++ (C++17), and binutils. No Docker required.'
-	@echo 'Configure APPIMAGE or native VERILATOR/YOSYS/SV2V/ABC/STA/ASAP7_LIB in config.mk.'
+	@echo 'Configure APPIMAGE or native VERILATOR/YOSYS/ABC/STA/ASAP7_LIB in config.mk.'
 	@echo 'make build [FILELIST=verilog/filelist.f BUILD=build JOBS=1]'
 	@echo 'make run PROGRAM=program.bin EXPECTED=186 [WAVE=trace.vcd] [LOG=run.log]'
 	@echo 'make test [Case=correctness_add_to_100] [SIM=/path/to/prebuilt/sim]'
 	@echo 'make perf [Case=perf_median] [SIM=/path/to/prebuilt/sim]'
-	@echo 'make synth [MODE=opt|diagnose CLOCK_PERIOD_NS=2.0 FILELIST=verilog/filelist.f]'
+	@echo 'make export-rtl  (refresh the submitted RTL using host sv2v and GNU diff)'
+	@echo 'make synth CLOCK_PERIOD_NS=2.0 [MODE=opt|diagnose SV2V=sv2v]'
+	@echo '  Default: export verilog/rtl_sources.f first, then synthesize verilog/filelist.f.'
+	@echo '  FILELIST=/path/to/prepared.f selects a separate, already exported course input.'
 	@echo '  ABC constraints: ABC_DRIVING_CELL=INVx1_ASAP7_75t_R ABC_LOAD_FF=5.0'
 	@echo '  Outputs: SYNTH_OUT/MODE/ (SYNTH_OUT defaults to build/synth)'
 	@echo 'make clean  (removes BUILD, SYNTH_OUT and code)'
@@ -84,12 +86,19 @@ perf:
 		--testcases "$(TESTCASES)" --max-cycles $(MAX_CYCLES) --latency $(LATENCY) \
 		$(if $(SIM),--sim "$(SIM)",) $(if $(Case),--case "$(Case)",)
 
+export-rtl:
+	"$(PYTHON)" "$(FRAMEWORK_DIR)/verilog/export_rtl.py" --sv2v "$(SV2V)"
+
+# Refresh the repository submission even if a checkout gave it a newer timestamp
+# than its sources. A caller-supplied course file list owns its own generated RTL.
+ifeq ($(abspath $(FILELIST)),$(FRAMEWORK_DIR)/verilog/filelist.f)
+synth: export-rtl
+endif
 synth:
 	"$(PYTHON)" "$(FRAMEWORK_DIR)/scripts/synth.py" --filelist "$(FILELIST)" --out "$(SYNTH_OUT)" \
 		--mode "$(MODE)" --clock-period "$(CLOCK_PERIOD_NS)" \
 		--abc-driving-cell "$(ABC_DRIVING_CELL)" --abc-load-ff "$(ABC_LOAD_FF)" \
 		--appimage "$(APPIMAGE)" $(if $(YOSYS),--yosys "$(YOSYS)",) \
-		$(if $(SV2V),--sv2v "$(SV2V)",) \
 		$(if $(ABC),--abc "$(ABC)",) $(if $(STA),--sta "$(STA)",) \
 		$(if $(ASAP7_LIB),--asap7-lib "$(ASAP7_LIB)",)
 

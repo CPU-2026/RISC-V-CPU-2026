@@ -37,7 +37,7 @@ git submodule update --init --recursive
 chmod +x cpu2026-tools-x86_64.AppImage
 ```
 
-Make 会自动使用此位置的工具包：`make build` 调用其中的 Verilator，`make synth` 调用其中的 Yosys、ABC、OpenSTA 与 ASAP7 库。Python、Make 和 C++ 编译器在宿主机上运行。Make 不会自动下载或重新构建 AppImage。
+Make 会自动使用此位置的工具包：`make build` 调用其中的 Verilator；默认 `make synth` 先用宿主机的 **sv2v（已验证 0.0.12）和 GNU diff** 导出 RTL，再调用包中的 Yosys、ABC、OpenSTA 与 ASAP7 库。
 
 #### 方案 B：使用 Docker 容器
 
@@ -55,7 +55,7 @@ docker build -t cpu2026 .
 docker run --rm -it -v "$PWD":/work cpu2026 bash
 ```
 
-进入容器 `/work` 目录下后，所有 make 命令均能正常工作。
+在容器的 `/work` 目录运行 Make 命令；默认综合同样需要容器中有 sv2v 和 GNU diff。
 
 #### 方案 C：手动指定工具链
 
@@ -89,7 +89,9 @@ docker run --rm -it -v "$PWD":/work cpu2026 bash
 │   ├── axi4-lite.md            # AXI4-Lite 协议与内存约定详解
 │   └── sram.md                 # SRAM 接口、成本模型与支持范围
 ├── verilog/
-│   └── filelist.f              # RTL 源文件列表（路径相对于 verilog/ 目录）
+│   ├── rtl_sources.f           # 手写 SystemVerilog 的有序清单
+│   ├── generated/student_top.sv # sv2v 生成的提交文件
+│   └── filelist.f              # 课程输入清单，只列上述提交文件
 ├── testcases/                  # 官方测试用例（submodule）
 │   ├── correctness_*           # 功能正确性测试集
 │   └── perf_*                  # IPC 评测性能基准测试集
@@ -247,12 +249,13 @@ module student_top (
 | `AR` | `ar` | 宿主机归档工具 |
 | `BUILD_MAKE` | `make` | 宿主机 GNU Make |
 | `VERILATOR` | *(空)* | 原生 Verilator 路径覆盖 |
+| `SV2V` | `sv2v` | 宿主机转换器的命令名或路径 |
 | `YOSYS` | *(空)* | 原生 Yosys 路径覆盖 |
 | `ABC` | *(空)* | 原生 ABC 路径覆盖 |
 | `STA` | *(空)* | 原生 OpenSTA 路径覆盖 |
 | `ASAP7_LIB` | *(空)* | 包含 5 个 ASAP7 `.lib` 文件的目录路径 |
 | `SIM` | *(空)* | 预编译模拟器路径（跳过 RTL 编译） |
-| `FILELIST` | `verilog/filelist.f` | RTL 源文件列表文件 |
+| `FILELIST` | `verilog/filelist.f` | 课程输入清单；指定其他路径时直接使用该清单中的已准备 RTL |
 | `BUILD` | `build` | 模拟器构建输出目录 |
 | `SYNTH_OUT` | `$(BUILD)/synth` | 综合产物输出根目录；每种模式写入各自的子目录 |
 | `MODE` | `opt` | 综合模式：`opt` 或 `diagnose` |
@@ -335,11 +338,15 @@ make run PROGRAM=testcases/correctness_add_to_100/program.data EXPECTED=5050 WAV
 
 框架集成了 Yosys、ABC 与 OpenSTA 工具链：由 Yosys 与 ABC 将 RTL 设计综合并映射到 ASAP7 标准单元库，再通过 OpenSTA 对门级网表执行静态时序分析（STA）。综合流程会自动评估并输出：电路总面积（细分为组合逻辑、时序逻辑及独立的 SRAM 估算面积）、估算最高运行频率（$F_{\max}$）、最小时钟周期、建立时间裕量（Worst Setup Slack）以及关键路径详情。
 
+在仓库根目录运行：
+
 ```sh
-make synth                          # 默认使用 opt 模式
-make synth MODE=diagnose            # diagnose 模式：保留模块层次，定位逐模块面积开销
-make synth CLOCK_PERIOD_NS=1.0      # opt 模式：指定目标时钟周期为 1.0 ns
+make synth CLOCK_PERIOD_NS=2.0 MODE=opt
 ```
+
+默认入口每次先按 [`rtl_sources.f`](../verilog/rtl_sources.f) 的顺序用 sv2v 转换手写源码，更新 [`generated/student_top.sv`](../verilog/generated/student_top.sv)。导出成功后，课程原版 [`scripts/synth.py`](../scripts/synth.py) 才通过 [`filelist.f`](../verilog/filelist.f) 读取该文件，加入公共 SRAM 并完成映射和时序分析。源码有误时本次综合就此停止。
+
+`make export-rtl` 可单独刷新提交文件；`python3 verilog/export_rtl.py --check` 可检查它是否过期。课程综合读取 `SYNTHESIS` 分支，OJ 的 `make code` 直接读取同一文件中保留断言的仿真分支，无需安装 sv2v。历史设计或参数实验可用 `--sources`、`--output` 单独导出，然后用 `FILELIST` 指向独立的提交清单。参数示例见[编译参数](architecture.md#编译参数)。
 
 | 模式 | 用途 | 默认输出目录 |
 | --- | --- | --- |
@@ -356,7 +363,7 @@ make synth CLOCK_PERIOD_NS=1.0      # opt 模式：指定目标时钟周期为 1
 ABC 默认使用 `INVx1_ASAP7_75t_R` 驱动模型和 `5.0 fF` 输出负载，生成 `abc.constr` 并启用缓冲插入和单元尺寸优化。可通过下面的参数微调，或将参数写入 `config.mk`：
 
 ```sh
-make synth ABC_DRIVING_CELL=BUFx2_ASAP7_75t_R ABC_LOAD_FF=1.0
+make synth CLOCK_PERIOD_NS=2.0 ABC_DRIVING_CELL=BUFx2_ASAP7_75t_R ABC_LOAD_FF=1.0
 ```
 
 `-constr` 向 ABC 提供输入驱动单元（`set_driving_cell`）和输出负载电容（`set_load`），并让默认综合流程增加缓冲插入和单元尺寸优化，以改善高扇出网络的时序。文件格式和默认流程详见 [Yosys 官方 ABC 文档](https://yosyshq.readthedocs.io/projects/yosys/en/v0.49/cmd/abc.html)。
@@ -394,4 +401,4 @@ make clean
 在向 OJ 提交你的仓库前，请完成以下检查：
 
 1. 确保顶层模块命名为 `student_top`，并严格实现规范要求的 AXI4-Lite 端口信号。
-2. 确保所有涉及的 Verilog/SystemVerilog 源文件均以相对路径列入 `verilog/filelist.f`。
+2. 将 `verilog/filelist.f` 和它列出的 `verilog/generated/student_top.sv` 一起提交；修改手写 RTL 后先运行 `make export-rtl` 或默认综合以刷新提交文件。

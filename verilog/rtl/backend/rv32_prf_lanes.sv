@@ -8,7 +8,8 @@ module rv32_prf_lanes #(
   parameter int unsigned ROB_DEPTH = rv32_pkg::ROB_ENTRIES,
   parameter int unsigned WRITEBACK_PORTS = 2,
   parameter int unsigned COMMIT_WIDTH = 2,
-  parameter int unsigned READ_PORTS = 2*LANES
+  parameter int unsigned READ_PORTS = 2*LANES,
+  parameter bit RECYCLE_TICKET_SIDEBAND = 1'b0
 ) (
   input logic clkInput, rstNInput, freezeInput,
   input rv32_pkg::prf_allocation_input_t [LANES-1:0] allocationInput,
@@ -26,7 +27,11 @@ module rv32_prf_lanes #(
   output rv32_pkg::prf_read_output_t [READ_PORTS-1:0] readOutput,
   input rv32_pkg::cdb_result_t [WRITEBACK_PORTS-1:0] writebackInput,
   output logic [PRF_DEPTH-1:0] readyVectorOutput,
-  output logic [$clog2(PRF_DEPTH+1)-1:0] freeCountOutput
+  output logic [$clog2(PRF_DEPTH+1)-1:0] freeCountOutput,
+  /* verilator lint_off UNUSEDSIGNAL */
+  input logic [rv32_pkg::RECOVERY_WIDTH-1:0] recycleWindowInput,
+  input rv32_pkg::rob_tag_t [rv32_pkg::RECOVERY_WIDTH-1:0] recycleTagsInput
+  /* verilator lint_on UNUSEDSIGNAL */
 );
   import rv32_pkg::*;
   localparam int SLOT_W = $clog2(PRF_DEPTH);
@@ -60,6 +65,7 @@ module rv32_prf_lanes #(
   logic [SLOT_W-1:0] recycleSlotInner [RECOVERY_WIDTH];
   logic [RECYCLE_W-1:0] recycleCountInner;
   logic [$clog2(LANES+1)-1:0] allocatedCountInner;
+  logic [RECOVERY_WIDTH-1:0] replayEligibleInner;
 
   function automatic free_seq_t free_seq_next(input free_seq_t seq);
     if (seq[SLOT_W-1:0] == SLOT_W'(PRF_DEPTH-1))
@@ -137,6 +143,31 @@ module rv32_prf_lanes #(
   end
 
 
+  for (genvar lane = 0; lane < RECOVERY_WIDTH; lane++) begin : g_recycle_identity
+    if (RECYCLE_TICKET_SIDEBAND) begin : g_early
+      assign replayEligibleInner[lane] = recycleWindowInput[lane] &&
+        replayInput[lane].robTag == recycleTagsInput[lane];
+    end else begin : g_local
+      assign replayEligibleInner[lane] = int'(recoveryInput.offset)+lane < ROB_DEPTH &&
+        int'(recoveryInput.offset)+lane < int'(recoveryInput.liveCount) &&
+        replayInput[lane].robTag == recoveryInput.nextTag+rob_tag_t'(lane) &&
+        rob_is_younger(replayInput[lane].robTag, recoveryInput.squashTag);
+    end
+`ifndef SYNTHESIS
+    always @(posedge clkInput) if (rstNInput && !freezeInput && recoveryInput.active &&
+                                RECYCLE_TICKET_SIDEBAND) begin
+      assert (recycleTagsInput[lane] == recoveryInput.nextTag+rob_tag_t'(lane))
+        else $fatal(1, "PRF replay ticket tag differs from replay cursor");
+      assert (replayEligibleInner[lane] ==
+        (int'(recoveryInput.offset)+lane < ROB_DEPTH &&
+         int'(recoveryInput.offset)+lane < int'(recoveryInput.liveCount) &&
+         replayInput[lane].robTag == recoveryInput.nextTag+rob_tag_t'(lane) &&
+         rob_is_younger(replayInput[lane].robTag, recoveryInput.squashTag)))
+        else $fatal(1, "PRF replay ticket changes a release");
+    end
+`endif
+  end
+
   always_comb begin : release_old_physical
     recycleCountInner = '0;
     recycleTailInner = freeTailInner;
@@ -146,10 +177,7 @@ module rv32_prf_lanes #(
     end
     if (recoveryInput.active) begin
       for (int lane = 0; lane < RECOVERY_WIDTH; lane++) begin
-        if (int'(recoveryInput.offset)+lane < ROB_DEPTH &&
-            int'(recoveryInput.offset)+lane < int'(recoveryInput.liveCount) &&
-            replayInput[lane].robTag == recoveryInput.nextTag+rob_tag_t'(lane) &&
-            rob_is_younger(replayInput[lane].robTag, recoveryInput.squashTag) && replayInput[lane].newPhy != 0) begin
+        if (replayEligibleInner[lane] && replayInput[lane].newPhy != 0) begin
           recyclePhyInner[recycle_index_t'(recycleCountInner)] = replayInput[lane].newPhy;
           recycleSlotInner[recycle_index_t'(recycleCountInner)] = recycleTailInner[SLOT_W-1:0];
           recycleTailInner = free_seq_next(recycleTailInner);

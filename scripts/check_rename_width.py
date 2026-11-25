@@ -31,7 +31,7 @@ def run(args):
     out.mkdir(parents=True, exist_ok=True)
     cmake = SOFTWARE / 'CMakeLists.txt'
     cpp = [SOFTWARE / p for p in re.search(r'set\(CPU_SOURCES(.*?)\)', cmake.read_text(), re.S)[1].split()]
-    rtl = with_ram_source(read_sources(ROOT / 'verilog/filelist.f'))
+    rtl = with_ram_source(read_sources(ROOT / 'verilog/rtl_sources.f'))
     test = ROOT / 'scripts/tests'
     cases = sorted(p for p in (ROOT / 'testcases').iterdir()
                    if (p / 'program.data').is_file() and fnmatch.fnmatchcase(p.name, args.pattern))

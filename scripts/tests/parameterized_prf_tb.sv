@@ -18,7 +18,8 @@ module tb_parameterized_prf;
   logic [PRF_ENTRIES-1:0] readyVectorOutput;
   logic [$clog2(PRF_ENTRIES+1)-1:0] freeCountOutput;
   rv32_prf_lanes #(.LANES(LANES),.PRF_DEPTH(PRF_ENTRIES),.ROB_DEPTH(ROB_ENTRIES),
-    .WRITEBACK_PORTS(PORTS),.COMMIT_WIDTH(COMMIT),.READ_PORTS(PRF_ENTRIES)) dut(.*);
+    .WRITEBACK_PORTS(PORTS),.COMMIT_WIDTH(COMMIT),.READ_PORTS(PRF_ENTRIES)) dut(
+      .allocationCandidateInput('0), .recycleWindowInput('0), .recycleTagsInput('0), .*);
   for(genvar p=0;p<PRF_ENTRIES;p++)assign readInput[p].physicalRegister=phy_tag_t'(p);
   int fifo[PRF_ENTRIES],freeCount,owned[PRF_ENTRIES],ownedCount,allocated[ROB_ENTRIES];
   logic [31:0] values[PRF_ENTRIES];

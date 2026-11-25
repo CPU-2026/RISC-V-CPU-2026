@@ -51,7 +51,7 @@ def main():
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     if args.unit_only:
-        sources = with_ram_source(read_sources(ROOT/'RISC-V-CPU-2026/verilog/filelist.f'))
+        sources = with_ram_source(read_sources(ROOT/'RISC-V-CPU-2026/verilog/rtl_sources.f'))
         with (args.out/'build.log').open('w') as log:
             build = subprocess.run(['verilator', '--binary', '--timing', '--assert', '--unroll-count', '1024',
                 '-Wno-fatal', '-j', '2', '--top-module', 'dual_commit_tb', '--Mdir', str(args.out/'obj'),
